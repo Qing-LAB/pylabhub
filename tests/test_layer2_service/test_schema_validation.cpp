@@ -43,6 +43,88 @@ static json make_schema(std::initializer_list<json> fields, const std::string &p
 }
 
 // ============================================================================
+// parse_canonical_fields_str — inverse of canonical_fields_str
+// (HEP-CORE-0034 §6.3 / §10.3a runtime-resolved delivery, slice 3c)
+// ============================================================================
+
+TEST(SchemaValidationTest, ParseCanonical_LosslessRoundTrip)
+{
+    // Multi-field spec covering scalar, array, and string shapes.  The
+    // contract is LOSSLESS round-trip: re-canonicalizing the parsed
+    // spec reproduces the input byte-for-byte, so a fingerprint
+    // recomputed over the parsed spec equals one computed over the
+    // delivered string.
+    const std::string blds = "ts:float64:1:0|data:float32:4:0|tag:string:1:16";
+    const auto spec = parse_canonical_fields_str(blds);
+    ASSERT_TRUE(spec.has_value());
+    EXPECT_TRUE(spec->has_schema);
+    EXPECT_TRUE(spec->packing.empty()) << "packing is NOT in the BLDS — caller sets it";
+    ASSERT_EQ(spec->fields.size(), 3u);
+    EXPECT_EQ(spec->fields[0].name, "ts");
+    EXPECT_EQ(spec->fields[0].type_str, "float64");
+    EXPECT_EQ(spec->fields[1].count, 4u);
+    EXPECT_EQ(spec->fields[2].type_str, "string");
+    EXPECT_EQ(spec->fields[2].length, 16u);
+    EXPECT_EQ(canonical_fields_str(*spec), blds);
+}
+
+TEST(SchemaValidationTest, ParseCanonical_StrictGrammarRejections)
+{
+    // No partial results: every grammar violation is a clean nullopt.
+    EXPECT_FALSE(parse_canonical_fields_str("").has_value());
+    EXPECT_FALSE(parse_canonical_fields_str("ts:float64:1").has_value());     // 3 tokens
+    EXPECT_FALSE(parse_canonical_fields_str("ts:float64:1:0:9").has_value()); // 5 tokens
+    EXPECT_FALSE(parse_canonical_fields_str("ts:float64:x:0").has_value());   // non-numeric
+    EXPECT_FALSE(parse_canonical_fields_str("ts:float64:1:y").has_value());   // non-numeric
+    EXPECT_FALSE(parse_canonical_fields_str(":float64:1:0").has_value());     // empty name
+    EXPECT_FALSE(parse_canonical_fields_str("ts::1:0").has_value());          // empty type
+    EXPECT_FALSE(parse_canonical_fields_str("ts:float64:1:0|").has_value());  // trailing '|'
+    EXPECT_FALSE(parse_canonical_fields_str("a:int32:1:0||b:int32:1:0").has_value());
+}
+
+// ============================================================================
+// "from-channel" sentinel (HEP-CORE-0034 §10.3a / SI-7, slice 3c)
+// ============================================================================
+
+TEST(SchemaValidationTest, ResolveSchema_FromChannelSentinel_RuntimeResolved)
+{
+    // The DELIBERATE sentinel produces the runtime-resolved marker…
+    const auto rt = resolve_schema(json("from-channel"), false, "test");
+    EXPECT_FALSE(rt.has_schema);
+    EXPECT_TRUE(rt.runtime_resolved);
+
+    // …while a null/absent axis stays plain "no schema" — the queue
+    // builders reject that on ZMQ readers (no silent fallback into
+    // schema-pending).
+    const auto none = resolve_schema(json{}, false, "test");
+    EXPECT_FALSE(none.has_schema);
+    EXPECT_FALSE(none.runtime_resolved);
+
+    // An inline object is never runtime-resolved.
+    const auto inline_spec =
+        resolve_schema(make_schema({make_field("v", "float32")}), false, "test");
+    EXPECT_TRUE(inline_spec.has_schema);
+    EXPECT_FALSE(inline_spec.runtime_resolved);
+}
+
+TEST(SchemaValidationTest, WireSchemaFields_FromChannelSentinel_IsNotACitation)
+{
+    // A runtime-resolved consumer joins CITATION-FREE: the sentinel
+    // string must not leak into the wire schema_id (it would otherwise
+    // ride CONSUMER_REG_REQ as a named citation and be rejected with
+    // MISSING_HASH_FOR_NAMED_CITATION).
+    SchemaSpec empty;
+    const auto w = make_wire_schema_fields(json("from-channel"), empty, empty);
+    EXPECT_TRUE(w.schema_id.empty());
+    EXPECT_TRUE(w.schema_blds.empty());
+    EXPECT_TRUE(w.schema_hash.empty());
+
+    // Real named citations still pass through.
+    const auto named = make_wire_schema_fields(json("$lab.x.v1"), empty, empty);
+    EXPECT_EQ(named.schema_id, "$lab.x.v1");
+}
+
+// ============================================================================
 // parse_schema_json — valid paths
 // ============================================================================
 
@@ -395,9 +477,8 @@ TEST(SchemaValidationTest, WireForm_ZoneAgnostic_SameLayoutSameHalf)
     auto lay = make_schema({make_field("v", "float32")}, "aligned");
     auto spec = parse_schema_json(lay);
     const auto in_db = compute_fingerprint_from_wire(canonical_fields_str(spec), spec.packing);
-    const auto in_fz =
-        compute_fingerprint_from_wire(std::string{}, std::string{}, canonical_fields_str(spec),
-                                      spec.packing);
+    const auto in_fz = compute_fingerprint_from_wire(std::string{}, std::string{},
+                                                     canonical_fields_str(spec), spec.packing);
     // db half of in_db == fz half of in_fz (same layout, same half value).
     EXPECT_EQ(0, std::memcmp(in_db.data(), in_fz.data() + 32, 32));
     EXPECT_NE(in_db, in_fz) << "same layout in different zones → different fingerprints";
@@ -559,8 +640,8 @@ TEST(SchemaValidationTest, MakeSchemaRecord_BothZones)
     EXPECT_EQ(rec.packing, "aligned");
     EXPECT_EQ(rec.flexzone_blds, "cal:float64:8:0");
     EXPECT_EQ(rec.flexzone_packing, "packed");
-    EXPECT_EQ(rec.hash, compute_fingerprint_from_wire("ts:float64:1:0", "aligned", "cal:float64:8:0",
-                                                      "packed"));
+    EXPECT_EQ(rec.hash, compute_fingerprint_from_wire("ts:float64:1:0", "aligned",
+                                                      "cal:float64:8:0", "packed"));
 }
 
 TEST(SchemaValidationTest, MakeSchemaRecord_DatablockOnly_And_FlexzoneOnly)
@@ -588,10 +669,13 @@ TEST(SchemaValidationTest, SchemaRecordsEquivalent_ByFullFingerprint)
     auto a = make_schema_record("o", "id", "v:float32:1:0", "aligned");
     auto same = make_schema_record("o", "id", "v:float32:1:0", "aligned");
     auto diff_packing = make_schema_record("o", "id", "v:float32:1:0", "packed");
-    auto with_fz = make_schema_record("o", "id", "v:float32:1:0", "aligned", "x:int32:1:0", "aligned");
+    auto with_fz =
+        make_schema_record("o", "id", "v:float32:1:0", "aligned", "x:int32:1:0", "aligned");
     EXPECT_TRUE(schema_records_equivalent(a, same));
-    EXPECT_FALSE(schema_records_equivalent(a, diff_packing)) << "packing folds into the fingerprint";
-    EXPECT_FALSE(schema_records_equivalent(a, with_fz)) << "flexzone presence changes the fingerprint";
+    EXPECT_FALSE(schema_records_equivalent(a, diff_packing))
+        << "packing folds into the fingerprint";
+    EXPECT_FALSE(schema_records_equivalent(a, with_fz))
+        << "flexzone presence changes the fingerprint";
 }
 
 TEST(SchemaValidationTest, VerifyRequestFingerprint_Consistency)

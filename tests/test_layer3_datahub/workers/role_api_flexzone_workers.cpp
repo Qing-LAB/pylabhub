@@ -575,6 +575,109 @@ int zmq_rx_null()
 }
 
 // ============================================================================
+// from_channel_si7_gates — HEP-0034 §10.3a / SI-7 queue-builder gates
+// ============================================================================
+//
+// The five startup gates around the `from-channel` runtime-resolved
+// sentinel, pinned at the RoleAPIBase queue-builder tier (the SI-7
+// "caught at role startup" surface):
+//   1. WRITER + from-channel → refused (owning sides declare).
+//   2. ZMQ reader with a plain MISSING schema → refused — no silent
+//      fallback into schema-pending (pre-3b behavior preserved).
+//   3. BINDING (fan-in owner) reader + from-channel → refused (SI-7).
+//   4. SHM reader + from-channel → refused (v1 scope is ZMQ dialing).
+//   5. DIALING ZMQ reader + from-channel → builds schema-pending
+//      (deliberate sentinel = the ONLY way into the pending state).
+
+int from_channel_si7_gates()
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            auto curve = pylabhub::tests::make_curve_setup({"prod.fchn.si7"});
+            pylabhub::tests::seed_curve_identities(curve);
+            pylabhub::utils::security::secure().keys().add_identity_from_z85(
+                pylabhub::utils::security::kRoleIdentityName, curve.hub.public_z85,
+                curve.hub.secret_z85);
+
+            hub::SchemaSpec runtime;
+            runtime.runtime_resolved = true; // has_schema stays false
+            hub::SchemaSpec missing;         // plain absent — neither flag
+
+            // 1. Writer + from-channel → SI-7 refusal.
+            {
+                RoleHostCore core;
+                auto api = std::make_unique<RoleAPIBase>(core, "prod", "prod.fchn.si7.tx");
+                api->set_channel("test.fchn.si7.tx");
+                hub::TxQueueOptions tx;
+                tx.has_shm = false;
+                tx.data_transport = "zmq";
+                tx.zmq_node_endpoint = "tcp://127.0.0.1:0";
+                tx.zmq_bind = true;
+                tx.slot_spec = runtime;
+                EXPECT_FALSE(api->build_tx_queue(tx))
+                    << "a writer must never accept \"from-channel\" (SI-7)";
+            }
+
+            RoleHostCore core;
+            auto api = std::make_unique<RoleAPIBase>(core, "cons", "cons.fchn.si7.rx");
+            api->set_channel("test.fchn.si7.rx");
+
+            // 2. ZMQ reader, schema simply missing → refused (the
+            //    pending build is DELIBERATE-only; a null axis must
+            //    not silently change behavior).
+            {
+                hub::RxQueueOptions rx;
+                rx.data_transport = "zmq";
+                rx.slot_spec = missing;
+                rx.topology = hub::ChannelTopology::OneToOne;
+                EXPECT_FALSE(api->build_rx_queue(rx))
+                    << "missing in_slot_schema must stay a hard error";
+            }
+
+            // 3. BINDING (fan-in owner) reader + from-channel → SI-7.
+            {
+                hub::RxQueueOptions rx;
+                rx.data_transport = "zmq";
+                rx.slot_spec = runtime;
+                rx.topology = hub::ChannelTopology::FanIn;
+                rx.zmq_node_endpoint = "tcp://127.0.0.1:0";
+                EXPECT_FALSE(api->build_rx_queue(rx))
+                    << "the fan-in OWNER cannot ask the channel for the format";
+            }
+
+            // 4. SHM reader + from-channel → v1-scope refusal.
+            {
+                hub::RxQueueOptions rx;
+                rx.data_transport = "shm";
+                rx.shm_name = "test.fchn.si7.shm";
+                rx.slot_spec = runtime;
+                EXPECT_FALSE(api->build_rx_queue(rx))
+                    << "SHM runtime resolution is deferred (v1 = ZMQ dialing)";
+            }
+
+            // 5. DIALING ZMQ reader + from-channel → schema-pending
+            //    Standby build succeeds (the deliberate path in).
+            {
+                hub::RxQueueOptions rx;
+                rx.data_transport = "zmq";
+                rx.slot_spec = runtime;
+                rx.topology = hub::ChannelTopology::OneToOne;
+                ASSERT_TRUE(api->build_rx_queue(rx))
+                    << "the sentinel on a dialing reader must build schema-pending";
+                // Not started, not configured — awaiting the ACK
+                // delivery (queue-tier lifecycle is L2-pinned).
+                EXPECT_EQ(api->queue_mechanism(ChannelSide::Rx),
+                          pylabhub::hub::Mechanism::Uninitialized);
+                api->close_queues();
+            }
+        },
+        "role_api_flexzone::from_channel_si7_gates", logger_module(),
+        ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(),
+        hub_module());
+}
+
+// ============================================================================
 // shm_checksum_roundtrip — flexzone checksum update/verify
 // ============================================================================
 
@@ -1304,6 +1407,8 @@ struct RoleApiFlexzoneWorkerRegistrar
                     return zmq_tx_null();
                 if (sc == "zmq_rx_null")
                     return zmq_rx_null();
+                if (sc == "from_channel_si7_gates")
+                    return from_channel_si7_gates();
                 if (sc == "shm_checksum_roundtrip")
                     return shm_checksum_roundtrip();
                 if (sc == "shm_roundtrip_padding_sensitive")

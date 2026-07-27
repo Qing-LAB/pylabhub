@@ -1165,6 +1165,28 @@ Rules:
   must equal the segment header's stamped hashes before mapping.  Any
   disagreement is a startup abort naming the mismatched pair.
 
+**The `from-channel` config sentinel.**  A consumer that wants the
+runtime-resolved format declares it EXPLICITLY:
+`"in_slot_schema": "from-channel"`.  The sentinel — and only the
+sentinel — builds the reader schema-pending; a merely absent schema
+remains the startup error it always was (no silent fallback into
+runtime resolution).  Rules, enforced at role startup by the queue
+builders:
+
+- Legal ONLY on DIALING reader sides.  Owning sides — every writer,
+  and the fan-in BINDING consumer — reject it as a config error: the
+  owner establishes the format and cannot ask the channel for it.
+- The flexzone axis must stay null alongside it — the delivery
+  establishes both zones.
+- A runtime-resolved consumer joins CITATION-FREE (the sentinel never
+  rides the wire as a schema id); its verification chain runs on
+  receipt as described above, and the per-message `schema_tag` is
+  derived from the resolved specs so the data plane enforces the same
+  format the control plane established.
+- v1 scope is ZMQ dialing readers; the SHM runtime-resolved path
+  (delivery + segment-header cross-check before mapping) is tracked in
+  `docs/todo/MESSAGEHUB_TODO.md`.
+
 ### 10.4 Error codes
 
 All schema-related errors are emitted via the standard error envelope

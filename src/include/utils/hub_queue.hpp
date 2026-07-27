@@ -478,6 +478,16 @@ class PYLABHUB_UTILS_EXPORT QueueReader
     }
 
     /**
+     * @brief True iff this reader was built schema-pending (HEP-0034
+     *        §10.3a) and `configure_slot_schema()` has not yet installed
+     *        the runtime-resolved format.  The role host branches on
+     *        this at CONSUMER_REG_ACK time to run the SI-6 resolution
+     *        chain.  Default false — build-time-schema readers are
+     *        never pending.
+     */
+    virtual bool slot_schema_pending() const noexcept { return false; }
+
+    /**
      * @brief HEP-CORE-0036 §I9.1 + §6.5 step 6 — queue's own binding
      *        role_type identity for `CHANNEL_AUTH_APPLIED_REQ`.
      *

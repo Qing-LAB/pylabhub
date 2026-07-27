@@ -177,8 +177,21 @@ inline SchemaSpec resolve_schema(const nlohmann::json &schema_json, bool use_fle
     if (schema_json.is_null())
         return {};
     if (schema_json.is_string())
+    {
+        // HEP-0034 §10.3a / SI-7 — the explicit runtime-resolved
+        // sentinel.  Only the DELIBERATE sentinel produces a
+        // runtime_resolved spec; a null/absent axis stays plain
+        // has_schema=false (queue builders refuse it — no silent
+        // fallback into schema-pending).
+        if (schema_json.get<std::string>() == kSchemaFromChannel)
+        {
+            SchemaSpec s;
+            s.runtime_resolved = true;
+            return s;
+        }
         return resolve_named_schema(schema_json.get<std::string>(), use_flexzone, label,
                                     extra_search_dirs);
+    }
     return parse_schema_json(schema_json);
 }
 
@@ -312,6 +325,112 @@ inline bool fingerprint_is_all_zero(const std::array<uint8_t, 64> &fp) noexcept
     return std::all_of(fp.begin(), fp.end(), [](uint8_t b) { return b == 0; });
 }
 
+/// Inverse of `canonical_fields_str` (HEP-CORE-0034 §6.3): parse a wire
+/// canonical BLDS string (`name:type:count:length|…`) back into a
+/// `SchemaSpec`.  Used by receivers of a runtime-resolved format
+/// (HEP-0034 §10.3a — the CONSUMER_REG_ACK delivery) to materialize the
+/// structure the queue and script tiers consume.
+///
+/// Strict grammar: each `|`-separated entry must be exactly four
+/// `:`-separated tokens with non-empty name/type and numeric
+/// count/length — anything else returns nullopt (no partial results).
+/// Lossless round-trip: `canonical_fields_str(*parse) == input` for
+/// every accepted input, so a fingerprint recomputed over the parsed
+/// spec equals one computed over the original string.
+///
+/// `packing` is NOT part of the BLDS (it rides separate wire fields at
+/// registration and is otherwise recovered from the fingerprint — §6.4);
+/// the returned spec's `packing` is empty and the caller sets it after
+/// recovery.
+inline std::optional<SchemaSpec> parse_canonical_fields_str(const std::string &blds)
+{
+    if (blds.empty())
+        return std::nullopt;
+    SchemaSpec spec;
+    spec.has_schema = true;
+    spec.packing.clear(); // NOT in the BLDS — caller sets after §6.4 recovery
+    size_t pos = 0;
+    while (pos <= blds.size())
+    {
+        const size_t bar = blds.find('|', pos);
+        const std::string entry =
+            blds.substr(pos, bar == std::string::npos ? std::string::npos : bar - pos);
+        // Exactly four tokens: name:type:count:length.
+        std::array<std::string, 4> tok;
+        size_t tpos = 0;
+        for (int i = 0; i < 4; ++i)
+        {
+            const size_t colon = entry.find(':', tpos);
+            if (i < 3)
+            {
+                if (colon == std::string::npos)
+                    return std::nullopt; // too few tokens
+                tok[static_cast<size_t>(i)] = entry.substr(tpos, colon - tpos);
+                tpos = colon + 1;
+            }
+            else
+            {
+                if (colon != std::string::npos)
+                    return std::nullopt; // too many tokens
+                tok[3] = entry.substr(tpos);
+            }
+        }
+        if (tok[0].empty() || tok[1].empty() || tok[2].empty() || tok[3].empty())
+            return std::nullopt;
+        FieldDef f;
+        f.name = tok[0];
+        f.type_str = tok[1];
+        try
+        {
+            size_t consumed = 0;
+            const unsigned long c = std::stoul(tok[2], &consumed);
+            if (consumed != tok[2].size())
+                return std::nullopt;
+            const unsigned long l = std::stoul(tok[3], &consumed);
+            if (consumed != tok[3].size())
+                return std::nullopt;
+            f.count = static_cast<uint32_t>(c);
+            f.length = static_cast<uint32_t>(l);
+        }
+        catch (const std::exception &)
+        {
+            return std::nullopt; // non-numeric count/length
+        }
+        spec.fields.push_back(std::move(f));
+        if (bar == std::string::npos)
+            break;
+        pos = bar + 1;
+        if (pos == blds.size())
+            return std::nullopt; // trailing '|'
+    }
+    return spec;
+}
+
+/// HEP-CORE-0034 §6.4 — two-candidate packing recovery.  Packing is
+/// never stored on the channel record and never delivered (design
+/// ruling 2026-07-26): a receiver holding a zone's BLDS and that zone's
+/// 32-byte fingerprint half recovers the packing by recomputing over
+/// the closed candidate domain {"aligned","packed"} and matching.
+///
+/// This doubles as the SI-6 pin verification: a successful recovery
+/// PROVES the delivered BLDS hashes to the delivered/pinned half in the
+/// same act.  nullopt means NO candidate matches — the (blds, half)
+/// pair is inconsistent and the caller must abort naming the pair.
+/// Absent zones are the caller's business (an empty `blds` returns
+/// nullopt; verify absent zones against the all-zero half directly).
+inline std::optional<std::string> recover_zone_packing(const std::string &blds,
+                                                       const std::array<uint8_t, 32> &zone_half)
+{
+    if (blds.empty())
+        return std::nullopt;
+    for (const char *cand : {"aligned", "packed"})
+    {
+        if (compute_zone_hash(blds, cand) == zone_half)
+            return std::string{cand};
+    }
+    return std::nullopt;
+}
+
 /// Result of `verify_request_fingerprint` (HEP-CORE-0034 §9, Job A).
 struct RequestFingerprint
 {
@@ -412,10 +531,10 @@ to_hub_schema_record(const ::pylabhub::schema::SchemaEntry &entry)
     auto slot_spec = schema_entry_to_spec(entry.slot);
     const bool has_fz = entry.has_flexzone();
     auto fz_spec = has_fz ? schema_entry_to_spec(entry.flexzone) : SchemaSpec{};
-    return make_schema_record(
-        "hub", entry.schema_id, canonical_fields_str(slot_spec), entry.slot.packing,
-        has_fz ? canonical_fields_str(fz_spec) : std::string{},
-        has_fz ? entry.flexzone.packing : std::string{});
+    return make_schema_record("hub", entry.schema_id, canonical_fields_str(slot_spec),
+                              entry.slot.packing,
+                              has_fz ? canonical_fields_str(fz_spec) : std::string{},
+                              has_fz ? entry.flexzone.packing : std::string{});
 }
 
 // ── HEP-CORE-0034 §10 wire fields — producer + consumer payload helpers ─────
@@ -482,7 +601,11 @@ inline WireSchemaFields make_wire_schema_fields(const nlohmann::json &slot_schem
                                                 const SchemaSpec &fz_spec)
 {
     WireSchemaFields w;
-    if (slot_schema_json.is_string())
+    // The "from-channel" sentinel (HEP-0034 §10.3a / SI-7) is NOT a
+    // citation: a runtime-resolved consumer joins citation-free and
+    // receives the channel's format on the success ACK.  Every other
+    // string form is a named schema id.
+    if (slot_schema_json.is_string() && slot_schema_json.get<std::string>() != kSchemaFromChannel)
         w.schema_id = slot_schema_json.get<std::string>();
     if (slot_spec.has_schema)
     {

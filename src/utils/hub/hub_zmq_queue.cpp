@@ -1311,6 +1311,11 @@ bool ZmqQueue::configure_slot_schema(std::vector<ZmqSchemaField> schema, std::st
     }
 }
 
+bool ZmqQueue::slot_schema_pending() const noexcept
+{
+    return pImpl && pImpl->schema_pending_;
+}
+
 bool ZmqQueue::apply_master_approval(const nlohmann::json &artifacts) noexcept
 {
     if (!pImpl)

@@ -505,6 +505,10 @@ class PYLABHUB_UTILS_EXPORT ZmqQueue final : public QueueReader,
     bool configure_slot_schema(std::vector<ZmqSchemaField> schema, std::string packing,
                                std::optional<std::array<uint8_t, 8>> schema_tag) noexcept override;
 
+    /// True iff built schema-pending and the runtime-resolved format has
+    /// not been installed yet (see QueueReader::slot_schema_pending).
+    bool slot_schema_pending() const noexcept override;
+
     /// HEP-CORE-0036 §6.6.3 — deferred dial for the fan-in DIALING
     /// producer.  Called by the role host AFTER `wait_for_peer_ready`
     /// returns success and the broker has confirmed the binding-side

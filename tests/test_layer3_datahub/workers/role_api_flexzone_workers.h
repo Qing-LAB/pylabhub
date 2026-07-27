@@ -25,6 +25,11 @@ int zmq_tx_null();
 /// ZMQ-only consumer — api.flexzone(Rx) returns nullptr, size == 0,
 /// rx_has_shm() == false.
 int zmq_rx_null();
+/// HEP-0034 §10.3a / SI-7 (slice 3c) — the five queue-builder gates for
+/// the `from-channel` runtime-resolved sentinel.  Lives in this worker
+/// TU because it reuses the same RoleAPIBase + CURVE-seeding scaffold
+/// as zmq_tx_null / zmq_rx_null.
+int from_channel_si7_gates();
 
 /// Round-trip + checksum: producer updates flexzone checksum after a
 /// sentinel write, consumer verifies checksum matches (verify_checksum

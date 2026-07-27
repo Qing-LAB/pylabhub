@@ -1566,6 +1566,43 @@ TEST(HubStateSchemas, ValidateCitation_FlexzoneMismatch_Rejected)
     EXPECT_EQ(s.counters().schema_citation_rejected_total, 1u);
 }
 
+// ─── HEP-CORE-0034 §6.4 — two-candidate packing recovery (slice 3c) ─────────
+//
+// Packing is never stored or delivered; a receiver holding (blds,
+// zone-half) recovers it by candidate recompute — and that recompute IS
+// the SI-6 pin verification: success proves the BLDS hashes to the half.
+
+TEST(HubStateSchemas, RecoverZonePacking_RecoversBothCandidates)
+{
+    const std::string blds = "ts:float64:1:0|value:float32:4:0";
+    for (const std::string packing : {"aligned", "packed"})
+    {
+        const auto half = pylabhub::hub::compute_zone_hash(blds, packing);
+        const auto rec = pylabhub::hub::recover_zone_packing(blds, half);
+        ASSERT_TRUE(rec.has_value()) << packing;
+        EXPECT_EQ(*rec, packing);
+    }
+}
+
+TEST(HubStateSchemas, RecoverZonePacking_InconsistentPair_Nullopt)
+{
+    const std::string blds = "ts:float64:1:0";
+
+    // Tampered half — no candidate matches (SI-6: the caller must abort
+    // naming the mismatched pair).
+    auto half = pylabhub::hub::compute_zone_hash(blds, "aligned");
+    half[0] ^= 0x01;
+    EXPECT_FALSE(pylabhub::hub::recover_zone_packing(blds, half).has_value());
+
+    // Half computed over a DIFFERENT structure — recovery must not
+    // "find" a packing for a BLDS the fingerprint doesn't bind.
+    const auto other = pylabhub::hub::compute_zone_hash("v:int32:1:0", "aligned");
+    EXPECT_FALSE(pylabhub::hub::recover_zone_packing(blds, other).has_value());
+
+    // Absent zone is the caller's business — empty blds is refused.
+    EXPECT_FALSE(pylabhub::hub::recover_zone_packing("", other).has_value());
+}
+
 // ─── Wave M2.5 — controlled-access API on ChannelEntry ─────────────────────
 //
 // These tests pin the contract laid out in

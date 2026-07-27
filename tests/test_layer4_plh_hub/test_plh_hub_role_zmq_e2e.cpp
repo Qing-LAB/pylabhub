@@ -596,6 +596,78 @@ void write_zmq_native_producer_config(const fs::path &cfg_path, const fs::path &
     f << j.dump(2);
 }
 
+// ─── Runtime-resolved (from-channel) consumer (HEP-0034 §10.3a) ────────────
+//
+// Consumer config with `in_slot_schema: "from-channel"` — the explicit
+// SI-7 sentinel: the channel's format arrives on CONSUMER_REG_ACK, is
+// verified against the delivered fingerprint (§6.4 recovery), and is
+// installed into the schema-pending queue before activation.
+
+void write_zmq_from_channel_consumer_config(const fs::path &cfg_path, const fs::path &hub_dir,
+                                            const std::string &uid, const std::string &channel)
+{
+    nlohmann::json j;
+    j["consumer"]["uid"] = uid;
+    j["consumer"]["name"] = "L4FromChannelConsumer";
+    j["consumer"]["log_level"] = "info";
+    j["consumer"]["auth"]["keyfile"] = "vault/" + uid + ".vault";
+
+    j["in_hub_dir"] = hub_dir.string();
+    j["in_channel"] = channel;
+    j["loop_timing"] = "fixed_rate";
+    j["target_period_ms"] = 50;
+
+    j["in_transport"] = "zmq";
+    j["in_zmq_endpoint"] = "tcp://127.0.0.1:0"; // placeholder (dialing side)
+    j["in_zmq_buffer_depth"] = 256;
+    j["in_zmq_overflow_policy"] = "drop";
+
+    // THE sentinel under test: no structure in config — the channel
+    // delivers it (HEP-0034 §10.3a).  Flexzone stays null (the
+    // delivery establishes both zones).
+    j["in_slot_schema"] = "from-channel";
+
+    j["checksum"] = "manual";
+    j["stop_on_script_error"] = false;
+    j["script"]["type"] = "python";
+    j["script"]["path"] = ".";
+
+    std::error_code ec;
+    fs::create_directories(cfg_path.parent_path(), ec);
+    std::ofstream f(cfg_path);
+    f << j.dump(2);
+}
+
+/// Counting consumer for the runtime-resolved scenario.  Slice-3
+/// contract: transport-level consumption works (queue decodes +
+/// verifies tag/checksum on the resolved format); the SCRIPT slot
+/// proxy is slice 4 (G4), so `rx.slot is None` here — pinned via the
+/// first-invocation marker.
+void write_zmq_from_channel_consumer_script(const fs::path &script_dir, int expected_slots)
+{
+    std::error_code ec;
+    fs::create_directories(script_dir, ec);
+    std::ofstream f(script_dir / "__init__.py");
+    f << "_EXPECTED = " << expected_slots << "\n"
+      << "_n = [0]\n"
+         "_done = [False]\n\n"
+         "def on_init(api):\n"
+         "    api.log('info', 'cons_test: init')\n"
+         "\n"
+         "def on_consume(rx, msgs, api):\n"
+         "    _n[0] += 1\n"
+         "    if _n[0] == 1:\n"
+         "        api.log('info', 'cons_test: first slot_is_none=' +\n"
+         "                str(rx.slot is None))\n"
+         "    if _n[0] >= _EXPECTED and not _done[0]:\n"
+         "        _done[0] = True\n"
+         "        api.log('info', 'cons_test: complete N=' + str(_n[0]))\n"
+         "    return True\n"
+         "\n"
+         "def on_stop(api):\n"
+         "    api.log('info', 'cons_test: stop n=' + str(_n[0]))\n";
+}
+
 /// Staged path of the L4 native smoke plugin — built by
 /// test_layer2_service (`test_l4_native_producer_plugin`), staged into
 /// the same `tests/` dir as this test binary.
@@ -2233,6 +2305,175 @@ TEST_F(PlhHubCliTest, ZmqE2E_NativeProducer_LiveSchemaQueries)
     EXPECT_FALSE(contains_error(hub_log)) << "hub log [ERROR ]:\n" << hub_log;
     EXPECT_FALSE(contains_error(prod.get_stderr())) << "producer stderr [ERROR ]:\n"
                                                     << prod.get_stderr();
+
+    ::unsetenv("PYLABHUB_HUB_PASSWORD");
+    ::unsetenv("PYLABHUB_ROLE_PASSWORD");
+}
+
+// ─── Scenario G: runtime-resolved (from-channel) consumer ──────────────────
+//
+// The HEP-0034 §10.3a keystone: a consumer whose config declares
+// `in_slot_schema: "from-channel"` (the SI-7 sentinel) receives the
+// channel's format inside CONSUMER_REG_ACK, verifies it against the
+// delivered fingerprint (§6.4 candidate recompute — packing recovered
+// in the same act), installs it into the schema-pending queue, and
+// consumes real data on it.  Full production stack: plh_hub + two
+// plh_role binaries over CURVE.
+//
+// Slice-3 contract pinned here: transport-level consumption works on
+// the resolved format (queue decode + schema tag on the wire);
+// `rx.slot` is None in the script until G4 (slice 4) builds slot
+// proxies from the delivered BLDS — pinned via the first-invocation
+// marker so slice 4 flips exactly one assertion.
+
+TEST_F(PlhHubCliTest, ZmqE2E_FromChannelConsumer_ResolvesAndReceives)
+{
+    using std::chrono::seconds;
+
+    const std::string channel = "lab.l4.zmq.fromchan.g";
+    const std::string prod_uid = "prod.l4fchn.uid12345678";
+    const std::string cons_uid = "cons.l4fchn.uid12345678";
+    constexpr int kSlots = 5;
+    const int prod_port = 28000 + (::getpid() % 1000);
+
+    // ── Hub init + keygen ─────────────────────────────────────────────────
+    const fs::path hub_dir = tmp("fromchan_e2e_hub");
+    {
+        WorkerProcess init(plh_hub_binary(), "--init",
+                           {hub_dir.string(), "--name", "L4FromChanHub"});
+        ASSERT_EQ(init.wait_for_exit(), 0) << init.get_stderr();
+    }
+    {
+        nlohmann::json j;
+        {
+            std::ifstream f(hub_dir / "hub.json");
+            f >> j;
+        }
+        j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+        j["admin"]["enabled"] = false;
+        j["script"]["path"] = "";
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+    ::setenv("PYLABHUB_HUB_PASSWORD", "fromchan-e2e-pw", /*overwrite=*/1);
+    {
+        WorkerProcess kg(plh_hub_binary(), "--config",
+                         {(hub_dir / "hub.json").string(), "--keygen"});
+        ASSERT_EQ(kg.wait_for_exit(), 0) << kg.get_stderr();
+    }
+
+    // ── Role keygen + known_roles ─────────────────────────────────────────
+    const fs::path prod_dir = tmp("fromchan_e2e_prod");
+    const fs::path cons_dir = tmp("fromchan_e2e_cons");
+    std::error_code ec;
+    fs::create_directories(prod_dir / "vault", ec);
+    fs::create_directories(cons_dir / "vault", ec);
+
+    write_zmq_producer_config(prod_dir / "producer.json", hub_dir, prod_uid, channel, prod_port);
+    write_zmq_producer_script(prod_dir / "script" / "python", kSlots);
+    write_zmq_from_channel_consumer_config(cons_dir / "consumer.json", hub_dir, cons_uid, channel);
+    write_zmq_from_channel_consumer_script(cons_dir / "script" / "python", kSlots);
+
+    ::setenv("PYLABHUB_ROLE_PASSWORD", "fromchan-e2e-role-pw", /*overwrite=*/1);
+    const std::string prod_pubkey =
+        keygen_role_and_read_pubkey(prod_dir, "producer", prod_uid, "fromchan-e2e-role-pw");
+    const std::string cons_pubkey =
+        keygen_role_and_read_pubkey(cons_dir, "consumer", cons_uid, "fromchan-e2e-role-pw");
+    add_known_role(hub_dir, "fromchan_prod", prod_uid, "producer", prod_pubkey);
+    add_known_role(hub_dir, "fromchan_cons", cons_uid, "consumer", cons_pubkey);
+
+    // ── Hub run-mode + endpoint rewrite ───────────────────────────────────
+    WorkerProcess hub(plh_hub_binary(), hub_dir.string(), {});
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir, "Broker: listening on")) << "hub never bound.  Log:\n"
+                                                                      << read_hub_log(hub_dir);
+    const std::string bound_ep = extract_bound_endpoint(read_hub_log(hub_dir));
+    ASSERT_FALSE(bound_ep.empty()) << "no bound endpoint in hub log";
+    {
+        nlohmann::json j;
+        {
+            std::ifstream f(hub_dir / "hub.json");
+            f >> j;
+        }
+        j["network"]["broker_endpoint"] = bound_ep;
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+
+    // ── Producer, then from-channel consumer ──────────────────────────────
+    WorkerProcess prod(plh_role_binary(), "--role", {"producer", prod_dir.string()});
+
+    auto dump_full = [&](const std::string &where) -> std::string
+    {
+        std::string s;
+        s += "[fail at: " + where + "]\n";
+        s += "── producer log file ──\n" + read_role_log(prod_dir) + "\n";
+        s += "── producer stderr ──\n" + prod.get_stderr() + "\n";
+        s += "── consumer log file ──\n" + read_role_log(cons_dir) + "\n";
+        s += "── hub log ──\n" + read_hub_log(hub_dir) + "\n";
+        return s;
+    };
+
+    ASSERT_TRUE(wait_for_hub_marker(
+        hub_dir, "event=RegReqAccepted role='" + prod_uid + "' channel='" + channel + "'",
+        seconds(7)))
+        << dump_full("RegReqAccepted (hub side)");
+    ASSERT_TRUE(wait_for_role_marker(prod_dir, prod, "event=RegAckReceived", seconds(5)))
+        << dump_full("RegAckReceived (producer side)");
+
+    WorkerProcess cons(plh_role_binary(), "--role", {"consumer", cons_dir.string()});
+
+    // The schema-pending build announced itself…
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons, "event=QueueSchemaPending", seconds(7)))
+        << dump_full("event=QueueSchemaPending — deliberate runtime-resolved build");
+    // …the ACK arrived and the delivered format passed the SI-6 chain…
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons,
+                                     "event=RuntimeSchemaResolved channel='" + channel +
+                                         "' fields=1 packing=aligned",
+                                     seconds(10)))
+        << dump_full("event=RuntimeSchemaResolved — §6.4 verification");
+    // …and the queue installed it before activation.
+    ASSERT_TRUE(wait_for_role_marker(cons_dir, cons, "event=QueueSchemaConfigured", seconds(5)))
+        << dump_full("event=QueueSchemaConfigured — deferred layout installed");
+
+    // Slice-3 script contract: consumption fires, slot proxy is None
+    // until G4 (slice 4).
+    ASSERT_TRUE(
+        wait_for_role_marker(cons_dir, cons, "cons_test: first slot_is_none=True", seconds(10)))
+        << dump_full("first on_consume — slice-3 rx.slot contract");
+    ASSERT_TRUE(wait_for_role_marker(
+        cons_dir, cons, "cons_test: complete N=" + std::to_string(kSlots), seconds(10)))
+        << dump_full("cons_test: complete — data flow on the resolved format");
+
+    // Order pin: resolution strictly precedes consumption (structural —
+    // the queue cannot go Active while the format is pending).
+    {
+        const std::string cons_log = read_role_log(cons_dir);
+        const size_t resolved_pos = cons_log.find("event=RuntimeSchemaResolved");
+        const size_t first_pos = cons_log.find("cons_test: first ");
+        ASSERT_NE(resolved_pos, std::string::npos);
+        ASSERT_NE(first_pos, std::string::npos);
+        EXPECT_LT(resolved_pos, first_pos);
+    }
+
+    // ── Shutdown + Class-D gate ───────────────────────────────────────────
+    cons.send_signal(SIGTERM);
+    EXPECT_EQ(cons.wait_for_exit(10), 0) << "consumer did not exit cleanly on SIGTERM.\n"
+                                         << cons.get_stderr();
+    prod.send_signal(SIGTERM);
+    EXPECT_EQ(prod.wait_for_exit(10), 0) << "producer did not exit cleanly on SIGTERM.\n"
+                                         << prod.get_stderr();
+    hub.send_signal(SIGTERM);
+    EXPECT_EQ(hub.wait_for_exit(10), 0) << "hub did not exit cleanly on SIGTERM.\n"
+                                        << hub.get_stderr();
+
+    auto contains_error = [](const std::string &s)
+    { return s.find("[ERROR ]") != std::string::npos; };
+    const std::string hub_log = read_hub_log(hub_dir);
+    EXPECT_FALSE(contains_error(hub_log)) << "hub log [ERROR ]:\n" << hub_log;
+    EXPECT_FALSE(contains_error(prod.get_stderr())) << "producer stderr [ERROR ]:\n"
+                                                    << prod.get_stderr();
+    EXPECT_FALSE(contains_error(cons.get_stderr())) << "consumer stderr [ERROR ]:\n"
+                                                    << cons.get_stderr();
 
     ::unsetenv("PYLABHUB_HUB_PASSWORD");
     ::unsetenv("PYLABHUB_ROLE_PASSWORD");

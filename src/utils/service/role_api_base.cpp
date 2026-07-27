@@ -594,11 +594,151 @@ std::optional<std::array<uint8_t, 8>> make_schema_tag(const std::string &hash)
     std::memcpy(tag.data(), hash.data(), 8);
     return tag;
 }
+
+/// HEP-CORE-0034 §10.3a + SI-6 — resolve the runtime-delivered format for a
+/// schema-pending rx queue from the CONSUMER_REG_ACK schema fields, and
+/// install it via `configure_slot_schema` BEFORE any attach work.
+///
+/// The SI-6 chain this closes: delivered BLDS → must hash to the delivered
+/// two-zone fingerprint (the §6.4 candidate recompute verifies the pair AND
+/// recovers each zone's packing in the same act) → the queue's per-message
+/// schema tag is derived from the resolved specs so the data plane keeps
+/// enforcing the same format the control plane established.  Every failure
+/// is a startup abort naming the mismatched pair; the queue stays Standby
+/// (a `from-channel` role never proceeds on an empty or inconsistent
+/// format).
+bool resolve_runtime_slot_schema(hub::QueueReader &rx, RoleHostCore &core,
+                                 const std::string &short_tag, const nlohmann::json &ack,
+                                 const std::string &channel_name)
+{
+    const std::string blds = ack.value("blds", std::string{});
+    const std::string fz_blds = ack.value("flexzone_blds", std::string{});
+    const std::string hash_hex = ack.value("schema_hash", std::string{});
+
+    if (blds.empty())
+    {
+        LOGGER_ERROR("[{}] runtime schema: channel '{}' serves NO structure "
+                     "(ACK carries no `blds` — anonymous hash-only channels "
+                     "serve none by design).  SI-6 empty-format abort: a "
+                     "runtime-resolved consumer cannot proceed.",
+                     short_tag, channel_name);
+        return false;
+    }
+    if (hash_hex.size() != 128)
+    {
+        LOGGER_ERROR("[{}] runtime schema: channel '{}' ACK `schema_hash` "
+                     "missing or malformed (len={}, want 128 hex) — cannot "
+                     "verify the delivered structure (SI-6).",
+                     short_tag, channel_name, hash_hex.size());
+        return false;
+    }
+    const std::string fp_bytes = pylabhub::format_tools::bytes_from_hex(hash_hex);
+    if (fp_bytes.size() != 64)
+    {
+        LOGGER_ERROR("[{}] runtime schema: channel '{}' ACK `schema_hash` is "
+                     "not valid hex — cannot verify the delivered structure "
+                     "(SI-6).",
+                     short_tag, channel_name);
+        return false;
+    }
+    std::array<uint8_t, 32> db_half{};
+    std::array<uint8_t, 32> fz_half{};
+    std::memcpy(db_half.data(), fp_bytes.data(), 32);
+    std::memcpy(fz_half.data(), fp_bytes.data() + 32, 32);
+
+    auto slot_spec = hub::parse_canonical_fields_str(blds);
+    if (!slot_spec.has_value())
+    {
+        LOGGER_ERROR("[{}] runtime schema: channel '{}' delivered `blds` "
+                     "failed canonical parse (HEP-0034 §6.3 grammar): '{}'",
+                     short_tag, channel_name, blds);
+        return false;
+    }
+    const auto slot_packing = hub::recover_zone_packing(blds, db_half);
+    if (!slot_packing.has_value())
+    {
+        LOGGER_ERROR("[{}] runtime schema: channel '{}' delivered `blds` does "
+                     "not hash to the delivered fingerprint's datablock half "
+                     "under any packing — broker claim vs delivery disagree "
+                     "(SI-6 chain broken).",
+                     short_tag, channel_name);
+        return false;
+    }
+    slot_spec->packing = *slot_packing;
+
+    hub::SchemaSpec fz_spec; // has_schema=false when the channel has no flexzone
+    if (!fz_blds.empty())
+    {
+        auto parsed = hub::parse_canonical_fields_str(fz_blds);
+        if (!parsed.has_value())
+        {
+            LOGGER_ERROR("[{}] runtime schema: channel '{}' delivered "
+                         "`flexzone_blds` failed canonical parse: '{}'",
+                         short_tag, channel_name, fz_blds);
+            return false;
+        }
+        const auto fz_packing = hub::recover_zone_packing(fz_blds, fz_half);
+        if (!fz_packing.has_value())
+        {
+            LOGGER_ERROR("[{}] runtime schema: channel '{}' delivered "
+                         "`flexzone_blds` does not hash to the fingerprint's "
+                         "flexzone half under any packing (SI-6 chain broken).",
+                         short_tag, channel_name);
+            return false;
+        }
+        parsed->packing = *fz_packing;
+        fz_spec = std::move(*parsed);
+    }
+    else if (std::any_of(fz_half.begin(), fz_half.end(), [](uint8_t b) { return b != 0; }))
+    {
+        LOGGER_ERROR("[{}] runtime schema: channel '{}' fingerprint claims a "
+                     "flexzone but the ACK delivered none — broker claim vs "
+                     "delivery disagree (SI-6 chain broken).",
+                     short_tag, channel_name);
+        return false;
+    }
+
+    // Same tag derivation as the build-time path (build_rx_queue) so the
+    // per-message tag matches what the producer stamps.
+    const auto expected_hash = hub::compute_schema_hash(*slot_spec, fz_spec);
+    if (!rx.configure_slot_schema(hub::schema_spec_to_zmq_fields(*slot_spec), slot_spec->packing,
+                                  make_schema_tag(expected_hash)))
+    {
+        LOGGER_ERROR("[{}] runtime schema: channel '{}' queue refused "
+                     "configure_slot_schema on the verified format — see the "
+                     "queue's own diagnostic.",
+                     short_tag, channel_name);
+        return false;
+    }
+    // Script tier's view (slot size accessors today; G4 slot proxies later).
+    core.set_in_slot_spec(hub::SchemaSpec{*slot_spec},
+                          hub::compute_schema_size(*slot_spec, slot_spec->packing));
+
+    LOGGER_INFO("[{}] event=RuntimeSchemaResolved channel='{}' fields={} "
+                "packing={} flexzone={} (HEP-0034 §10.3a — delivered BLDS "
+                "verified against the fingerprint via §6.4 recovery)",
+                short_tag, channel_name, slot_spec->fields.size(), slot_spec->packing,
+                fz_spec.has_schema);
+    return true;
+}
 } // namespace
 
 bool RoleAPIBase::build_tx_queue(const hub::TxQueueOptions &opts)
 {
     pImpl->tx_queue.reset();
+
+    // SI-7 (HEP-0034 §10.3a): `from-channel` is legal ONLY on dialing
+    // reader sides.  A writer IS an owning side — it cannot ask the
+    // channel for what only the owner establishes.  Config error,
+    // caught at startup before any broker contact.
+    if (opts.slot_spec.runtime_resolved || opts.fz_spec.runtime_resolved)
+    {
+        LOGGER_ERROR("[{}] config error: \"from-channel\" on a WRITER side — "
+                     "owning sides declare their format (HEP-0034 SI-7); "
+                     "runtime resolution is dialing-reader-only.",
+                     pImpl->short_tag);
+        return false;
+    }
 
     // Identity read from RoleAPIBase state (single source of truth —
     // opts does not carry channel_name/role_uid/role_name).  Tx uses
@@ -757,6 +897,19 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
     //   FanOut  → DIALING (endpoint arrives on CONSUMER_REG_ACK)
     //   OneToOne → DIALING (endpoint arrives on CONSUMER_REG_ACK)
     std::unique_ptr<hub::QueueReader> reader;
+    // v1 scope (HEP-0034 §10.3a): runtime-resolved readers are ZMQ-only.
+    // The SHM half (ACK delivery + segment-header cross-check before
+    // mapping) is tracked in MESSAGEHUB_TODO — refuse loudly rather
+    // than fall through to the bare transport-dispatch failure below.
+    if (opts.data_transport == "shm" && opts.slot_spec.runtime_resolved)
+    {
+        LOGGER_ERROR("[{}] config error: in_slot_schema=\"from-channel\" on an "
+                     "SHM consumer for channel='{}' — SHM runtime resolution "
+                     "is not implemented yet (v1 is ZMQ dialing readers only; "
+                     "tracked in MESSAGEHUB_TODO).",
+                     pImpl->short_tag, rx_channel);
+        return false;
+    }
     if (opts.data_transport == "shm" && opts.slot_spec.has_schema)
     {
         // SHM reader: capability-transport path (HEP-CORE-0041 §5.5).
@@ -803,6 +956,47 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
     }
     else if (opts.data_transport == "zmq")
     {
+        // ── Runtime-resolved format gates (HEP-0034 §10.3a / SI-7) ────
+        // The schema-pending build is DELIBERATE-only: the config must
+        // have declared the explicit "from-channel" sentinel.  A plain
+        // missing schema stays the hard error it always was — no silent
+        // fallback into pending (feedback: audit stale silent fallbacks).
+        const bool runtime_resolved = opts.slot_spec.runtime_resolved;
+        if (!opts.slot_spec.has_schema && !runtime_resolved)
+        {
+            LOGGER_ERROR("[{}] ZMQ reader for channel='{}' has no in_slot_schema "
+                         "— declare the structure, or use \"from-channel\" "
+                         "(runtime-resolved; dialing sides only, HEP-0034 "
+                         "§10.3a).",
+                         pImpl->short_tag, rx_channel);
+            return false;
+        }
+        if (runtime_resolved)
+        {
+            // SI-7: the fan-in reader BINDS — it is the channel OWNER
+            // and must declare the format it establishes.
+            if (hub::Queue::reader_is_binding_side(opts.topology))
+            {
+                LOGGER_ERROR("[{}] config error: \"from-channel\" on a BINDING "
+                             "(fan-in owner) consumer for channel='{}' — the "
+                             "owner establishes the format and cannot ask the "
+                             "channel for it (HEP-0034 SI-7).",
+                             pImpl->short_tag, rx_channel);
+                return false;
+            }
+            // v1 coherence: a runtime slot with a config-declared
+            // flexzone is incoherent — the delivery carries BOTH zones.
+            if (opts.fz_spec.has_schema)
+            {
+                LOGGER_ERROR("[{}] config error: in_slot_schema=\"from-channel\" "
+                             "combined with a declared in_flexzone_schema for "
+                             "channel='{}' — the runtime delivery establishes "
+                             "both zones; leave the flexzone null.",
+                             pImpl->short_tag, rx_channel);
+                return false;
+            }
+        }
+
         // ZMQ reader.  hub::Queue picks socket (PULL under fan-in and
         // one-to-one; SUB under fan-out) + bind/connect per topology.
         //
@@ -841,8 +1035,13 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
                                !opts.producer_peers.front().pubkey_z85.empty();
 
         hub::RxOptions rx_opts;
-        rx_opts.slot_schema = hub::schema_spec_to_zmq_fields(opts.slot_spec);
-        rx_opts.slot_packing = opts.slot_spec.packing;
+        // Runtime-resolved build passes EMPTY fields (the queue's
+        // schema-pending signal, HEP-0034 §10.3a); gate the conversion
+        // — schema_spec_to_zmq_fields throws on an empty spec (same
+        // gate as the tx flexzone conversion above).
+        rx_opts.slot_schema = runtime_resolved ? std::vector<hub::SchemaFieldDesc>{}
+                                               : hub::schema_spec_to_zmq_fields(opts.slot_spec);
+        rx_opts.slot_packing = runtime_resolved ? std::string{} : opts.slot_spec.packing;
         // Binding side (fan-in consumer): endpoint_hint from config
         // (opts.zmq_node_endpoint).  May be tcp://host:0 for
         // ephemeral bind.
@@ -1116,6 +1315,20 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
             // were admitted.  Failed producers are excluded from the
             // dial set; no automatic retry (retry happens on next
             // consumer restart per §7.1 P0/P3 principles).
+
+            // HEP-CORE-0034 §10.3a — runtime-resolved format: a
+            // schema-pending rx queue must have the delivered format
+            // verified + installed (SI-6) BEFORE any attach work.
+            // Failure is a startup abort — return false, queue stays
+            // Standby, no dial ever happens on an unverified format.
+            if (pImpl->rx_queue->slot_schema_pending())
+            {
+                if (!resolve_runtime_slot_schema(*pImpl->rx_queue, *pImpl->core, pImpl->short_tag,
+                                                 ack, channel_name))
+                {
+                    return false;
+                }
+            }
 
             // Consumer's pubkey — from KeyStore.  Symmetric with the
             // SHM `apply_consumer_reg_ack_shm_` path (line ~1186);

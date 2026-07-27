@@ -49,6 +49,21 @@ TEST_F(RoleApiFlexzoneTest, ZmqRxNull)
     ExpectWorkerOk(w);
 }
 
+TEST_F(RoleApiFlexzoneTest, FromChannel_Si7Gates)
+{
+    // HEP-0034 §10.3a / SI-7 (slice 3c): the five queue-builder gates
+    // around the "from-channel" sentinel — writer refusal, no silent
+    // pending on a missing schema, fan-in-owner refusal, SHM v1-scope
+    // refusal, and the deliberate dialing-reader pending build.  The
+    // four rejection gates each log exactly one ERROR — declared here
+    // so the exhaustive ERROR accounting pins them by content.
+    auto w = SpawnWorker("role_api_flexzone.from_channel_si7_gates", {});
+    ExpectWorkerOk(w, {},
+                   {"\"from-channel\" on a WRITER side", "has no in_slot_schema",
+                    "\"from-channel\" on a BINDING (fan-in owner) consumer",
+                    "SHM runtime resolution is not implemented yet"});
+}
+
 TEST_F(RoleApiFlexzoneTest, ShmChecksumRoundTrip)
 {
     auto w = SpawnWorker("role_api_flexzone.shm_checksum_roundtrip", {});

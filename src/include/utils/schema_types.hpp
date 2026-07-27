@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace pylabhub::hub
@@ -79,7 +80,22 @@ struct SchemaSpec
     bool has_schema{false};
     std::vector<FieldDef> fields;
     std::string packing{"aligned"}; ///< "aligned" or "packed"
+
+    /// HEP-CORE-0034 §10.3a / SI-7 — true iff the config DELIBERATELY
+    /// declared this schema axis runtime-resolved (the `"from-channel"`
+    /// sentinel): the structure arrives on CONSUMER_REG_ACK and the
+    /// queue builds schema-pending.  Legal on DIALING reader sides
+    /// only; owning sides (writers, fan-in binding consumers) reject
+    /// it at startup.  `has_schema == false` WITHOUT this flag remains
+    /// what it always was — "no schema configured" — and ZMQ readers
+    /// still refuse to build on it (no silent fallback into pending).
+    bool runtime_resolved{false};
 };
+
+/// The `"from-channel"` config sentinel (HEP-0034 §10.3a / SI-7): a
+/// slot-schema axis whose structure is resolved at runtime from the
+/// channel's established format.
+inline constexpr std::string_view kSchemaFromChannel = "from-channel";
 
 // ============================================================================
 // SchemaFieldDesc — layout-level field descriptor (no name, for size computation)

@@ -133,10 +133,48 @@ decisions pending user ruling):
       hub-global `$l4.native.frame.v1` from `<hub_dir>/schemas/`,
       channel form, metrics pull — single all-1s marker pinned).
       3× repeat green; full ZmqE2E suite 11/11.
-- [ ] Slice 3: schema-pending queue activation (G1) → registry-driven
-      native roles.
+- [x] ✅ Slice 3a SHIPPED 2026-07-26 (`756028e1`) — schema rides
+      CONSUMER_REG_ACK (HEP-0034 §10.3a new): five optional fields
+      filled from the channel record by the unified success-ACK
+      builder, empty axes elided, NO packing on the wire;
+      ConsumerRegAckBody accessors + validate_if_present rows.  Pin:
+      `ConsumerRegAck_CarriesEstablishedSchema` (content + elision +
+      no-packing).
+- [x] ✅ Slice 3b SHIPPED 2026-07-26 (`b782b6a1`) — schema-pending
+      queue: reader factory empty-schema → pending Standby build;
+      `QueueReader::configure_slot_schema` (Standby-only, single
+      establishment, factory-grade validation via shared
+      `validate_schema_fields`); apply/is_configured/start all refuse
+      while pending (SI-6).  Pins: 3 new + the empty-schema factory
+      pin updated to the split contract (writer rejects, reader
+      pends).
+- [x] ✅ Slice 3c SHIPPED 2026-07-26 — runtime resolution end-to-end:
+      `parse_canonical_fields_str` (lossless BLDS inverse) +
+      `recover_zone_packing` (§6.4 two-candidate recovery = SI-6 pin
+      verification) in schema_utils; role-host
+      `resolve_runtime_slot_schema` in `apply_consumer_reg_ack`
+      (empty-format abort, both-zone fingerprint verification,
+      absent-flexzone consistency, queue install + core in-spec,
+      `event=RuntimeSchemaResolved`); `"from-channel"` sentinel
+      (`SchemaSpec.runtime_resolved`, resolve_schema-only) + SI-7
+      gates (writer / fan-in-owner / SHM-v1 / missing-schema-stays-
+      an-error) + citation-free wire join.  Pins: 4 unit (parser +
+      recovery), 2 sentinel (resolve + wire builder),
+      `FromChannel_Si7Gates` (5-gate worker, ERROR content pinned),
+      L4 keystone `ZmqE2E_FromChannelConsumer_ResolvesAndReceives`
+      (QueueSchemaPending → RuntimeSchemaResolved →
+      QueueSchemaConfigured → consumption; `rx.slot is None` pinned
+      as the slice-3 script contract — slice 4 flips exactly one
+      assertion).
+- [ ] Slice-3 residuals: SHM runtime-resolved consumer (ACK delivery
+      + segment-header cross-check before mapping — v1 refused with a
+      named config error); optional config PIN field for from-channel
+      consumers (SI-6 "config pin when present" hook — the delivered-
+      fingerprint verification already runs; a config pin would bind
+      it to operator expectation).
 - [ ] Slice 4: runtime-BLDS slot proxies in engines (G4) → fully
-      generic script roles.
+      generic script roles.  Consumer-side entry point: the
+      `rx.slot is None` assertion in the L4 from-channel keystone.
 - [ ] G5 doc folds (HEP-0034 §10.3 lifetime rules incl. fan-in
       dual-lifetime "consumers pull by channel"; HEP-0019 freshness;
       HEP-0007 §12.3 SCHEMA-vs-DISC complementarity note).
