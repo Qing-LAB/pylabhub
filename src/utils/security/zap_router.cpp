@@ -357,18 +357,8 @@ bool ZapRouter::is_domain_enforced(std::string_view domain) const
 {
     if (domain.empty())
         return false;
-    // `with_admission` returns nullopt precisely when the domain is absent
-    // from the routing table; the callback's own verdict is irrelevant here
-    // — we are asking whether anyone is gating this domain at all.
-    const auto probe = impl_->routing.with_admission(std::string(domain), this,
-                                                   [](PeerAdmission &) { return true; });
-    return probe.has_value();
+    return impl_->routing.contains(domain);
 }
-
-}  // namespace pylabhub::utils::security
-
-namespace pylabhub::utils::security
-{
 
 std::optional<AttestedKey> attest_from_transport(std::string_view zap_domain,
                                                  std::string_view transport_user_id)

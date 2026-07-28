@@ -232,6 +232,57 @@ int unknown_domain_denies(const char * /*tmpdir*/)
         pylabhub::hub::GetZMQContextModule());
 }
 
+int attestation_matches_real_handshake(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            using pylabhub::utils::security::attest_from_transport;
+
+            // The gate-logic test feeds attest_from_transport a synthetic
+            // user_id.  That pins the refusal rules but proves nothing
+            // about the value a REAL handshake produces — which is the
+            // whole point of the mechanism.  This drives an actual CURVE
+            // handshake and asserts the attestation equals the connecting
+            // peer's key, so a change to what ZAP puts in `user_id` (or to
+            // which key it reports) fails here rather than silently
+            // mis-attributing every message in production.
+            const auto [server_pub, server_sec] = make_keypair();
+            const auto [client_pub, client_sec] = make_keypair();
+            const std::string domain = "test.zap.attest.roundtrip";
+
+            auto pull = bind_pull_server(server_pub, server_sec, domain);
+
+            InMemoryAdmission admission;
+            PeerAllowlist al;
+            al.peers.insert(PeerIdentity{"curve", client_pub});
+            (void)admission.set_peer_allowlist(std::move(al));
+            auto handle = ZapRouter::instance().register_domain(domain, admission);
+
+            ZapPumpThread pump;
+
+            const auto allowed_before = ZapRouter::instance().allowed_count();
+            ASSERT_TRUE(handshake_and_deliver(pull, server_pub, client_pub, client_sec,
+                                              std::chrono::milliseconds(1000)))
+                << "handshake did not complete; nothing to attest";
+            ASSERT_GT(ZapRouter::instance().allowed_count(), allowed_before)
+                << "delivery succeeded without a ZAP ALLOW actually executing";
+
+            // The attestation for this connection is the client's public
+            // key — the key whose SECRET the peer just proved possession
+            // of.  Not the server's, not the routing id, not anything the
+            // client typed into a payload.
+            const auto att = attest_from_transport(domain, client_pub);
+            ASSERT_TRUE(att.has_value());
+            EXPECT_EQ(att->z85(), client_pub);
+            EXPECT_NE(att->z85(), server_pub)
+                << "attested the wrong side of the handshake";
+        },
+        "zap_router::attestation_matches_real_handshake", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
 int attestation_requires_enforced_domain(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
@@ -1252,6 +1303,8 @@ int dispatch_zap_router(int argc, char **argv)
 
     if (scenario == "handshake_accept_deny_cycle")
         return handshake_accept_deny_cycle(tmpdir);
+    if (scenario == "attestation_matches_real_handshake")
+        return attestation_matches_real_handshake(tmpdir);
     if (scenario == "attestation_requires_enforced_domain")
         return attestation_requires_enforced_domain(tmpdir);
     if (scenario == "unknown_domain_denies")

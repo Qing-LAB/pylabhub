@@ -125,6 +125,25 @@ class PYLABHUB_UTILS_EXPORT DomainRoutingTable
     /// @return `std::nullopt` if `domain` is not registered.
     ///         Otherwise `fn`'s `bool` result (or `false` if `fn`
     ///         threw).
+    /// Is @p domain registered?  A pure membership question — no
+    /// admission callback, no reentrance guard, no allocation, O(1).
+    ///
+    /// `with_admission` was previously (mis)used for this by passing a
+    /// callback that ignored the admission and returned a constant: that
+    /// paid for a dispatch mechanism, a `RecursionGuard`, a try/catch and
+    /// a `std::string` construction in order to answer "is this key in a
+    /// map".  Callers asking about membership should ask about membership.
+    ///
+    /// This runs on the inbound message path (attestation minting), and
+    /// the table is NOT small — `hub_zmq_queue` registers a domain per
+    /// queue, so the count scales with channels.  Hence heterogeneous
+    /// lookup: neither a linear scan nor a per-call `std::string`.
+    [[nodiscard]] bool contains(std::string_view domain) const
+    {
+        std::shared_lock<std::shared_mutex> lk(mu_);
+        return map_.find(domain) != map_.end();
+    }
+
     template <class Fn>
     [[nodiscard]] std::optional<bool> with_admission(const std::string &domain,
                                                      const void *reentrance_key, Fn &&fn) const
@@ -163,7 +182,22 @@ class PYLABHUB_UTILS_EXPORT DomainRoutingTable
     static void log_admission_threw_(const std::string &domain, const char *what);
     static void log_admission_threw_unknown_(const std::string &domain);
 
-    std::unordered_map<std::string, std::reference_wrapper<PeerAdmission>> map_;
+    /// Transparent comparator set so `contains()` can look up from a
+    /// `string_view` without materialising a `std::string` on the message
+    /// path.  `is_transparent` is what opts `unordered_map` into the
+    /// heterogeneous overloads (C++20).
+    struct DomainHash
+    {
+        using is_transparent = void;
+        [[nodiscard]] std::size_t operator()(std::string_view s) const noexcept
+        {
+            return std::hash<std::string_view>{}(s);
+        }
+    };
+
+    std::unordered_map<std::string, std::reference_wrapper<PeerAdmission>, DomainHash,
+                       std::equal_to<>>
+        map_;
     mutable std::shared_mutex mu_;
 };
 

@@ -331,8 +331,21 @@ a live defect rather than an aesthetic complaint:
 4. **It contradicts §3**: handshake→attestation is the *trust* step, and
    the trust step's owner is the module that enforces trust.
 
-Per-socket enforcement state is resolved once (at bind, where the domain is
-known), not per message.
+**Enforcement is checked per message, not cached per socket** — a reversal
+of an earlier line here, for two reasons found while building it.
+
+*It is cheap enough.* The check is an O(1) heterogeneous lookup under a
+shared lock, with no allocation. (A first attempt paid for a dispatch
+mechanism, a reentrance guard and a `std::string` per message to answer a
+map-membership question, and a second scanned linearly — the domain table
+is NOT small, since `hub_zmq_queue` registers one per queue.)
+
+*It fails in the safer direction.* A domain can be unregistered at runtime.
+Cached-at-bind state would keep vouching for a socket after enforcement
+stopped; a per-message check stops vouching. Both are defensible — the
+attestation's validity really does derive from the handshake that already
+happened — but "stop attesting" is the failure this system should prefer
+over "keep attesting".
 
 ### Concealed decisions, narrow disclosure
 

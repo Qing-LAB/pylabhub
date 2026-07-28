@@ -77,6 +77,18 @@ TEST_F(ZapRouterTest, UnknownDomain_Denies)
 // properties are inserted first and std::map::insert does not overwrite —
 // a protection that exists solely where ZAP ran.  Minting on an unenforced
 // socket would therefore stamp an attacker-chosen value as proven.
+// Drives a REAL CURVE handshake and pins that the attestation equals the
+// connecting peer's key.  The gate-logic test above feeds a synthetic
+// user_id, so it cannot catch a change to WHICH key ZAP reports — that
+// would silently mis-attribute every message in production while leaving
+// the refusal rules green.
+TEST_F(ZapRouterTest, Attestation_MatchesRealHandshake)
+{
+    auto w = SpawnWorker("zap_router.attestation_matches_real_handshake",
+                         {unique_dir("attestation_matches_real_handshake")});
+    ExpectWorkerOk(w);
+}
+
 TEST_F(ZapRouterTest, Attestation_RequiresEnforcedDomain)
 {
     auto w = SpawnWorker("zap_router.attestation_requires_enforced_domain",
