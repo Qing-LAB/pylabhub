@@ -2749,11 +2749,20 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
     // channel allowlist, so the broker distributes the roster here.  The role
     // seeds its inbox PeerAdmission from this on REG_ACK.
     {
-        // Local roles ONLY — the index distinguishes them from federation
-        // peer hubs, whose keys authorize a different plane and must not
-        // leak into role-to-role messaging.  Reading the roster from the
-        // index keeps that distinction in one place instead of relying on
-        // each ACK site to filter correctly.
+        // The roster IS the hub's `known_roles` — that membership is the
+        // inbox authorization boundary itself (HEP-CORE-0027 §3.5: the
+        // inbox is hub-coordinated role-to-role messaging, so the question
+        // is "is the sender a role this hub knows", not "is the sender on
+        // my data channel").
+        //
+        // The index is asked for its local roles rather than filtered here
+        // because it holds a SUPERSET: it also carries federation peer hubs,
+        // which the CTRL ZAP allowlist needs (a peer dials this broker's
+        // ROUTER, HEP-CORE-0022) but which are not roles and so are not part
+        // of `known_roles`.  This is selecting the subset this consumer is
+        // defined over — NOT a guard against peers "leaking" in.  Before the
+        // index existed the roster read `cfg.known_roles` directly and peers
+        // lived in `cfg.peers`; the two could never have mixed.
         nlohmann::json roster = nlohmann::json::array();
         for (auto &pubkey : pubkey_index.local_role_pubkeys())
             roster.push_back(std::move(pubkey));
@@ -3903,11 +3912,20 @@ BrokerServiceImpl::handle_consumer_reg_req(const ::pylabhub::wire::WireEnvelope 
     // inbox ZAP (consumers have inboxes too; same roster as the producer
     // REG_ACK path).
     {
-        // Local roles ONLY — the index distinguishes them from federation
-        // peer hubs, whose keys authorize a different plane and must not
-        // leak into role-to-role messaging.  Reading the roster from the
-        // index keeps that distinction in one place instead of relying on
-        // each ACK site to filter correctly.
+        // The roster IS the hub's `known_roles` — that membership is the
+        // inbox authorization boundary itself (HEP-CORE-0027 §3.5: the
+        // inbox is hub-coordinated role-to-role messaging, so the question
+        // is "is the sender a role this hub knows", not "is the sender on
+        // my data channel").
+        //
+        // The index is asked for its local roles rather than filtered here
+        // because it holds a SUPERSET: it also carries federation peer hubs,
+        // which the CTRL ZAP allowlist needs (a peer dials this broker's
+        // ROUTER, HEP-CORE-0022) but which are not roles and so are not part
+        // of `known_roles`.  This is selecting the subset this consumer is
+        // defined over — NOT a guard against peers "leaking" in.  Before the
+        // index existed the roster read `cfg.known_roles` directly and peers
+        // lived in `cfg.peers`; the two could never have mixed.
         nlohmann::json roster = nlohmann::json::array();
         for (auto &pubkey : pubkey_index.local_role_pubkeys())
             roster.push_back(std::move(pubkey));

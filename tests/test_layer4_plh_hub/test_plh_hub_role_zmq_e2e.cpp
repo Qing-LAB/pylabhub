@@ -1930,10 +1930,14 @@ TEST_F(PlhHubCliTest, ZmqE2E_InboxDelivery)
     // of the control plane.
     //
     // SCOPE: this hub has no federation peers, so the pin cannot yet
-    // distinguish "allowlist carries every kind" from "allowlist
-    // carries roles".  That distinction needs a non-role key in the
-    // index, which today means a federation peer — and the federation
-    // design is pending (#69), so this test does not configure one.
+    // distinguish "allowlist carries every kind the index holds" from
+    // "allowlist carries roles".  Distinguishing them needs a non-role key
+    // in the index, which today means a federation peer — and the
+    // federation design is pending (#69), so this test does not configure
+    // one.  Note the two projections differ because they answer different
+    // questions, not because one is guarding the other: the CTRL allowlist
+    // is "who may dial this broker" (roles + peer hubs, HEP-CORE-0022), the
+    // roster is "which roles may use the inbox" (HEP-CORE-0027 §3.5).
     // The kind-split itself is pinned structurally at L2 by
     // test_pubkey_origin.cpp (`AllowlistProjectsEveryKeyOfBothKinds` +
     // `InboxRosterExcludesFederationPeers`); the wire-seam version
@@ -1977,9 +1981,10 @@ TEST_F(PlhHubCliTest, ZmqE2E_InboxDelivery)
     //
     // The roster is projected from the static operator roster, not from
     // who has registered so far, so both roles see the same numbers
-    // regardless of registration order.  (A roster that wrongly GREW —
-    // e.g. a non-role key leaking in — is the federation-peer case, which
-    // needs a peer configured to observe; see the scope note above.)
+    // regardless of registration order — HEP-CORE-0027 §3.5 notes that a
+    // role registering AFTER you is absent from your roster until a
+    // refresh, which is why order-independence here is a property of the
+    // static config rather than luck.
     ASSERT_TRUE(wait_for_role_marker(recv_dir, recv,
                                      "event=InboxKnownRolesMerged added=2 total=2", seconds(10)))
         << "receiver's roster is not exactly the two local roles:\n"
