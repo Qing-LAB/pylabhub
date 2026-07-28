@@ -86,6 +86,18 @@ TEST_F(ZapRouterTest, UnknownDomain_Denies)
 // enforced ZAP domain — hence a worker rather than a plain unit test.  The
 // test follows the design; the design was not bent to keep an older test
 // compiling.
+// Every verdict the claim check can return, including the ORIGINAL DEFECT:
+// a peer holding a valid key while claiming another role's identity.  Before
+// this work every gate accepted that, because nothing compared the claim to
+// the connection.  Also pins that a federation peer is refused on KIND while
+// claiming its OWN uid — a uid comparison alone would accept it.
+TEST_F(ZapRouterTest, ClaimCheck_CoversEveryVerdict)
+{
+    auto w = SpawnWorker("zap_router.claim_check_covers_every_verdict",
+                         {unique_dir("claim_check_covers_every_verdict")});
+    ExpectWorkerOk(w);
+}
+
 TEST_F(ZapRouterTest, Index_ResolvesAttestedKeys)
 {
     auto w = SpawnWorker("zap_router.index_resolves_attested_keys",

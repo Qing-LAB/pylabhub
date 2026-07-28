@@ -234,6 +234,83 @@ int unknown_domain_denies(const char * /*tmpdir*/)
         pylabhub::hub::GetZMQContextModule());
 }
 
+int claim_check_covers_every_verdict(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            using pylabhub::utils::security::AttestedKey;
+            using pylabhub::utils::security::ClaimVerdict;
+            using pylabhub::utils::security::PubkeyOriginIndex;
+
+            const std::string domain = "test.zap.claim.check";
+            InMemoryAdmission admission;
+            PeerAllowlist al;
+            al.unrestricted = true;
+            (void)admission.set_peer_allowlist(std::move(al));
+            auto handle = ZapRouter::instance().register_domain(domain, admission);
+
+            const auto [alice_pub, alice_sec] = make_keypair();
+            const auto [bob_pub, bob_sec] = make_keypair();
+            const auto [peer_pub, peer_sec] = make_keypair();
+            const auto [stranger_pub, stranger_sec] = make_keypair();
+
+            const std::string alice_uid = "prod.alice.uid00000001";
+            const std::string bob_uid = "prod.bob.uid00000002";
+            const std::string peer_uid = "hub.peer.uid00000003";
+
+            PubkeyOriginIndex idx;
+            auto add_role = [&idx](const std::string &uid, const std::string &pub)
+            {
+                pylabhub::broker::KnownRole kr;
+                kr.name = uid;
+                kr.uid = uid;
+                kr.role = "producer";
+                kr.pubkey_z85 = pub;
+                idx.add_local_role(kr);
+            };
+            add_role(alice_uid, alice_pub);
+            add_role(bob_uid, bob_pub);
+            idx.add_federation_peer(peer_uid, peer_pub, "peer-hub");
+
+            const auto alice = AttestedKey::from_transport(domain, alice_pub);
+            const auto peer = AttestedKey::from_transport(domain, peer_pub);
+            const auto stranger = AttestedKey::from_transport(domain, stranger_pub);
+            ASSERT_TRUE(alice && peer && stranger);
+
+            // Honest registration.
+            EXPECT_EQ(idx.check_registration_claim(alice, alice_uid, alice_pub),
+                      ClaimVerdict::accepted);
+
+            // THE ORIGINAL DEFECT: a peer holding a VALID key claiming ANOTHER
+            // role's identity.  Alice's connection, Bob's uid.  Before this
+            // work every gate accepted it.
+            EXPECT_EQ(idx.check_registration_claim(alice, bob_uid, alice_pub),
+                      ClaimVerdict::identity_mismatch);
+
+            // Announcing someone else's key while connected as alice.
+            EXPECT_EQ(idx.check_registration_claim(alice, alice_uid, bob_pub),
+                      ClaimVerdict::pubkey_mismatch);
+
+            // A federation peer may not register as a role.  It is refused on
+            // KIND — note it claims its own uid, so a uid comparison alone
+            // would have accepted this.
+            EXPECT_EQ(idx.check_registration_claim(peer, peer_uid, peer_pub),
+                      ClaimVerdict::kind_not_permitted);
+
+            // Attested, but this hub has no record of the key.
+            EXPECT_EQ(idx.check_registration_claim(stranger, alice_uid, stranger_pub),
+                      ClaimVerdict::unknown_key);
+
+            // No attestation at all — registration requires proof.
+            EXPECT_EQ(idx.check_registration_claim(std::nullopt, alice_uid, alice_pub),
+                      ClaimVerdict::no_attestation);
+        },
+        "zap_router::claim_check_covers_every_verdict", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
 int index_resolves_attested_keys(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
@@ -279,7 +356,6 @@ int index_resolves_attested_keys(const char * /*tmpdir*/)
             kr.pubkey_z85 = role_pub;
             idx.add_local_role(kr);
             idx.add_federation_peer("hub.peer.uid00000002", peer_pub, "peer-hub");
-            idx.finalize();
 
             // A local role resolves to its own subject, tagged LocalRole —
             // the kind is what stops a peer registering as a role.
@@ -298,10 +374,21 @@ int index_resolves_attested_keys(const char * /*tmpdir*/)
             // looking at mid-flight config change or a broken gate.
             EXPECT_FALSE(idx.resolve(*stranger_att).has_value());
 
-            // The seal is the immutability contract, enforced rather than
-            // documented: the index is read concurrently from message paths.
-            EXPECT_TRUE(idx.sealed());
-            EXPECT_THROW(idx.add_local_role(kr), std::runtime_error);
+            // Immutability after publication is enforced by `const`, not by
+            // a runtime flag: a published snapshot is
+            // `shared_ptr<const PubkeyOriginIndex>`, so `add_*` is simply
+            // not reachable through it.  Reload replaces the snapshot rather
+            // than editing it — the allowlist this index projects into is
+            // itself hot-swappable (HEP-CORE-0035 §4.8.5), so an index that
+            // could not be replaced would drift out of step with it.
+            const auto published =
+                std::make_shared<const PubkeyOriginIndex>(std::move(idx));
+            EXPECT_TRUE(published->resolve(*role_att).has_value());
+            static_assert(
+                !std::is_invocable_v<decltype(&PubkeyOriginIndex::add_local_role),
+                                     const PubkeyOriginIndex &,
+                                     const pylabhub::broker::KnownRole &>,
+                "a published (const) index must not expose a mutator");
         },
         "zap_router::index_resolves_attested_keys", Logger::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule(),
@@ -1379,6 +1466,8 @@ int dispatch_zap_router(int argc, char **argv)
 
     if (scenario == "handshake_accept_deny_cycle")
         return handshake_accept_deny_cycle(tmpdir);
+    if (scenario == "claim_check_covers_every_verdict")
+        return claim_check_covers_every_verdict(tmpdir);
     if (scenario == "index_resolves_attested_keys")
         return index_resolves_attested_keys(tmpdir);
     if (scenario == "attestation_matches_real_handshake")

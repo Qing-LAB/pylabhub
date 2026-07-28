@@ -27,12 +27,6 @@ const char *kind_label(PubkeyOrigin::Kind k) noexcept
 
 void PubkeyOriginIndex::insert_(std::string pubkey_z85, PubkeyOrigin origin)
 {
-    // Sealed after the owner's build step — see the immutability contract.
-    // Throwing here turns "someone mutated a live index" from a silent data
-    // race into a loud, deterministic failure at the offending call site.
-    if (sealed_)
-        throw std::runtime_error("PubkeyOriginIndex: add after finalize() — the index is "
-                                 "read-only once published to readers");
     if (pubkey_z85.size() != kZ85PubkeyChars)
     {
         throw std::runtime_error("pubkey origin index: " + std::string(kind_label(origin.kind)) +
@@ -83,7 +77,7 @@ void PubkeyOriginIndex::add_federation_peer(std::string_view peer_uid,
 std::optional<PubkeyOrigin> PubkeyOriginIndex::resolve(const AttestedKey &attested) const
 {
     const std::string_view pubkey_z85 = attested.key().view();
-    const auto it = by_pubkey_.find(std::string(pubkey_z85));
+    const auto it = by_pubkey_.find(pubkey_z85);
     if (it == by_pubkey_.end())
         return std::nullopt;
     return it->second;
@@ -111,6 +105,63 @@ std::vector<std::string> PubkeyOriginIndex::local_role_pubkeys() const
     // for no reason.
     std::sort(out.begin(), out.end());
     return out;
+}
+
+} // namespace pylabhub::utils::security
+
+namespace pylabhub::utils::security
+{
+
+std::string_view to_string(ClaimVerdict v) noexcept
+{
+    switch (v)
+    {
+    case ClaimVerdict::accepted:
+        return "accepted";
+    case ClaimVerdict::no_attestation:
+        return "no_attestation";
+    case ClaimVerdict::unknown_key:
+        return "unknown_key";
+    case ClaimVerdict::identity_mismatch:
+        return "identity_mismatch";
+    case ClaimVerdict::pubkey_mismatch:
+        return "pubkey_mismatch";
+    case ClaimVerdict::kind_not_permitted:
+        return "kind_not_permitted";
+    }
+    return "unknown";
+}
+
+ClaimVerdict PubkeyOriginIndex::check_registration_claim(
+    const std::optional<AttestedKey> &attested, std::string_view claimed_uid,
+    std::string_view announced_pubkey) const
+{
+    // Registration requires proof.  A connection that produced no
+    // attestation reached us without an enforced handshake, so there is
+    // nothing to check the claim against.
+    if (!attested.has_value())
+        return ClaimVerdict::no_attestation;
+
+    // The body's declared key must agree with what the transport proved.
+    // This is what makes the declaration a cross-check rather than
+    // decoration: it can only ever deny.
+    if (announced_pubkey != attested->key().view())
+        return ClaimVerdict::pubkey_mismatch;
+
+    const auto origin = resolve(*attested);
+    if (!origin.has_value())
+        return ClaimVerdict::unknown_key;
+
+    // Kind before uid, deliberately.  A federation peer whose subject_uid
+    // coincided with a role's would pass a uid comparison; only the kind
+    // test refuses it.
+    if (origin->kind != PubkeyOrigin::Kind::LocalRole)
+        return ClaimVerdict::kind_not_permitted;
+
+    if (claimed_uid != origin->subject_uid)
+        return ClaimVerdict::identity_mismatch;
+
+    return ClaimVerdict::accepted;
 }
 
 } // namespace pylabhub::utils::security

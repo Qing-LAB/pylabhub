@@ -819,6 +819,30 @@ for itself, and no signature carries a bare verified key.
 *Violated by:* a `resolve()` call outside ingress; a `verified_key`
 parameter. *Dropped it becomes:* identity policy duplicated per call site.
 
+**I-INDEX-IS-A-REPLACEABLE-IMMUTABLE-SNAPSHOT.** A published index is never
+mutated; a roster change builds a new one and swaps it atomically. Both
+halves are required and neither is optional:
+
+*Immutable*, because the index is read concurrently from message paths and
+carries no lock. Enforced by `const` — readers hold
+`shared_ptr<const PubkeyOriginIndex>`, so a mutator is not reachable, at
+compile time rather than by a runtime check.
+
+*Replaceable*, because the operator roster **does** change during hub
+lifetime, and the CTRL allowlist this index projects into is already an
+atomically-swapped snapshot (HEP-CORE-0035 §4.8.5). An index that could not
+be replaced would drift out of step with the allowlist it feeds — a revoked
+role still resolving to a valid principal while ZAP had begun denying it.
+Divergence between those two views is exactly what collapsing five
+projections into one index exists to prevent, so a design that reintroduced
+it would defeat its own purpose.
+
+*Violated by:* any mutator call on a published index; any design that makes
+the index unreplaceable. A first implementation used a `finalize()` seal
+that threw on later mutation — worse in both directions, since it checked at
+runtime what `const` checks at compile time, and it forbade the reload the
+surrounding design requires.
+
 **I-ONE-ORIGIN-INDEX-PER-PROCESS.** Exactly one structure answers "what
 does this key mean here," and every consumer — ZAP allowlist, admission
 gates, inbox attribution — is a *projection* of it, never a second

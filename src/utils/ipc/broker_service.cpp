@@ -410,7 +410,33 @@ class BrokerServiceImpl
     /// Before this existed the same roster was re-derived independently
     /// at three call sites; three copies of one identity mapping is a
     /// security defect waiting for the copies to disagree.
-    pylabhub::utils::security::PubkeyOriginIndex pubkey_index;
+    /// The one key->subject index, held as a REPLACEABLE IMMUTABLE SNAPSHOT.
+    ///
+    /// Readers take `pubkey_index()` and hold a `shared_ptr<const>` that
+    /// cannot change under them; a roster reload builds a fresh index and
+    /// swaps the pointer, and in-flight readers drain on their old snapshot.
+    /// Same shape as `BrokerCtrlAdmission`'s allowlist, deliberately: the
+    /// allowlist is a PROJECTION of this index, so the two must be able to
+    /// move together or a revoked role could still resolve to a valid
+    /// principal while ZAP had already begun denying it.
+    pylabhub::utils::detail::PortableAtomicSharedPtr<const pylabhub::utils::security::PubkeyOriginIndex>
+        pubkey_index_snapshot;
+
+    /// Current snapshot.  Never null after construction.
+    [[nodiscard]] std::shared_ptr<const pylabhub::utils::security::PubkeyOriginIndex>
+    pubkey_index() const
+    {
+        return pubkey_index_snapshot.load();
+    }
+
+    /// Install a rebuilt index.  The caller builds a complete new index;
+    /// there is deliberately no way to edit the published one.
+    void publish_pubkey_index(pylabhub::utils::security::PubkeyOriginIndex built)
+    {
+        pubkey_index_snapshot.store(
+            std::make_shared<const pylabhub::utils::security::PubkeyOriginIndex>(
+                std::move(built)));
+    }
 
     /// HEP-CORE-0033 §8 state aggregate.  Sole owner of channel / role /
     /// band / peer / shm / counter state; updated only via the broker's
@@ -995,7 +1021,7 @@ void BrokerServiceImpl::run()
     // may register, and federation peer hubs that may dial this
     // broker's ROUTER (HEP-CORE-0022).  An empty allowlist is the legal
     // deny-all bootstrap state per HEP-CORE-0035 §4.8.4.
-    pylabhub::utils::security::PeerAllowlist initial = pubkey_index.as_peer_allowlist();
+    pylabhub::utils::security::PeerAllowlist initial = pubkey_index()->as_peer_allowlist();
     const auto allowlist_size = initial.peers.size();
 
     // The ZAP domain MUST be unique per BrokerService instance.  Two
@@ -2764,7 +2790,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
         // index existed the roster read `cfg.known_roles` directly and peers
         // lived in `cfg.peers`; the two could never have mixed.
         nlohmann::json roster = nlohmann::json::array();
-        for (auto &pubkey : pubkey_index.local_role_pubkeys())
+        for (auto &pubkey : pubkey_index()->local_role_pubkeys())
             roster.push_back(std::move(pubkey));
         resp["known_roles"] = std::move(roster);
     }
@@ -3927,7 +3953,7 @@ BrokerServiceImpl::handle_consumer_reg_req(const ::pylabhub::wire::WireEnvelope 
         // index existed the roster read `cfg.known_roles` directly and peers
         // lived in `cfg.peers`; the two could never have mixed.
         nlohmann::json roster = nlohmann::json::array();
-        for (auto &pubkey : pubkey_index.local_role_pubkeys())
+        for (auto &pubkey : pubkey_index()->local_role_pubkeys())
             roster.push_back(std::move(pubkey));
         resp["known_roles"] = std::move(roster);
     }
@@ -6831,8 +6857,11 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState &state)
     // skip is what this replaces — the previous inline projections
     // dropped empty-pubkey entries with no trace, so an operator whose
     // roster entry was ignored had no way to find out.
+    // Built as a local, then PUBLISHED as an immutable snapshot.  The same
+    // routine is what a roster reload re-runs: build a complete new index
+    // and swap it, never edit a published one (which `const` forbids).
     {
-        auto &index = pImpl->pubkey_index;
+        pylabhub::utils::security::PubkeyOriginIndex index;
         for (const auto &kr : pImpl->cfg.known_roles)
         {
             try
@@ -6868,6 +6897,7 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState &state)
                             peer.hub_uid, e.what());
             }
         }
+        pImpl->publish_pubkey_index(std::move(index));
     }
 
     // HEP-CORE-0046 §14.5 admission binder — bind the callbacks the
