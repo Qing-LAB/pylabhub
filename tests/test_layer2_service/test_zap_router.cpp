@@ -82,6 +82,17 @@ TEST_F(ZapRouterTest, UnknownDomain_Denies)
 // user_id, so it cannot catch a change to WHICH key ZAP reports — that
 // would silently mis-attribute every message in production while leaving
 // the refusal rules green.
+// Index resolution requires an ATTESTED key, so obtaining one means a real
+// enforced ZAP domain — hence a worker rather than a plain unit test.  The
+// test follows the design; the design was not bent to keep an older test
+// compiling.
+TEST_F(ZapRouterTest, Index_ResolvesAttestedKeys)
+{
+    auto w = SpawnWorker("zap_router.index_resolves_attested_keys",
+                         {unique_dir("index_resolves_attested_keys")});
+    ExpectWorkerOk(w);
+}
+
 TEST_F(ZapRouterTest, Attestation_MatchesRealHandshake)
 {
     auto w = SpawnWorker("zap_router.attestation_matches_real_handshake",

@@ -27,6 +27,12 @@ const char *kind_label(PubkeyOrigin::Kind k) noexcept
 
 void PubkeyOriginIndex::insert_(std::string pubkey_z85, PubkeyOrigin origin)
 {
+    // Sealed after the owner's build step — see the immutability contract.
+    // Throwing here turns "someone mutated a live index" from a silent data
+    // race into a loud, deterministic failure at the offending call site.
+    if (sealed_)
+        throw std::runtime_error("PubkeyOriginIndex: add after finalize() — the index is "
+                                 "read-only once published to readers");
     if (pubkey_z85.size() != kZ85PubkeyChars)
     {
         throw std::runtime_error("pubkey origin index: " + std::string(kind_label(origin.kind)) +
@@ -74,8 +80,9 @@ void PubkeyOriginIndex::add_federation_peer(std::string_view peer_uid,
                                                   std::string(display_name)});
 }
 
-std::optional<PubkeyOrigin> PubkeyOriginIndex::resolve(std::string_view pubkey_z85) const
+std::optional<PubkeyOrigin> PubkeyOriginIndex::resolve(const AttestedKey &attested) const
 {
+    const std::string_view pubkey_z85 = attested.key().view();
     const auto it = by_pubkey_.find(std::string(pubkey_z85));
     if (it == by_pubkey_.end())
         return std::nullopt;

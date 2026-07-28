@@ -14,6 +14,8 @@
  * RAII helper is functionally equivalent to "your main loop forgot
  * to pump" being immediately observable as a test hang.
  */
+#include "utils/role_identity_policy.hpp"
+#include "utils/security/pubkey_origin.hpp"
 #include "utils/security/attested_key.hpp"
 #include "utils/file_lock.hpp"
 #include "utils/json_config.hpp"
@@ -232,14 +234,88 @@ int unknown_domain_denies(const char * /*tmpdir*/)
         pylabhub::hub::GetZMQContextModule());
 }
 
+int index_resolves_attested_keys(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            using pylabhub::utils::security::AttestedKey;
+            using pylabhub::utils::security::PubkeyOrigin;
+            using pylabhub::utils::security::PubkeyOriginIndex;
+
+            // Resolution now requires an ATTESTED key, so these cases live
+            // here rather than in the plain index unit test: obtaining one
+            // means a real enforced ZAP domain.  That is the design working
+            // — a caller holding a bare string cannot reach resolve() at
+            // all — and the test follows the design rather than the design
+            // being bent to keep an old test compiling.
+            const std::string domain = "test.zap.index.resolve";
+            InMemoryAdmission admission;
+            PeerAllowlist al;
+            al.unrestricted = true;
+            (void)admission.set_peer_allowlist(std::move(al));
+            auto handle = ZapRouter::instance().register_domain(domain, admission);
+
+            const auto [role_pub, role_sec] = make_keypair();
+            const auto [peer_pub, peer_sec] = make_keypair();
+            const auto [stranger_pub, stranger_sec] = make_keypair();
+
+            const auto role_att = AttestedKey::from_transport(domain, role_pub);
+            const auto peer_att = AttestedKey::from_transport(domain, peer_pub);
+            const auto stranger_att = AttestedKey::from_transport(domain, stranger_pub);
+            ASSERT_TRUE(role_att && peer_att && stranger_att);
+
+            // Empty index resolves nothing — deny-all is the bootstrap state.
+            {
+                PubkeyOriginIndex empty;
+                EXPECT_FALSE(empty.resolve(*role_att).has_value());
+            }
+
+            PubkeyOriginIndex idx;
+            pylabhub::broker::KnownRole kr;
+            kr.name = "alice";
+            kr.uid = "prod.alice.uid00000001";
+            kr.role = "producer";
+            kr.pubkey_z85 = role_pub;
+            idx.add_local_role(kr);
+            idx.add_federation_peer("hub.peer.uid00000002", peer_pub, "peer-hub");
+            idx.finalize();
+
+            // A local role resolves to its own subject, tagged LocalRole —
+            // the kind is what stops a peer registering as a role.
+            const auto role_origin = idx.resolve(*role_att);
+            ASSERT_TRUE(role_origin.has_value());
+            EXPECT_EQ(role_origin->subject_uid, "prod.alice.uid00000001");
+            EXPECT_EQ(role_origin->kind, PubkeyOrigin::Kind::LocalRole);
+
+            const auto peer_origin = idx.resolve(*peer_att);
+            ASSERT_TRUE(peer_origin.has_value());
+            EXPECT_EQ(peer_origin->subject_uid, "hub.peer.uid00000002");
+            EXPECT_EQ(peer_origin->kind, PubkeyOrigin::Kind::FederationPeer);
+
+            // Attested, but unknown to this hub.  With ZAP enforcing this is
+            // unreachable on a live connection, so a caller seeing nullopt is
+            // looking at mid-flight config change or a broken gate.
+            EXPECT_FALSE(idx.resolve(*stranger_att).has_value());
+
+            // The seal is the immutability contract, enforced rather than
+            // documented: the index is read concurrently from message paths.
+            EXPECT_TRUE(idx.sealed());
+            EXPECT_THROW(idx.add_local_role(kr), std::runtime_error);
+        },
+        "zap_router::index_resolves_attested_keys", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
 int attestation_matches_real_handshake(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]()
         {
-            using pylabhub::utils::security::attest_from_transport;
+            using pylabhub::utils::security::AttestedKey;
 
-            // The gate-logic test feeds attest_from_transport a synthetic
+            // The gate-logic test feeds from_transport a synthetic
             // user_id.  That pins the refusal rules but proves nothing
             // about the value a REAL handshake produces — which is the
             // whole point of the mechanism.  This drives an actual CURVE
@@ -272,10 +348,10 @@ int attestation_matches_real_handshake(const char * /*tmpdir*/)
             // key — the key whose SECRET the peer just proved possession
             // of.  Not the server's, not the routing id, not anything the
             // client typed into a payload.
-            const auto att = attest_from_transport(domain, client_pub);
+            const auto att = AttestedKey::from_transport(domain, client_pub);
             ASSERT_TRUE(att.has_value());
-            EXPECT_EQ(att->z85(), client_pub);
-            EXPECT_NE(att->z85(), server_pub)
+            EXPECT_EQ(att->key().view(), client_pub);
+            EXPECT_NE(att->key().view(), server_pub)
                 << "attested the wrong side of the handshake";
         },
         "zap_router::attestation_matches_real_handshake", Logger::GetLifecycleModule(),
@@ -288,7 +364,7 @@ int attestation_requires_enforced_domain(const char * /*tmpdir*/)
     return run_gtest_worker(
         [&]()
         {
-            using pylabhub::utils::security::attest_from_transport;
+            using pylabhub::utils::security::AttestedKey;
 
             // A well-formed 40-char Z85 value, shaped exactly like what our
             // own ZAP handler emits as `user_id`.  The point of the test is
@@ -301,7 +377,7 @@ int attestation_requires_enforced_domain(const char * /*tmpdir*/)
             //    actually reach — libzmq lets a client send its own ZMTP
             //    metadata property named "User-Id", and it is only shadowed
             //    where ZAP properties exist to shadow it.
-            EXPECT_FALSE(attest_from_transport("test.zap.attest.domain", peer_pub).has_value())
+            EXPECT_FALSE(AttestedKey::from_transport("test.zap.attest.domain", peer_pub).has_value())
                 << "attested on a domain nobody is enforcing — an unvouched "
                    "value would have been dressed up as proof";
 
@@ -313,26 +389,26 @@ int attestation_requires_enforced_domain(const char * /*tmpdir*/)
                 ZapRouter::instance().register_domain("test.zap.attest.domain", admission);
 
             // 2. Enforced domain + the value ZAP would have set: attests.
-            const auto ok = attest_from_transport("test.zap.attest.domain", peer_pub);
+            const auto ok = AttestedKey::from_transport("test.zap.attest.domain", peer_pub);
             ASSERT_TRUE(ok.has_value()) << "enforced domain with a well-formed key did not attest";
-            EXPECT_EQ(ok->z85(), peer_pub);
+            EXPECT_EQ(ok->key().view(), peer_pub);
             EXPECT_EQ(ok->as_peer_identity().data, peer_pub);
 
             // 3. A DIFFERENT domain is still unenforced — enforcement is
             //    per-domain, not global.  Registering one domain must not
             //    make every socket look vouched for.
-            EXPECT_FALSE(attest_from_transport("test.zap.some.other", peer_pub).has_value());
+            EXPECT_FALSE(AttestedKey::from_transport("test.zap.some.other", peer_pub).has_value());
 
             // 4. NULL-mechanism connection: no User-Id at all.  Legitimate
             //    state (in-process harnesses, non-CURVE transports), not an
             //    error — absence is reported, never invented.
-            EXPECT_FALSE(attest_from_transport("test.zap.attest.domain", "").has_value());
+            EXPECT_FALSE(AttestedKey::from_transport("test.zap.attest.domain", "").has_value());
 
             // 5. Malformed length: not a value this ZAP handler produces.
-            EXPECT_FALSE(attest_from_transport("test.zap.attest.domain", "too-short").has_value());
+            EXPECT_FALSE(AttestedKey::from_transport("test.zap.attest.domain", "too-short").has_value());
 
             // 6. Empty domain — a socket with no ZAP domain set at all.
-            EXPECT_FALSE(attest_from_transport("", peer_pub).has_value());
+            EXPECT_FALSE(AttestedKey::from_transport("", peer_pub).has_value());
         },
         "zap_router::attestation_requires_enforced_domain", Logger::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule(),
@@ -1303,6 +1379,8 @@ int dispatch_zap_router(int argc, char **argv)
 
     if (scenario == "handshake_accept_deny_cycle")
         return handshake_accept_deny_cycle(tmpdir);
+    if (scenario == "index_resolves_attested_keys")
+        return index_resolves_attested_keys(tmpdir);
     if (scenario == "attestation_matches_real_handshake")
         return attestation_matches_real_handshake(tmpdir);
     if (scenario == "attestation_requires_enforced_domain")

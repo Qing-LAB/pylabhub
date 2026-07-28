@@ -12,6 +12,7 @@
  *   - `pylabhub::utils::Logger`   — for LOG_INFO/WARN/ERROR
  *   - `ZMQContext`                — for the shared `zmq::context_t`
  */
+#include "utils/security/curve_keypair.hpp"
 #include "utils/security/attested_key.hpp"
 #include "utils/security/zap_router.hpp"
 
@@ -360,8 +361,8 @@ bool ZapRouter::is_domain_enforced(std::string_view domain) const
     return impl_->routing.contains(domain);
 }
 
-std::optional<AttestedKey> attest_from_transport(std::string_view zap_domain,
-                                                 std::string_view transport_user_id)
+std::optional<AttestedKey> AttestedKey::from_transport(std::string_view zap_domain,
+                                                      std::string_view transport_user_id)
 {
     // No enforcement on this socket => nothing here was vouched for by us.
     // A `User-Id` may still be PRESENT (a peer can send a ZMTP metadata
@@ -375,17 +376,21 @@ std::optional<AttestedKey> attest_from_transport(std::string_view zap_domain,
     if (transport_user_id.empty())
         return std::nullopt;
 
-    // Our ZAP reply always carries a 40-char Z85 key (see pump_one's
-    // send_zap_reply).  Anything else did not come from us.
-    if (transport_user_id.size() != 40)
+    // Our ZAP reply always carries a well-formed Z85 key (see pump_one's
+    // send_zap_reply).  Validation is delegated to Z85PublicKey rather
+    // than re-checked here: it is the project's validated representation
+    // and it checks the Z85 ALPHABET, not just the length.
+    try
     {
-        LOGGER_WARN("ZapRouter::attest_from_transport: domain='{}' user_id length {} != 40 — "
-                    "refusing to attest (not a value this ZAP handler produced)",
-                    zap_domain, transport_user_id.size());
+        return AttestedKey(Z85PublicKey::validate(transport_user_id));
+    }
+    catch (const std::invalid_argument &e)
+    {
+        LOGGER_WARN("AttestedKey::from_transport: domain='{}' user_id is not a valid Z85 key "
+                    "({}) — refusing to attest; this is not a value this ZAP handler produced",
+                    zap_domain, e.what());
         return std::nullopt;
     }
-
-    return AttestedKey(std::string(transport_user_id));
 }
 
 bool ZapRouter::pump_one(std::chrono::milliseconds timeout)

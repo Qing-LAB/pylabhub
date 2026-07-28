@@ -33,6 +33,7 @@
  * and §2 for the invariants it exists to enforce.
  */
 #include "pylabhub_utils_export.h"
+#include "utils/security/attested_key.hpp"
 #include "utils/security/peer_admission.hpp"
 
 #include <cstddef>
@@ -85,12 +86,26 @@ struct PYLABHUB_UTILS_EXPORT PubkeyOrigin
 /// catches the case that store cannot see — a role and a federation peer
 /// configured with the same key — because it is the first place both
 /// categories meet.
+/// **Immutability contract.**  This index is populated once, during
+/// construction of whatever owns it, and thereafter read — concurrently —
+/// from message-handling paths.  It carries no lock, so mutating it after
+/// it is visible to readers is a data race.
+///
+/// That rule is not left to convention: `finalize()` marks the index
+/// read-only, after which any further `add_*` call throws instead of
+/// corrupting a live reader.  Owners call it at the end of their build
+/// step.  A structure whose correct use is "populate, then never touch"
+/// should say so in a way the program can check, rather than in a comment
+/// a future caller may not read.
 class PYLABHUB_UTILS_EXPORT PubkeyOriginIndex
 {
   public:
     /// Register a local role's key.
     /// @throws std::runtime_error if the key is already registered to a
     ///         different subject, or is not a 40-char Z85 key.
+    /// Build-time only.  See the immutability note on this class: the
+    /// index is populated once and then read concurrently from message
+    /// paths, so mutation after publication is a data race.
     void add_local_role(const ::pylabhub::broker::KnownRole &role);
 
     /// Register a federation peer hub's key.
@@ -99,7 +114,14 @@ class PYLABHUB_UTILS_EXPORT PubkeyOriginIndex
     void add_federation_peer(std::string_view peer_uid, std::string_view pubkey_z85,
                              std::string_view display_name = {});
 
-    /// Resolve a verified key to its subject.
+    /// Resolve an ATTESTED key to its subject.
+    ///
+    /// Takes an `AttestedKey` and not a string, deliberately.  A caller
+    /// holding a key that merely arrived in a request body has nothing to
+    /// pass here, so laundering a claim into an identity fails to COMPILE
+    /// rather than silently succeeding.  That is the entire point of the
+    /// surrounding mechanism, and a `string_view` overload would hand it
+    /// straight back — do not add one.
     ///
     /// `std::nullopt` means the hub has no record of this key.  With
     /// Layer-1 ZAP enforcing, that is unreachable on an established
@@ -107,7 +129,7 @@ class PYLABHUB_UTILS_EXPORT PubkeyOriginIndex
     /// caller seeing `nullopt` is looking at either a configuration
     /// change mid-flight or a gate that is not doing its job.  Treat it
     /// as a rejection AND as something worth logging loudly.
-    [[nodiscard]] std::optional<PubkeyOrigin> resolve(std::string_view pubkey_z85) const;
+    [[nodiscard]] std::optional<PubkeyOrigin> resolve(const AttestedKey &attested) const;
 
     /// The ZAP layer's view of this index: every known key as a
     /// `{"curve", key}` identity.
@@ -128,6 +150,13 @@ class PYLABHUB_UTILS_EXPORT PubkeyOriginIndex
     /// place instead of relying on each call site to filter correctly.
     [[nodiscard]] std::vector<std::string> local_role_pubkeys() const;
 
+    /// Seal the index: no further `add_*` is permitted.  Idempotent.
+    /// Call at the end of the owner's build step, before the index can be
+    /// reached by any reader.
+    void finalize() noexcept { sealed_ = true; }
+
+    [[nodiscard]] bool sealed() const noexcept { return sealed_; }
+
     [[nodiscard]] std::size_t size() const noexcept { return by_pubkey_.size(); }
     [[nodiscard]] bool empty() const noexcept { return by_pubkey_.empty(); }
 
@@ -135,6 +164,9 @@ class PYLABHUB_UTILS_EXPORT PubkeyOriginIndex
     void insert_(std::string pubkey_z85, PubkeyOrigin origin);
 
     std::unordered_map<std::string, PubkeyOrigin> by_pubkey_;
+
+    /// Set by finalize(); see the immutability contract on this class.
+    bool sealed_{false};
 };
 
 } // namespace pylabhub::utils::security

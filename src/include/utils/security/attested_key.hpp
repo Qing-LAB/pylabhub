@@ -2,7 +2,7 @@
 /**
  * @file attested_key.hpp
  * @brief `AttestedKey` — a CURVE public key the transport VOUCHED for,
- *        and the one function permitted to mint one.
+ *        and the one factory permitted to mint one.
  *
  * **A public key is never trusted; an attestation is.**  A public key is
  * published — it crosses the wire in every handshake, sits in operator
@@ -38,12 +38,13 @@
  *     with no enforced domain, a client-supplied `User-Id` lands unopposed.
  *
  * Minting anywhere else would therefore produce an `AttestedKey` whose name
- * is a lie.  `attest_from_transport()` refuses unless the domain is
+ * is a lie.  `AttestedKey::from_transport()` refuses unless the domain is
  * registered with the live `ZapRouter`.
  *
  * See HEP-CORE-0035 §4.2 and the design draft §3 / §5b.
  */
 #include "pylabhub_utils_export.h"
+#include "utils/security/curve_keypair.hpp"
 #include "utils/security/peer_admission.hpp"
 
 #include <optional>
@@ -56,43 +57,61 @@ namespace pylabhub::utils::security
 class PYLABHUB_UTILS_EXPORT AttestedKey
 {
   public:
-    /// The Z85 public key the transport attested (40 chars).
-    [[nodiscard]] std::string_view z85() const noexcept { return key_; }
+    /// Mint an attestation for one inbound message, or refuse.
+    ///
+    /// The ONLY way to obtain an `AttestedKey`.  A private constructor plus
+    /// this single checked factory is what makes the type's name true:
+    /// there is no path to an instance that skipped the check.
+    ///
+    /// @param zap_domain        the receiving socket's `ZMQ_ZAP_DOMAIN`.
+    /// @param transport_user_id the `User-Id` metadata libzmq attached to
+    ///                          the message, or empty when the connection
+    ///                          carried no security mechanism.
+    ///
+    /// Returns `nullopt` — "nothing was attested here" — when:
+    ///   - @p zap_domain is empty or is not registered with the live
+    ///     `ZapRouter`, meaning no enforcement ran, so any `User-Id`
+    ///     present is unvouched and must not be dressed up as proof;
+    ///   - @p transport_user_id is empty (NULL-mechanism connection:
+    ///     in-process harnesses, non-CURVE transports);
+    ///   - the value is not a well-formed Z85 key (delegated to
+///     `Z85PublicKey::validate`, which checks the ALPHABET and not
+///     merely the length — a length-only check was the gap that made
+///     this type worth revisiting).
+    ///
+    /// Absence is a legitimate state, not an error.  Planes that require an
+    /// attestation reject on absence; planes that do not, proceed.
+    [[nodiscard]] static std::optional<AttestedKey>
+    from_transport(std::string_view zap_domain, std::string_view transport_user_id);
+
+    /// The public key the transport attested.
+    ///
+    /// Held as `Z85PublicKey`, not a raw string: that type is the
+    /// project's validated CURVE-pubkey representation (HEP-CORE-0040
+    /// §8.4), so an `AttestedKey` cannot hold 40 bytes of arbitrary
+    /// rubbish that merely happen to be the right length.
+    [[nodiscard]] const Z85PublicKey &key() const noexcept { return key_; }
 
     /// Projection for admission APIs that speak `PeerIdentity`.
-    [[nodiscard]] PeerIdentity as_peer_identity() const { return PeerIdentity{"curve", key_}; }
+    [[nodiscard]] PeerIdentity as_peer_identity() const
+    {
+        return PeerIdentity{"curve", key_.str()};
+    }
 
   private:
-    // Ingress-only construction.  Do NOT add a public constructor, and do
-    // NOT add a factory taking a bare string: either would reopen the hole
-    // this type exists to close.
-    friend PYLABHUB_UTILS_EXPORT std::optional<AttestedKey>
-    attest_from_transport(std::string_view zap_domain, std::string_view transport_user_id);
+    // Construction is private and `from_transport` is the only factory, so
+    // an instance cannot exist without having passed the enforcement check.
+    // Do NOT add a public constructor and do NOT add a second factory
+    // taking a bare string: either reopens the hole this type closes.
+    //
+    // Note there is deliberately no `friend` here.  An earlier draft put
+    // the factory outside the class as a free function, which then needed
+    // friendship to reach this constructor — encapsulation weakened to
+    // accommodate an arbitrary placement choice.  The factory belongs with
+    // the type it constructs.
+    explicit AttestedKey(Z85PublicKey key) noexcept : key_(std::move(key)) {}
 
-    explicit AttestedKey(std::string key) noexcept : key_(std::move(key)) {}
-
-    std::string key_;
+    Z85PublicKey key_;
 };
-
-/// Mint an attestation for one inbound message, or refuse.
-///
-/// @param zap_domain          the receiving socket's `ZMQ_ZAP_DOMAIN`,
-///                            resolved once when the socket was bound.
-/// @param transport_user_id   the `User-Id` metadata libzmq attached to the
-///                            message, or empty if the connection carried
-///                            no security mechanism.
-///
-/// Returns `nullopt` — meaning "nothing was attested here" — when:
-///   - @p zap_domain is empty or is not registered with the live
-///     `ZapRouter` (no enforcement ran, so any `User-Id` present is
-///     unvouched and MUST NOT be dressed up as proof);
-///   - @p transport_user_id is empty (NULL-mechanism connection: in-process
-///     harnesses, non-CURVE transports);
-///   - the value is not a well-formed 40-character Z85 key.
-///
-/// Absence is a legitimate state, not an error.  Planes that require an
-/// attestation reject on absence; planes that do not, proceed.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<AttestedKey>
-attest_from_transport(std::string_view zap_domain, std::string_view transport_user_id);
 
 } // namespace pylabhub::utils::security
