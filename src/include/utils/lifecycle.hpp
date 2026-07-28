@@ -45,7 +45,8 @@
  * lifecycle. This is best done with the `LifecycleGuard` RAII helper.
  *
  * ```cpp
- * #include "utils/lifecycle.hpp"
+ * #include <string_view>
+#include "utils/lifecycle.hpp"
  * #include "utils/logger.hpp"
  * #include "utils/file_lock.hpp"
  *
@@ -153,6 +154,54 @@ enum class DynModuleState : int
  * modules. It is implemented as a singleton to provide global access. Like
  * `ModuleDef`, it uses the Pimpl idiom to ensure ABI stability.
  */
+/**
+ * @brief Record one step of the calling module's shutdown into the
+ *        lifecycle's narration pool.
+ *
+ * **Shutdown callbacks should call this as they go, not summarise at the
+ * end.**  A callback that overruns its deadline has its worker thread
+ * detached and may never return at all, so anything it was saving up to
+ * report is lost exactly when it is most wanted.  Text written here is
+ * secured the moment it is written.
+ *
+ * That matters even if nothing ever prints it.  The end-of-phase dump only
+ * runs if the phase finishes; a process killed mid-teardown (a test harness
+ * timeout, an operator's SIGTERM) never reaches it.  But the pool is a
+ * never-destroyed global at a fixed address, so whatever was narrated up to
+ * the instant of death is still recoverable from a debugger or a core file.
+ * A module that logged "draining queue" and nothing after did not merely
+ * hang — it hung while draining the queue.
+ *
+ * Safe to call from any thread and from any point in teardown: it never
+ * allocates, never throws, and does not depend on the logger (which is
+ * itself a module being shut down).
+ *
+ * **Format contract.**  Every entry is one newline-terminated line; if @p step
+ * does not end in a newline one is appended, so a caller who forgets cannot
+ * run two records together into a single unparseable line.  The framework
+ * stamps the calling thread's id — the one piece of context a caller cannot
+ * cheaply obtain, and the one needed to demultiplex interleaved writers.
+ *
+ * **Everything else is the caller's responsibility.**  Identity — task, module,
+ * request id, source — must be stated by @p step itself.  The framework does
+ * not guess at identity it does not own.  Follow the project log convention
+ * (`event=<Verb> key='value'`, see `docs/IMPLEMENTATION_GUIDANCE.md`) so trace
+ * lines stay greppable alongside ordinary log output.
+ *
+ * **This is NOT a logging call.**  It belongs on shutdown / exit / panic
+ * paths only — information that an abnormal exit would otherwise destroy.
+ * Ordinary runtime information goes to the logger, which has levels, sinks,
+ * rotation and filtering; this has none of those and must not grow them.
+ * Every unrelated writer dilutes the one thing the buffer is for: fill it
+ * with general progress messages and it stops being a last-resort record,
+ * becoming an unfiltered log that merely happens to survive a crash.
+ *
+ * Capacity is capped; overflow is counted and reported rather than
+ * silently dropped.  See HEP-CORE-0001 §"Lifecycle trace — the shared
+ * narration pool".
+ */
+PYLABHUB_UTILS_EXPORT void lifecycle_narrate(std::string_view step) noexcept;
+
 class PYLABHUB_UTILS_EXPORT LifecycleManager
 {
   public:

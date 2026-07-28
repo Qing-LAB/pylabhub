@@ -12,6 +12,8 @@
  * @see include/utils/lifecycle.hpp
  * @see include/utils/module_def.hpp
  */
+#include <chrono>
+#include <array>
 #include "lifecycle_impl.hpp"
 
 namespace
@@ -21,6 +23,40 @@ constexpr size_t kDebugInfoReserveBytes = 4096;
 
 namespace pylabhub::utils
 {
+namespace
+{
+/// Emit the accumulated lifecycle narrative.
+///
+/// Takes a private snapshot via `copy_out` rather than a view into the
+/// pool: detached shutdown workers may still be appending, so printing
+/// straight from the pool's storage would race them.  A pool that could
+/// not be acquired is reported as such — an unavailable trace and an empty
+/// trace mean very different things and must not look alike.
+void dump_lifecycle_trace(const lifecycle_internal::LifecycleTrace &trace)
+{
+    static thread_local std::array<char, lifecycle_internal::LifecycleTrace::kCapacity> snapshot;
+    const std::size_t n = trace.copy_out(snapshot.data(), snapshot.size());
+    if (n == 0)
+    {
+        PLH_DEBUG("[PLH_LifeCycle] lifecycle trace unavailable (pool busy or empty)");
+        return;
+    }
+    const std::string_view text(snapshot.data(), n);
+    if (trace.had_anomaly())
+    {
+        // Teardown misbehaved.  Go straight to stderr rather than through
+        // PLH_DEBUG, which is compiled out of every non-Debug build — the
+        // reason a hung Release process previously died without a word.
+        fmt::print(stderr, "{}", text);
+        if (const auto lost = trace.dropped(); lost.value_or(0) > 0)
+            fmt::print(stderr, "[PLH_LifeCycle] ... trace truncated: {} byte(s) dropped\n", *lost);
+        std::fflush(stderr);
+        return;
+    }
+    PLH_DEBUG("{}", text);
+}
+} // namespace
+
 using lifecycle_internal::ShutdownOutcome;
 using lifecycle_internal::timedShutdown;
 using lifecycle_internal::validate_module_name;
@@ -314,8 +350,10 @@ void LifecycleManagerImpl::initialize(std::source_location loc)
     {
         return;
     }
-    std::string debug_info;
-    debug_info.reserve(kDebugInfoReserveBytes);
+    // Narrate into the process-wide pool, not a local string: a wedge in
+    // this phase must not take the record of how far it got with it.
+    auto &debug_info = lifecycle_internal::lifecycle_trace();
+    debug_info.clear();
 
     debug_info += fmt::format("[PLH_LifeCycle] [{}]:PID[{}]\n"
                               "     **** initialize() triggered from {} ({}:{})\n"
@@ -359,21 +397,21 @@ void LifecycleManagerImpl::initialize(std::source_location loc)
         catch (const std::exception &e)
         {
             mod->status.store(ModuleStatus::Failed, std::memory_order_release);
-            PLH_DEBUG("{}", debug_info);
+            dump_lifecycle_trace(debug_info);
             printStatusAndAbort("\n     **** Exception during startup: " + std::string(e.what()),
                                 mod->name);
-            debug_info = "";
+            debug_info.clear();
         }
         catch (...)
         {
             mod->status.store(ModuleStatus::Failed, std::memory_order_release);
-            PLH_DEBUG("{}", debug_info);
+            dump_lifecycle_trace(debug_info);
             printStatusAndAbort("\n     **** Unknown exception during startup.", mod->name);
-            debug_info = "";
+            debug_info.clear();
         }
     }
     debug_info += "     -> Application_initialization complete.\n";
-    PLH_DEBUG("{}", debug_info);
+    dump_lifecycle_trace(debug_info);
 }
 
 /**
@@ -396,8 +434,15 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
         return;
     }
 
-    std::string debug_info;
-    debug_info.reserve(kDebugInfoReserveBytes);
+    // Narrate into the process-wide pool, not a local string: a wedge in
+    // this phase must not take the record of how far it got with it.
+    auto &debug_info = lifecycle_internal::lifecycle_trace();
+    // NOTE: deliberately NOT cleared here.  An asynchronous unload can
+    // time out and detach its worker BEFORE finalize() is entered; clearing
+    // at this point would erase that record — and reset the anomaly flag —
+    // destroying exactly the evidence this phase exists to report.  The
+    // pool is capped and reports its own truncation, so accumulating
+    // startup + teardown together is strictly better than dropping either.
 
     debug_info +=
         fmt::format("[PLH_LifeCycle] [{}]:PID[{}]\n"
@@ -572,7 +617,7 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
     debug_info += fmt::format("\n     --- [SYNC|Phase-2+3|thread={}] complete; application "
                               "finalization done. ---\n",
                               pylabhub::platform::get_native_thread_id());
-    PLH_DEBUG("{}", debug_info);
+    dump_lifecycle_trace(debug_info);
 }
 
 // ============================================================================
@@ -607,6 +652,45 @@ void LifecycleManagerImpl::lifecycleLog(LifecycleLogLevel level, std::string msg
 
 LifecycleManager::LifecycleManager() : pImpl(std::make_unique<LifecycleManagerImpl>()) {}
 LifecycleManager::~LifecycleManager() = default;
+void lifecycle_narrate(std::string_view step) noexcept
+{
+    // The thread id is not decoration.  One pool receives narration from the
+    // finalize thread AND from every module's shutdown worker, and a worker
+    // that was detached at its deadline keeps writing while the NEXT module
+    // tears down — so steps from different modules genuinely interleave.
+    // Without the writer's identity those lines cannot be attributed, and an
+    // interleaved pool is worse than no pool: it invites a wrong conclusion.
+    // The worker's ENTER line carries the same id, which is what binds a
+    // thread to the module it is tearing down.
+    // Line integrity is the framework's guarantee, identity is the caller's.
+    // We stamp only the thread id — the one thing the caller cannot cheaply
+    // know and the one thing needed to demultiplex interleaved writers — and
+    // we guarantee the entry is newline-terminated so a caller who forgets
+    // cannot run two records together into one unparseable line.  WHAT the
+    // step refers to (task, module, request id, source) is the caller's to
+    // state: the framework must not guess at identity it does not own.
+    // Monotonic, not wall-clock: this exists to order events during a
+    // teardown, and steady_clock cannot be dragged backwards by an NTP step
+    // mid-shutdown.  Raw microseconds, no formatting — cheap enough to be
+    // safe on a path where the allocator's state is already suspect.
+    const auto now_us = static_cast<unsigned long long>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+    char line[320];
+    auto res = fmt::format_to_n(line, sizeof(line),
+                                "[trace|t{}|{}us] event=ShutdownStep step='{}'",
+                                pylabhub::platform::get_native_thread_id(), now_us, step);
+    std::size_t n = res.size < sizeof(line) ? res.size : sizeof(line);
+    if (n == 0 || line[n - 1] != '\n')
+    {
+        if (n == sizeof(line))
+            n = sizeof(line) - 1; // make room rather than drop the terminator
+        line[n++] = '\n';
+    }
+    lifecycle_internal::lifecycle_trace() += std::string_view(line, n);
+}
+
 LifecycleManager &LifecycleManager::instance()
 {
     static LifecycleManager instance;

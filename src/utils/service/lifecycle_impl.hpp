@@ -10,11 +10,15 @@
  */
 #include "utils/lifecycle.hpp"
 #include "utils/module_def.hpp"
+#include <array>              // For std::array (LifecycleTrace storage)
+#include <atomic>             // For std::atomic_flag (LifecycleTrace spinlock)
 #include <chrono>             // For std::chrono::milliseconds, steady_clock
 #include <condition_variable> // For std::condition_variable
 #include <cstdint>            // For std::uint8_t
+#include <string_view>        // For std::string_view (LifecycleTrace API)
 #include <fmt/ranges.h>       // For fmt::join on vectors
 #include <map>                // For std::map
+#include <optional>            // For std::optional (LifecycleTrace::dropped)
 #include <mutex>              // For std::mutex, std::unique_lock, std::lock_guard
 #include "portable_atomic_shared_ptr.hpp"
 #include <queue>     // For std::queue
@@ -53,7 +57,121 @@ void validate_module_name(std::string_view name, const char *param_name);
  *        Returns without blocking beyond the deadline (detaches thread on timeout).
  * @note Defined in lifecycle_helpers.cpp.
  */
-ShutdownOutcome timedShutdown(const std::function<void()> &func, std::chrono::milliseconds timeout);
+/// @param label Module name, narrated into the shared pool by the worker
+///        thread on entry and on exit.  A label that recorded an ENTER with
+///        no matching EXIT identifies the module that overran — which is
+///        the whole reason the worker narrates rather than the caller.
+ShutdownOutcome timedShutdown(const std::function<void()> &func, std::chrono::milliseconds timeout,
+                              std::string_view label);
+
+/**
+ * @brief Fixed-capacity, process-global accumulator for the lifecycle's own
+ *        startup / teardown narrative.
+ *
+ * The lifecycle narrates what it is doing (phase boundaries, per-module
+ * dispatch and outcome) and emits that narrative once, at the end of the
+ * phase.  Accumulating it in a local string made the narrative a casualty
+ * of the very failures it exists to explain: if teardown wedges partway,
+ * the end-of-phase emit never runs and everything recorded so far is
+ * destroyed with the stack frame.  The failure mode erased its own
+ * evidence.
+ *
+ * This buffer fixes that by being global, static and preallocated:
+ *
+ *   - **Static, fixed address.**  A wedged or crashed process still holds
+ *     the narrative at a known location, so it is recoverable under a
+ *     debugger or from a core file even though no code ran to print it.
+ *     A `std::string` local to `finalize()` offers nothing after the fact.
+ *   - **Preallocated.**  Appending never allocates, so recording progress
+ *     is safe on teardown paths where the allocator's state is already
+ *     suspect.
+ *   - **Independent of Logger.**  Logger is itself a module being torn
+ *     down, so it cannot be the sink for teardown diagnostics.  (This is
+ *     why `LifecycleManagerImpl::lifecycleLog` is NOT usable here: it is a
+ *     logger front-end, scoped by its own contract to runtime paths where
+ *     the logger is expected to be up.)
+ *
+ * Capacity is a hard cap, never grown.  Text that does not fit is dropped
+ * and counted, so a truncated narrative is self-declaring rather than
+ * quietly short.
+ *
+ * **This is a shared pool for the asynchronous shutdown workers, not just
+ * for `finalize()`'s own narration.**  `timedShutdown` runs each module's
+ * shutdown callback on its own thread and DETACHES that thread if the
+ * module overruns its deadline, so a slow or stuck module currently has
+ * nowhere to report from and its outcome is lost precisely when it is most
+ * interesting.  Every such worker narrates into this one pool, and the
+ * whole pool is exposed together at the end.  A module that recorded
+ * "starting" with no matching completion is then visible as exactly that —
+ * the asymmetry IS the diagnosis.
+ *
+ * **Lifetime: this object is never destroyed, deliberately.**  A detached
+ * worker may still be running — and still narrating — after `finalize()`
+ * has returned and static destruction has begun.  If the pool's lock or
+ * storage were torn down underneath such a thread, the diagnostic aid
+ * would itself become a use-after-free on the unhappy path.  Every member
+ * is therefore trivially destructible and constant-initialised: the type
+ * uses an `atomic_flag` spinlock rather than a `std::mutex` (whose
+ * destructor is not trivial), which also keeps appends usable from
+ * contexts where taking a mutex would be unwise.  There is no dynamic
+ * initialisation, so there is no static-initialisation-order hazard for
+ * early callers either.
+ */
+class LifecycleTrace
+{
+  public:
+    static constexpr std::size_t kCapacity = 64u * 1024u;
+
+    /// Append @p text, truncating at capacity.  Never throws, never
+    /// allocates.  Bytes that do not fit are counted by `dropped()`.
+    LifecycleTrace &operator+=(std::string_view text) noexcept;
+
+    /// Serialise what has accumulated so far INTO the caller's buffer,
+    /// capped at @p cap bytes; returns the number of bytes written.
+    ///
+    /// The copy happens while the pool is held, which is the whole point:
+    /// handing back a `string_view` into `buf_` would release the lock at
+    /// return and leave the caller reading live storage that a detached
+    /// worker may still be appending to — a data race dressed up as a
+    /// locked accessor.  Callers get a private snapshot instead.
+    ///
+    /// Returns 0 if the pool could not be acquired (see the bounded-spin
+    /// note on `clear()`); callers should say so rather than print an
+    /// empty trace as though it were an empty narrative.
+    [[nodiscard]] std::size_t copy_out(char *dst, std::size_t cap) const noexcept;
+
+    /// Bytes discarded because the buffer was full.  Returns `nullopt` if
+    /// the pool could not be acquired — "nothing was dropped" and "could
+    /// not find out" are different facts, and a caller that prints the
+    /// former on the strength of the latter is lying about the trace.
+    [[nodiscard]] std::optional<std::size_t> dropped() const noexcept;
+
+    /// Drop the accumulated narrative and reset the truncation counter.
+    void clear() noexcept;
+
+    /// Record that teardown did not go cleanly (a module overran its
+    /// deadline and was detached, or threw).  This is what promotes the
+    /// end-of-phase dump from a debug-only nicety to something that is
+    /// emitted unconditionally: a clean run should stay quiet, but an
+    /// accident must be able to speak in EVERY build, not just the ones
+    /// where PLH_DEBUG happens to be compiled in.
+    void mark_anomaly() noexcept;
+    [[nodiscard]] bool had_anomaly() const noexcept;
+
+  private:
+    // Trivially destructible + constant-initialisable by construction —
+    // see the lifetime note above.  Do not introduce a member that needs
+    // dynamic init or a non-trivial destructor.
+    mutable std::atomic_flag lock_ = ATOMIC_FLAG_INIT;
+    std::array<char, kCapacity> buf_{};
+    std::size_t len_{0};
+    std::size_t dropped_{0};
+    bool anomaly_{false};
+};
+
+/// The one process-global lifecycle trace.
+/// @note Defined in lifecycle_helpers.cpp.
+LifecycleTrace &lifecycle_trace() noexcept;
 
 struct InternalModuleShutdownDef
 {
@@ -219,7 +337,8 @@ class LifecycleManagerImpl
     static std::vector<InternalGraphNode *>
     topologicalSort(const std::vector<InternalGraphNode *> &nodes);
     bool loadModuleInternal(InternalGraphNode &node);
-    static void shutdownModuleWithTimeout(InternalGraphNode &mod, std::string &debug_info);
+    static void shutdownModuleWithTimeout(InternalGraphNode &mod,
+                                          lifecycle_internal::LifecycleTrace &debug_info);
     void printStatusAndAbort(const std::string &msg, const std::string &mod = "");
 
     // Routes `msg` through the installed log sink (if any) or falls back to PLH_DEBUG.

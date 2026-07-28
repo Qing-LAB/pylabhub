@@ -245,6 +245,173 @@ mods.push_back(Logger::GetStartupLogFileSinkModule(
 
 ---
 
+### Lifecycle trace — narrating teardown into the last-resort buffer
+
+**In plain terms.** Teardown is the one phase that cannot rely on the
+normal logging path: the logger is itself a module being shut down, and the
+threads doing the work may outlive the manager that started them. So the
+lifecycle keeps its own small notepad. Every part of teardown writes what
+it is doing onto that one notepad, and the notepad is read out at the end.
+If teardown goes wrong, the notepad is what tells you how far it got.
+
+**Where the notepad lives.** The buffer itself is **not owned by the
+lifecycle** — it is the process-wide last-resort trace specified in
+**HEP-CORE-0048**, and the lifecycle is its first client. That ownership
+matters: `panic()` must be able to empty the buffer, and the diagnostics
+module is low-level enough for every subsystem to depend on it, whereas
+the lifecycle is not. This section describes only how the lifecycle *uses*
+the facility; the storage rules, emission rules, scope restrictions and API
+are normative in HEP-CORE-0048.
+
+**Why a notepad rather than just logging as you go.** Two properties are
+needed that ordinary logging cannot provide here:
+
+1. **It must survive a teardown that never finishes.** The narration used
+   to accumulate in a local string that was emitted only at the end of the
+   phase. If teardown wedged partway, the string died with the stack frame
+   — the failure mode erased its own evidence. The pool is a process-global
+   static at a fixed address, so a wedged or crashed process still holds
+   the narrative where a debugger or a core file can recover it, even
+   though no code ran to print it.
+2. **The asynchronous shutdown workers need somewhere to write.** Each
+   module's shutdown callback runs on its own thread, and that thread is
+   **detached** if the module overruns its deadline. A detached worker can
+   report nothing, so the outcome of a slow module was lost exactly when it
+   mattered. Workers narrate into the shared pool instead, on entry and on
+   exit. **A module that recorded an entry with no matching exit is the
+   module that hung — the asymmetry is the diagnosis.**
+
+**Contract.** Storage, overflow, concurrency, lifetime and locking rules are
+normative in HEP-CORE-0048 §Design and are not restated here. Two of them
+shape how the lifecycle uses the buffer and are worth naming at this site:
+the buffer is never destroyed (a worker detached at its deadline may append
+after static destruction has begun), and every line carries the writing
+thread's id (a detached worker keeps appending while the *next* module tears
+down, so lines genuinely interleave).
+
+**How an asynchronous shutdown worker reports.** This is the framework's answer
+to a specific problem: each module's shutdown callback runs on its own thread,
+and that thread is **detached** if the module overruns its deadline. A detached
+worker cannot report through any return value or output parameter — it has
+already been abandoned by the code that would have read them. It needs a
+destination that outlives it.
+
+The lifecycle therefore exposes a **narration wrapper over the debug module's
+last-resort trace**, and shutdown workers call it directly:
+
+```cpp
+mod.set_shutdown([](const char *, void *) {
+    lifecycle_narrate("event=DrainStart queue='work'");
+    drain_queue();                       // if this hangs, the line above is already recorded
+
+    lifecycle_narrate("event=JoinStart thread='worker'");
+    worker.join();
+
+    lifecycle_narrate("event=SinksReleased");
+    sinks.clear();
+}, std::chrono::milliseconds(5000));
+```
+
+The split of responsibility is deliberate:
+
+| Layer | Supplies |
+|---|---|
+| Debug module (HEP-CORE-0048) | The envelope every entry gets: thread id, monotonic timestamp, newline termination. Enforced — a caller cannot omit or corrupt it. |
+| Lifecycle wrapper | The lifecycle context the debug module cannot know: which module is being torn down, the phase, and the framework's own entry / exit / deadline records. |
+| Module author | What the step is about, in project `event=` form. |
+
+The wrapper exists so that context is attached in one place instead of being
+restated — and forgotten — at every call site.
+
+Resulting trace when a module hangs while joining:
+
+```
+[trace|t9021|41822931us] event=ShutdownEnter module='Logger'
+[trace|t9021|41822944us] event=ShutdownStep step='event=DrainStart queue=...'
+[trace|t9021|41822957us] event=ShutdownStep step='event=JoinStart thread=...'
+[trace|t8877|41827958us] event=ShutdownDeadlineExceeded module='Logger' deadline_ms=5000 action=detached
+```
+
+**The absent `event=SinksReleased` is the diagnosis** — it hung in `join()`, not
+in the drain and not in sink release. The timestamps show the five-second gap;
+the differing thread ids show the deadline was recorded by the finalize thread,
+not by the worker it gave up on. All of this survives although the callback
+never returned and its thread was abandoned.
+
+**What the lifecycle contributes.** Phase boundaries and per-module dispatch
+outcomes, appended as they occur — `shutdownModuleWithTimeout` records that a
+module is being shut down **before** invoking the callback, so a timeout
+cannot erase the fact that the module was entered. Each shutdown worker
+appends its own entry and exit lines.
+
+**One rule the lifecycle must not break:** `finalize()` does **not** clear the
+buffer on entry. An asynchronous unload can time out and detach its worker
+*before* `finalize()` is entered; clearing at that point would erase that
+record — and reset the anomaly flag — destroying exactly the evidence the
+phase exists to report.
+
+**Exposure.** The accumulated narrative is emitted at the end of the phase.
+A clean teardown stays quiet — it goes to the debug channel, as before. A
+teardown that misbehaved (a module overran its deadline and was detached,
+or threw) is marked as an anomaly and emitted **unconditionally**, directly
+to standard error.
+
+That distinction is load-bearing rather than cosmetic. The debug channel is
+compiled out of every non-Debug build, so before this rule a release
+process could hang during teardown and die without a single word about
+where. **An accident must be able to speak in every build, not only the
+ones where debug messages happen to be compiled in.**
+
+**Scope — this is a last-resort buffer, NOT a log.** It exists for one
+situation: information that would otherwise be destroyed by an abnormal exit.
+Writes belong on shutdown, exit and panic paths only. Ordinary runtime
+information goes to the logger, which has levels, sinks, rotation and
+filtering — none of which this has, and none of which it should grow.
+
+Two consequences follow, and both are load-bearing:
+
+- **Capacity is not a concern, because the write span is bounded.** Nothing
+  appends during normal operation, so the buffer holds one teardown's worth of
+  narration, not a process lifetime's. This is why a fixed cap with
+  truncate-on-overflow is adequate and no ring or eviction policy is needed.
+- **Do not "just add a line" from ordinary code.** Every unrelated writer
+  dilutes the one thing this buffer is for. If it accumulates general
+  progress messages it stops being a last-resort record and becomes an
+  unfiltered log that happens to survive a crash — at which point the signal
+  it was built to preserve is buried in the noise it was never meant to carry.
+
+**The rule: narrate incrementally, never summarise.** A single accumulated
+string is the anti-pattern this replaces. Whoever holds such a string loses
+all of it if their thread is detached at a deadline or the process is killed
+mid-teardown — the buffer dies with the frame, and what it contained was
+precisely the account of how far things got. Every participant instead pushes
+each step to the central pool **as it happens**, so the record is secured at
+the moment of writing and no later event can retract it.
+
+This is why the pool is central rather than per-thread: shutdown work is
+spread across the finalize thread and one worker per module, any of which may
+be abandoned. Only a shared destination outlives all of them.
+
+### API
+
+The lifecycle exposes one call for module authors:
+
+| Symbol | Purpose |
+|---|---|
+| `lifecycle_narrate(step)` | Record one step of your own teardown, as it happens. |
+
+Everything else — storage, drain/emit rules, the enforced envelope — belongs to
+the debug module and is normative in HEP-CORE-0048.
+
+**Relationship to `lifecycleLog`.** `lifecycleLog` is a logger front-end,
+scoped by its own contract to runtime paths where the logger is expected to
+be up. It is therefore *not* usable for teardown diagnostics and is not a
+substitute for the pool. The two answer different questions: `lifecycleLog`
+reports lifecycle events to a running application; the pool records how
+teardown itself proceeded, including after the logger is gone.
+
+---
+
 ## Public API reference
 
 ### LifecycleManager

@@ -24,6 +24,62 @@ removals from D2 / D3 drift batches).
 > `docs/archive/transient-2026-07-18/todo-completions/`.  #235 residual: L3 parity
 > regression tests → fold into **#232**.
 
+### #85 — `plh_hub` CLI hangs at exit; shutdown diagnostics are mute in Release
+
+**Discovered 2026-07-27** during the #84 verification sweep.  **Cause NOT
+established — do not close this on a plausible story.**  Two items:
+(A) a real hang of unknown cause, and (B) a diagnosability defect that is
+established by code and is *why* (A) cannot be diagnosed from the logs.
+
+**The test.**  `PlhHubCliTest.AddKnownRole_EachValidRole_AcceptedAndListed`
+(`tests/test_layer4_plh_hub/test_plh_hub_known_roles.cpp:210`), whose `l` is
+`plh_hub --config <cfg> --list-known-roles`.  Normal runtime 1.52–1.77 s;
+on failure it is SIGTERM'd at the L4 60 s ctest timeout (exit 143).
+
+**(A) Observed facts only.**  The subprocess finishes its work and reaches
+teardown in ~83 ms, then never exits; the last line in both captured
+failures is `ZMQContext: ZeroMQ context destroyed.`  Seen once inside a
+full Release sweep (`-j2`) and once in 5 standalone runs immediately after
+that sweep; then 15/15 and 12/12 clean on an idle machine.  Frequency
+correlates with recent heavy activity, but that correlation is weak
+evidence and is not a diagnosis.
+
+**Two earlier claims here were wrong and are retracted.**  (1) The context
+being destroyed on a non-main thread is *expected*: ZMQContext registers
+`set_shutdown(fn, timeout)` and the timed path runs the callback on a
+worker thread by design (`lifecycle_helpers.cpp:65`).  (2) "Load-dependent
+timeout leaving a detached runaway thread" is a hypothesis, not a finding.
+The framework is *designed* to warn on shutdown timeouts, so a silent hang
+is not explained by a timeout — unless the warning cannot be emitted,
+which is exactly item (B).  Settle (B) before believing any timeout story.
+
+**(B) Established by code — the shutdown path cannot report.**
+`finalize()` appends every breadcrumb (phase entry, per-module dispatch,
+per-module result) to a local `debug_info` string and emits it **once** at
+`lifecycle.cpp:575`, after Phase 3 — so a hang mid-finalize discards the
+whole narrative.  That single emit is `PLH_DEBUG`, which expands to
+`do{}while(0)` unless `PYLABHUB_ENABLE_DEBUG_MESSAGES` is defined
+(`debug_info.hpp:212-221`); `cmake/ToplevelOptions.cmake:187-191` defaults
+it ON for Debug and OFF otherwise, and `build-release/CMakeCache.txt:464`
+is OFF.  The timeout path has the same problem: `timedShutdown`
+(`lifecycle_helpers.cpp:85-94`) **detaches** the worker on timeout, and the
+caller records that only into `debug_info` — a detached runaway shutdown
+thread is currently an invisible event in Release.
+
+**Follow-up, in order.**  (1) Fix (B) first, or (A) can never be caught:
+emit incrementally instead of buffering, and make finalize enter/exit,
+per-module start/finish, and above all "module X exceeded its Nms deadline;
+worker DETACHED" always-on rather than `PLH_DEBUG`.  The sink must not be
+Logger — Logger is itself a module being torn down — so use the existing
+direct-to-stderr path.  (2) Then wait for a recurrence with real
+breadcrumbs, or attach `gdb -p <pid> -batch -ex "thread apply all bt full"`
+to a caught instance.  (3) Only then name a cause.
+
+Operator impact: `--list-known-roles` is operator-facing, so a scripted
+provisioning step can wedge indefinitely — worth fixing regardless of rate.
+Evidence preserved at `build-release/Testing/logs/ctest-20260727-143417-*.log`
+(sweep) and `ctest-20260727-143953-*.log` (standalone).
+
 ### #94 — Implement HEP-CORE-0021 §16.5 ephemeral-binding production path
 
 HEP-0021 §16.5 step 8 describes `messenger.update_endpoint()` inside

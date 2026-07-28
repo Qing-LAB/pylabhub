@@ -374,12 +374,12 @@ bool LifecycleManagerImpl::unloadModule(std::string_view name, std::source_locat
  * Sets mod.status to Shutdown, FailedShutdown, or ShutdownTimeout.
  */
 void LifecycleManagerImpl::shutdownModuleWithTimeout(InternalGraphNode &mod,
-                                                     std::string &debug_info)
+                                                     lifecycle_internal::LifecycleTrace &debug_info)
 {
     const char *const type_str = mod.is_dynamic ? "dynamic" : "static";
     debug_info += fmt::format("     <- Shutting down {} module: '{}'...", type_str, mod.name);
 
-    auto outcome = timedShutdown(mod.shutdown.func, mod.shutdown.timeout);
+    auto outcome = timedShutdown(mod.shutdown.func, mod.shutdown.timeout, mod.name);
 
     if (outcome.success)
     {
@@ -656,7 +656,7 @@ void LifecycleManagerImpl::processOneUnloadInThread(const std::string &node_name
 
     // Step 2: Run shutdown callback WITHOUT holding any mutex.
     PLH_DEBUG("processOneUnloadInThread: running shutdown for '{}'.", node_name);
-    auto outcome = timedShutdown(shutdown_func, shutdown_timeout);
+    auto outcome = timedShutdown(shutdown_func, shutdown_timeout, node_name);
 
     // Step 3: Update the graph under m_graph_mutation_mutex based on the outcome.
     std::vector<std::string> deps_to_process;

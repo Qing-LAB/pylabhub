@@ -242,3 +242,58 @@ TEST_F(LifecycleTest, FinalizeSinkSafeDuringAsyncShutdownFailure)
     // The timeout error must have been emitted (either via sink→logger or PLH_DEBUG).
     ASSERT_THAT(proc.get_stderr(), HasSubstr("TIMED OUT"));
 }
+
+// A shutdown that overran its deadline must NARRATE itself, in every build.
+//
+// This reuses the worker above rather than adding a harness: it already
+// produces the real production event — a module whose shutdown callback
+// hangs past its deadline, so `timedShutdown` detaches the worker thread.
+// That detached thread is precisely the one that can no longer report, so
+// it is the case the shared narration pool exists for
+// (HEP-CORE-0001 §"Lifecycle trace — the shared narration pool").
+//
+// The assertions below are derived from that design, not from whatever the
+// current implementation happens to print:
+//
+//   1. The DETACH is recorded, naming the module and its deadline.  A
+//      runaway shutdown thread outliving the subsystem it was tearing down
+//      is the single most important thing the pool can surface.
+//   2. The worker recorded its own ENTER.  The caller cannot do this on the
+//      worker's behalf — on timeout the caller has already given up and
+//      returned — so an ENTER present here proves the worker-side narration
+//      path is live, and an ENTER with no EXIT is what names a stalled
+//      module in the field.
+//   3. It reached stderr UNCONDITIONALLY.  These tests build with
+//      PLH_DEBUG enabled, so a debug-channel emit would also appear here
+//      and this assertion would pass for the wrong reason.  The pin that
+//      actually bites is the Release one: `PYLABHUB_ENABLE_DEBUG_MESSAGES`
+//      is OFF for non-Debug builds, so if the anomaly path regressed to
+//      PLH_DEBUG this test still passes in Debug and fails in Release.
+//      That asymmetry is deliberate — see the note on the Release sweep in
+//      the task tracker — and is why the marker text is pinned rather than
+//      merely "some output appeared".
+TEST_F(LifecycleTest, ShutdownDeadlineOverrun_IsNarratedByTheDetachedWorker)
+{
+    WorkerProcess proc(g_self_exe_path, "lifecycle.finalize_sink_safe_during_async_failure", {});
+    ASSERT_TRUE(proc.valid());
+    ASSERT_EQ(proc.wait_for_exit(), 0) << "Worker failed. Stderr:\n" << proc.get_stderr();
+
+    const std::string err = proc.get_stderr();
+
+    EXPECT_THAT(err, HasSubstr("event=ShutdownDeadlineExceeded"))
+        << "the deadline overrun + detach was not recorded in the lifecycle "
+           "trace; a runaway shutdown thread would be invisible.  stderr:\n"
+        << err;
+    EXPECT_THAT(err, HasSubstr("action=detached"))
+        << "the detach itself must be named, not merely implied.  stderr:\n"
+        << err;
+    EXPECT_THAT(err, HasSubstr("module='SlowShutdown'"))
+        << "the trace must name WHICH module overran — an unattributed "
+           "stall is not actionable.  stderr:\n"
+        << err;
+    EXPECT_THAT(err, HasSubstr("event=ShutdownEnter"))
+        << "the detached worker never narrated its own entry, so an "
+           "ENTER-without-EXIT could never identify a stalled module.  "
+           "stderr:\n"
+        << err;
+}
