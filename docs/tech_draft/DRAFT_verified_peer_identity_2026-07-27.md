@@ -269,6 +269,120 @@ a trust claim.
 
 ---
 
+## 5b. The framework — three owners, one direction, sequence encoded in types
+
+The mechanism in §5 says *what* happens. This says *who owns each step*, and
+why the arrangement resists decay. Every misplacement found in review came
+from the same mistake: putting code where the **data** was convenient rather
+than where the **authority** is.
+
+### Three modules, one dependency direction
+
+| Module | Owns | Produces | Must not know |
+|---|---|---|---|
+| **ZAP** (`security/zap_router`) | Enforcement. Which domains are gated; what was proven. | An **attestation** | anything above it |
+| **Identity** (`security/pubkey_origin`) | Meaning. What an attested key denotes here. | **verdicts** (and, narrowly, attributions) | the transport |
+| **Wire** (`wire_envelope`) | Framing. Carrying an attestation without reading it. | envelopes | what an attestation *means* |
+
+Dependencies point one way: wire → identity → ZAP. The security layer never
+includes the transport. **The attestation is the only thing that crosses
+from transport into the identity model**, and it crosses as a type, not as a
+string.
+
+### The path of auth
+
+```
+connect  →  ZAP enforces  →  attestation  →  carried on envelope  →  verdict  →  gate acts
+            (authority)      (fact)          (transport)             (meaning)   (policy)
+```
+
+**No step can be skipped, because each step's input can only be produced by
+the one before it:**
+
+- an `AttestedKey` is constructible *only* by the ZAP module — the module
+  that actually enforced the handshake, and the only one that can tell
+  whether a handshake was enforced on this socket at all;
+- a verdict is obtainable *only* by presenting an `AttestedKey`;
+- `parse_router_recv` **requires** the attestation as a parameter, so a new
+  ROUTER ingress cannot silently omit it. Passing "none" becomes a
+  deliberate, visible act rather than an oversight.
+
+This is the same trick three times: **make the sequence a property of the
+types, not of reviewer vigilance.** A rule that says "remember to check"
+decays; a signature that cannot be called without the check does not.
+
+### Why the ZAP module owns the attestation
+
+An earlier draft read the handshake metadata inside the wire parser, because
+that is where the frame is. That was wrong on four counts, and the fourth is
+a live defect rather than an aesthetic complaint:
+
+1. **The attestation is the ZAP module's own output** — it is what that
+   module sent as `user_id`. Reading it back elsewhere splits one fact
+   across two modules with no contract binding them.
+2. **Only ZAP knows whether a handshake was enforced.** It owns the
+   domain→admission table. A parser cannot know this, so it would mint an
+   attestation on a socket where none was proven — the type would be
+   lying. Today no such call site exists, but that is a property of
+   today's callers, not of the function.
+3. **It inverts the dependency**: the security header had to name a wire
+   class as a friend to grant construction rights — a lower layer reaching
+   up.
+4. **It contradicts §3**: handshake→attestation is the *trust* step, and
+   the trust step's owner is the module that enforces trust.
+
+Per-socket enforcement state is resolved once (at bind, where the domain is
+known), not per message.
+
+### Concealed decisions, narrow disclosure
+
+The identity module exposes **two deliberately different surfaces**, and the
+difference is the point.
+
+**Decisions are concealed.** Gates do not fetch a principal and compare it
+themselves:
+
+```
+    verdict = check_registration_claim(attestation, claimed_uid, claimed_pubkey)
+```
+
+not
+
+```
+    principal = resolve(attestation);  if (principal.uid != claimed) ...
+```
+
+Exporting the subject so a call site can compare invites every site to
+compare *slightly differently* — a forgotten `kind` test, a laxer string
+rule, a missing absent-case. With the comparison inside, there are no
+per-site comparisons to get wrong. This is stronger than §8's "one gate,
+not N checks": the **check itself** is concealed, not merely its placement.
+
+It also absorbs the federation-peer hole (§8) structurally. The rule "only
+a `LocalRole` may register" lives inside `check_registration_claim`, so no
+call site can forget a test it does not perform.
+
+**Disclosure is narrow and named.** Some consumers genuinely need a value,
+not a yes/no — the inbox must hand a real sender uid to a script, and
+diagnostics want to name a subject. That is a separate, explicitly-named
+accessor, so reaching for data instead of a decision is a visible choice in
+the diff rather than the path of least resistance.
+
+### Locked memory: deliberately not used
+
+`LockedKey`/SMS (HEP-CORE-0040) protects **secrets** from reaching disk and
+zeroizes them. An attested key is a *public* key — published in every
+handshake, in operator config, and in `hub.pubkey` at mode 0644 by design.
+
+Locking it would spend a scarce resource (`RLIMIT_MEMLOCK`) per connection
+for no confidentiality gain, and would blur what a locked region *signals*.
+"In locked memory" currently means "this is secret material"; admitting
+public keys makes that signal meaningless. The boundary is already correct:
+the hub's **private** key lives there under use-not-export
+(`with_seckey`, bytes never copied out) while the public half moves freely.
+
+---
+
 ## 6. The sequence, end to end — and what each step licenses
 
 Auth is not one check; it is a chain in which each step is only sound
@@ -626,7 +740,7 @@ Each slice is independently testable and leaves the tree green.
 | # | Slice | State |
 |---|---|---|
 | 1 | **Index** — build `pubkey_to_origin`, collapse the duplicate projections | ✅ **SHIPPED** `f8ba8927`; wire-seam pin `1c805e84`. Five projections found (not three); four consolidated. Pure consolidation, no behaviour change. |
-| 2 | **Capture** — carry the verified key on `WireEnvelope` at every router ingress, observe-only | ⬜ pending |
+| 2 | **Attest** — ZAP module mints the attestation at each ROUTER ingress; `parse_router_recv` requires it; observe-only logging of claim-vs-attestation mismatches | ⬜ pending — renamed from "capture" (it reads back what ZAP already proved, rather than performing anything) |
 | 3 | **Registration enforcement** — resolve, compare, reject; retire `gate_identity_match` | ⬜ pending — **this is the commit that closes the gap** |
 | 4 | **Inbox** — roster carries `(uid, pubkey)` bindings; role builds its own index; principal replaces routing id for attribution, replay keying, sequence tracking | ⬜ pending — **larger than first scoped**: a wire-format change landing across broker and role in one commit (§9) |
 | 5 | **Admin** — session binds to the captured key; retire the peer-address proxy | ⬜ pending |
@@ -672,6 +786,19 @@ by itself; only its provenance does (§3).
 *Violated by:* any handler that reads `zmq_pubkey`, `sender_uid` or frame 0
 to decide who is speaking; or any call that resolves a key which did not
 come from ingress capture.
+
+**I-ATTESTATION-IS-MINTED-BY-THE-ENFORCER.** Only the module that enforces
+the handshake may construct an attestation, because only it can tell whether
+one was enforced on this socket. No other layer may synthesise one, from
+metadata or from any string.
+*Violated by:* a constructor or factory outside the ZAP module; an
+attestation minted on a socket whose domain is not registered.
+
+**I-DECISIONS-ARE-CONCEALED.** Gates ask the identity module for a verdict;
+they do not fetch a principal and compare it themselves. Disclosure of a
+subject is a separate, explicitly-named surface used only where a value is
+genuinely required (attribution, diagnostics).
+*Violated by:* a comparison against a subject at a call site.
 
 **I-RESOLVED-AT-INGRESS.** Capture and resolution happen once, where the
 message enters. Handlers receive a resolved principal; no handler resolves
