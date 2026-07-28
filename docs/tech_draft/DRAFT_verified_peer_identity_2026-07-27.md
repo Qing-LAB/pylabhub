@@ -396,6 +396,97 @@ the hub's **private** key lives there under use-not-export
 
 ---
 
+## 5e. Data-structure design — one container, derived views
+
+### This is a cold path, and it must not be optimised as if it were not
+
+Frequency, concretely:
+
+| Call | Runs | Rate |
+|---|---|---|
+| `AttestedKey::from_transport`, `resolve` | per inbound CONTROL message | registrations, heartbeats, endpoint updates — tens/sec at most |
+| `local_role_pubkeys()` | per REG_ACK | roughly once per role lifetime |
+| `as_peer_allowlist()` | ZAP install + reload | a handful per process |
+| `is_peer_allowed` | per CURVE handshake | per connection, not per message |
+
+**The hot path in this system is the data plane, and none of this is on
+it.** An earlier revision precomputed the projections at build time,
+maintaining a `PeerAllowlist` and a sorted key set alongside the map. That
+bought nothing measurable — it optimised a sort that happens at role
+startup — and cost three copies of every key plus two extra containers to
+keep consistent. The complexity was the source of the divergence risk
+below. Projections are computed **on demand**.
+
+### One container is the source of truth
+
+```
+PubkeyOriginIndex
+  └── unordered_map<Z85 key, PubkeyOrigin>      ← the ONLY stored state
+        ├── resolve(attested)      → const PubkeyOrigin*   (borrow, no copy)
+        ├── as_peer_allowlist()    → PeerAllowlist          (derived, rare)
+        └── local_role_pubkeys()   → sorted keys            (derived, rare)
+```
+
+Everything else is a view. Nothing is stored twice, so nothing can drift.
+
+### Admission asks the index; the allowlist stops being stored state
+
+`BrokerCtrlAdmission` previously held its own `PeerAllowlist` snapshot while
+the index held the data that allowlist was derived from — two structures,
+two atomic stores, and a window during reload where they disagree. That
+divergence is exactly what collapsing five projections into one index exists
+to prevent, so storing a second copy defeats the purpose.
+
+`PeerAdmission`'s real question is *"is this peer allowed"*, and the index
+answers it with one map lookup. So the CTRL admission holds the index
+snapshot, not an allowlist:
+
+- `is_peer_allowed(peer)` → index lookup, no set construction;
+- one atomic store on reload updates admission and resolution **together**,
+  because they are the same object. Divergence becomes unrepresentable
+  rather than merely unlikely.
+
+### Friction with the existing interface, and how it resolves
+
+`PeerAdmission` mandates three pure virtuals, and one contradicts a derived
+admission:
+
+| Method | For a derived CTRL admission |
+|---|---|
+| `is_peer_allowed(peer)` | index lookup — the natural implementation |
+| `peer_allowlist_snapshot()` | projects from the index on demand; callers are diagnostics, and rare |
+| `set_peer_allowlist(list)` | **refuses** — returns `false` |
+
+The setter returning `bool` is what makes this honest rather than a hack:
+the interface already admits that an implementation may decline. A CTRL
+admission whose truth is the operator roster must not accept an allowlist
+pushed from elsewhere, because that would reintroduce a second source of
+truth through the back door. It refuses and logs, naming
+`publish_pubkey_index` as the way to change the roster.
+
+**This is not a novel shape — the interface already supports it.**
+`ZmqQueue`'s client-socket case does the same thing and is tested:
+`hub_zmq_queue.hpp:408-411` documents `set_peer_allowlist` returning false,
+`peer_allowlist_snapshot` returning `nullopt`, and `is_peer_allowed`
+returning false unconditionally, because "admission is the server's
+concern". So a `PeerAdmission` implementation that declines part of the
+interface is an established, exercised pattern rather than something being
+invented for this design.
+
+**Nothing pushes an allowlist at the CTRL admission today.**
+`BrokerCtrlAdmission` is constructed once (`broker_service.cpp:1058`) and
+handed to `register_domain` (`:1061`); no runtime caller invokes its
+`set_peer_allowlist`. Refusing the setter therefore breaks no existing
+path — it makes explicit what is already true.
+
+**This does NOT affect the data-plane admissions.** Channel allowlists are a
+different object with a different owner: `broker_service.cpp:2840` pushes a
+consumer's channel allowlist via `set_peer_allowlist` under fan-in, which is
+the interface working as intended for a mutable, per-channel view. Only the
+CTRL admission is roster-derived.
+
+---
+
 ## 6. The sequence, end to end — and what each step licenses
 
 Auth is not one check; it is a chain in which each step is only sound
