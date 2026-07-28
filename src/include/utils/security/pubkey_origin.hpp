@@ -34,6 +34,7 @@
  */
 #include "pylabhub_utils_export.h"
 #include "utils/security/attested_key.hpp"
+#include "utils/security/curve_keypair.hpp"
 #include "utils/security/peer_admission.hpp"
 
 #include <cstddef>
@@ -73,7 +74,6 @@ struct PYLABHUB_UTILS_EXPORT PubkeyOrigin
 
     Kind kind{Kind::LocalRole};
     std::string subject_uid;  ///< Role uid, or peer hub uid.
-    std::string subject_name; ///< Human-readable label, diagnostics only.
 };
 
 /// Key → subject. Built once from the operator's configured roles and
@@ -144,8 +144,7 @@ class PYLABHUB_UTILS_EXPORT PubkeyOriginIndex
     /// Register a federation peer hub's key.
     /// @throws std::runtime_error under the same conditions as
     ///         `add_local_role`.
-    void add_federation_peer(std::string_view peer_uid, std::string_view pubkey_z85,
-                             std::string_view display_name = {});
+    void add_federation_peer(std::string_view peer_uid, std::string_view pubkey_z85);
 
     /// Resolve an ATTESTED key to its subject.
     ///
@@ -209,10 +208,7 @@ class PYLABHUB_UTILS_EXPORT PubkeyOriginIndex
     /// deny-all, which is the correct bootstrap state for a hub with no
     /// configured roles (HEP-CORE-0035 §4.8.4), not an invitation to
     /// admit everyone.
-    /// Computed ONCE while building, not per call.  A published index never
-    /// changes, so its projections never change either; recomputing them
-    /// per use was work the immutability had already made unnecessary.
-    [[nodiscard]] const PeerAllowlist &as_peer_allowlist() const noexcept { return allowlist_; }
+    [[nodiscard]] PeerAllowlist as_peer_allowlist() const;
 
     /// Keys of kind `LocalRole` only, as a Z85 list.
     ///
@@ -225,35 +221,21 @@ class PYLABHUB_UTILS_EXPORT PubkeyOriginIndex
     /// REG_ACK, and an order that reshuffles per process makes wire captures
     /// and test pins unstable for no reason.  Held sorted (a `std::set`)
     /// rather than sorted per call: this is read on every registration.
-    [[nodiscard]] const std::set<std::string> &local_role_pubkeys() const noexcept
-    {
-        return local_role_keys_;
-    }
+    [[nodiscard]] std::set<std::string> local_role_pubkeys() const;
 
     [[nodiscard]] std::size_t size() const noexcept { return by_pubkey_.size(); }
     [[nodiscard]] bool empty() const noexcept { return by_pubkey_.empty(); }
 
   private:
-    void insert_(std::string pubkey_z85, PubkeyOrigin origin);
+    void insert_(std::string_view pubkey_z85, PubkeyOrigin origin);
 
-    /// Transparent comparator so `resolve()` — which runs on the inbound
-    /// message path — looks up from a `string_view` without materialising a
-    /// `std::string` per call.  `is_transparent` is what opts
-    /// `unordered_map` into the heterogeneous overloads (C++20).
-    struct KeyHash
-    {
-        using is_transparent = void;
-        [[nodiscard]] std::size_t operator()(std::string_view s) const noexcept
-        {
-            return std::hash<std::string_view>{}(s);
-        }
-    };
-
-    std::unordered_map<std::string, PubkeyOrigin, KeyHash, std::equal_to<>> by_pubkey_;
-
-    // Projections maintained as entries are added, so readers pay nothing.
-    PeerAllowlist allowlist_;
-    std::set<std::string> local_role_keys_;
+    /// The ONLY stored state.  Keyed on the validated key type, so a lookup
+    /// cannot be performed with — nor an entry stored from — an unvalidated
+    /// string.  Everything else this class exposes is a view over this map,
+    /// computed on demand: these are control-plane operations (a handful per
+    /// second at most, and per-registration for the roster), so there is
+    /// nothing here worth trading memory or a second container for.
+    std::unordered_map<Z85PublicKey, PubkeyOrigin> by_pubkey_;
 
 };
 

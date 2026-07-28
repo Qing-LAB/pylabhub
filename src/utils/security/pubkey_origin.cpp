@@ -25,18 +25,24 @@ const char *kind_label(PubkeyOrigin::Kind k) noexcept
 
 } // namespace
 
-void PubkeyOriginIndex::insert_(std::string pubkey_z85, PubkeyOrigin origin)
+void PubkeyOriginIndex::insert_(std::string_view pubkey_z85, PubkeyOrigin origin)
 {
-    if (pubkey_z85.size() != kZ85PubkeyChars)
+    // Validation is Z85PublicKey's job, not a length check repeated here.
+    // Constructing the key IS the validation, and because the map is keyed
+    // on that type an unvalidated key cannot be stored by any path.
+    Z85PublicKey key;
+    try
+    {
+        key = Z85PublicKey::validate(pubkey_z85);
+    }
+    catch (const std::invalid_argument &e)
     {
         throw std::runtime_error("pubkey origin index: " + std::string(kind_label(origin.kind)) +
-                                 " '" + origin.subject_uid + "' has a CURVE key of " +
-                                 std::to_string(pubkey_z85.size()) + " characters, expected " +
-                                 std::to_string(kZ85PubkeyChars) +
-                                 " (Z85-encoded CURVE25519 public key)");
+                                 " '" + origin.subject_uid + "' has an invalid CURVE key: " +
+                                 e.what());
     }
 
-    const auto it = by_pubkey_.find(pubkey_z85);
+    const auto it = by_pubkey_.find(key);
     if (it != by_pubkey_.end())
     {
         // Re-registering the same subject with the same key is a no-op;
@@ -56,32 +62,23 @@ void PubkeyOriginIndex::insert_(std::string pubkey_z85, PubkeyOrigin origin)
             "(plh_hub --init / --keygen).");
     }
 
-    const bool is_role = origin.kind == PubkeyOrigin::Kind::LocalRole;
-    allowlist_.peers.insert(PeerIdentity{"curve", pubkey_z85});
-    if (is_role)
-        local_role_keys_.insert(pubkey_z85);
-    by_pubkey_.emplace(std::move(pubkey_z85), std::move(origin));
+    by_pubkey_.emplace(std::move(key), std::move(origin));
 }
 
 void PubkeyOriginIndex::add_local_role(const ::pylabhub::broker::KnownRole &role)
 {
-    insert_(role.pubkey_z85,
-            PubkeyOrigin{PubkeyOrigin::Kind::LocalRole, role.uid, role.name});
+    insert_(role.pubkey_z85, PubkeyOrigin{PubkeyOrigin::Kind::LocalRole, role.uid});
 }
 
 void PubkeyOriginIndex::add_federation_peer(std::string_view peer_uid,
-                                            std::string_view pubkey_z85,
-                                            std::string_view display_name)
+                                            std::string_view pubkey_z85)
 {
-    insert_(std::string(pubkey_z85), PubkeyOrigin{PubkeyOrigin::Kind::FederationPeer,
-                                                  std::string(peer_uid),
-                                                  std::string(display_name)});
+    insert_(pubkey_z85, PubkeyOrigin{PubkeyOrigin::Kind::FederationPeer, std::string(peer_uid)});
 }
 
 const PubkeyOrigin *PubkeyOriginIndex::resolve(const AttestedKey &attested) const
 {
-    const std::string_view pubkey_z85 = attested.key().view();
-    const auto it = by_pubkey_.find(pubkey_z85);
+    const auto it = by_pubkey_.find(attested.key());
     if (it == by_pubkey_.end())
         return nullptr;
     return &it->second;
@@ -143,6 +140,31 @@ ClaimVerdict PubkeyOriginIndex::check_registration_claim(
         return ClaimVerdict::identity_mismatch;
 
     return ClaimVerdict::accepted;
+}
+
+} // namespace pylabhub::utils::security
+
+namespace pylabhub::utils::security
+{
+
+PeerAllowlist PubkeyOriginIndex::as_peer_allowlist() const
+{
+    PeerAllowlist al;
+    for (const auto &[key, origin] : by_pubkey_)
+        al.peers.insert(PeerIdentity{"curve", key.str()});
+    return al;
+}
+
+std::set<std::string> PubkeyOriginIndex::local_role_pubkeys() const
+{
+    // std::set: membership and deterministic order from the container.  The
+    // roster rides REG_ACK, and an order that reshuffles per process makes
+    // wire captures and test pins unstable for no reason.
+    std::set<std::string> out;
+    for (const auto &[key, origin] : by_pubkey_)
+        if (origin.kind == PubkeyOrigin::Kind::LocalRole)
+            out.insert(key.str());
+    return out;
 }
 
 } // namespace pylabhub::utils::security

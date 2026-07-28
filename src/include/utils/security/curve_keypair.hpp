@@ -180,3 +180,20 @@ struct CurveKeypair
 [[nodiscard]] PYLABHUB_UTILS_EXPORT CurveKeypair generate_curve_keypair();
 
 } // namespace pylabhub::utils::security
+
+namespace std
+{
+/// Hash over the validated key, so containers can be keyed on the strong
+/// type rather than on a bare `std::string`.  Keying on the validated type
+/// is what keeps validation structural: a key cannot be *stored* without
+/// having been validated, so no lookup path can reintroduce an unvalidated
+/// one.
+template <> struct hash<::pylabhub::utils::security::Z85PublicKey>
+{
+    [[nodiscard]] std::size_t
+    operator()(const ::pylabhub::utils::security::Z85PublicKey &k) const noexcept
+    {
+        return std::hash<std::string_view>{}(k.view());
+    }
+};
+} // namespace std

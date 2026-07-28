@@ -271,7 +271,7 @@ int claim_check_covers_every_verdict(const char * /*tmpdir*/)
             };
             add_role(alice_uid, alice_pub);
             add_role(bob_uid, bob_pub);
-            idx.add_federation_peer(peer_uid, peer_pub, "peer-hub");
+            idx.add_federation_peer(peer_uid, peer_pub);
 
             const auto alice = AttestedKey::from_transport(domain, alice_pub);
             const auto peer = AttestedKey::from_transport(domain, peer_pub);
@@ -355,7 +355,7 @@ int index_resolves_attested_keys(const char * /*tmpdir*/)
             kr.role = "producer";
             kr.pubkey_z85 = role_pub;
             idx.add_local_role(kr);
-            idx.add_federation_peer("hub.peer.uid00000002", peer_pub, "peer-hub");
+            idx.add_federation_peer("hub.peer.uid00000002", peer_pub);
 
             // A local role resolves to its own subject, tagged LocalRole —
             // the kind is what stops a peer registering as a role.
