@@ -163,8 +163,12 @@ post-reconcile shipped-sprint detail).
   demo-harness follow-ups #78-#87; Wave-MD1 ThreadManager shutdown-
   contract sweep; #66 `ZmqQueue`+`InboxQueue` → `apply_socket_policy`;
   Connection/Inbox/Band review D2+D3 follow-ups (C2,C4,C5,I1,I3,X1-X6); HEP-0032
-  ABI-compat broader impl (fingerprint chain shipped); deferred: Python client
-  SDK, script-spawned worker threads, `src/` restructure.
+  ABI-compat broader impl (fingerprint chain shipped); **#86 relocate the
+  last-resort trace into the debug module + wire `panic()` + migrate Logger's
+  per-step probes** (design done: HEP-CORE-0048 + HEP-CORE-0001 §"Lifecycle
+  trace"; instrument shipped inside lifecycle, `0dc1143b`); **#85 teardown
+  stall — cause UNKNOWN, likely the same open bug as #93/#242 in HEP-CORE-0004**;
+  deferred: Python client SDK, script-spawned worker threads, `src/` restructure.
 - **MessageHub / broker protocol (`MESSAGEHUB_TODO.md`)** — #92 `_REQ`-frame
   half-mix audit; (H43 federation role-disconnect → folded into #69); Wave-M2 MP4
   residuals; HEP-0039 Hub State Query Layer Phases B+ (Phase A shipped);
