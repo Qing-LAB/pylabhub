@@ -80,6 +80,7 @@
  * @see RFC 27 (ZAP) — https://rfc.zeromq.org/spec/27/
  */
 
+#include <string_view>
 #include "pylabhub_utils_export.h"
 #include "utils/module_def.hpp" // ModuleDef
 #include "utils/security/peer_admission.hpp"
@@ -168,6 +169,18 @@ class PYLABHUB_UTILS_EXPORT ZapRouter
     /// z85(pubkey)})` returns allow/deny, then send 200 (allow) or
     /// 400 (deny) reply with the peer pubkey as `user_id`.
     [[nodiscard]] bool pump_one(std::chrono::milliseconds timeout);
+
+    /// Is @p domain currently registered with this router — i.e. did a
+    /// ZAP handshake actually gate connections arriving on a socket using
+    /// it?  This is the question no layer above the transport can answer
+    /// for itself, and it is the precondition for minting an
+    /// `AttestedKey`: where no domain is enforced, a `User-Id` present on
+    /// a message was not vouched for by us and must not be treated as
+    /// proof.  See `attested_key.hpp`.
+    ///
+    /// Returns false when the module is unloaded (nothing registered yet).
+    /// Thread-safe.
+    [[nodiscard]] bool is_domain_enforced(std::string_view domain) const;
 
     /// For tests: count of currently-registered domains.  Returns 0
     /// when the module is unloaded (i.e., not yet first-registered

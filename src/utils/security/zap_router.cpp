@@ -12,6 +12,7 @@
  *   - `pylabhub::utils::Logger`   — for LOG_INFO/WARN/ERROR
  *   - `ZMQContext`                — for the shared `zmq::context_t`
  */
+#include "utils/security/attested_key.hpp"
 #include "utils/security/zap_router.hpp"
 
 #include "utils/lifecycle.hpp"
@@ -351,6 +352,51 @@ std::uint64_t ZapRouter::denied_count() const noexcept
 }
 
 // ── pump_one ────────────────────────────────────────────────────────────────
+
+bool ZapRouter::is_domain_enforced(std::string_view domain) const
+{
+    if (domain.empty())
+        return false;
+    // `with_admission` returns nullopt precisely when the domain is absent
+    // from the routing table; the callback's own verdict is irrelevant here
+    // — we are asking whether anyone is gating this domain at all.
+    const auto probe = impl_->routing.with_admission(std::string(domain), this,
+                                                   [](PeerAdmission &) { return true; });
+    return probe.has_value();
+}
+
+}  // namespace pylabhub::utils::security
+
+namespace pylabhub::utils::security
+{
+
+std::optional<AttestedKey> attest_from_transport(std::string_view zap_domain,
+                                                 std::string_view transport_user_id)
+{
+    // No enforcement on this socket => nothing here was vouched for by us.
+    // A `User-Id` may still be PRESENT (a peer can send a ZMTP metadata
+    // property of that name), which is exactly why this refusal matters:
+    // dressing an unvouched value as an attestation would make the type a
+    // lie at its very first use.
+    if (!ZapRouter::instance().is_domain_enforced(zap_domain))
+        return std::nullopt;
+
+    // NULL-mechanism connection — legitimate, not an error.
+    if (transport_user_id.empty())
+        return std::nullopt;
+
+    // Our ZAP reply always carries a 40-char Z85 key (see pump_one's
+    // send_zap_reply).  Anything else did not come from us.
+    if (transport_user_id.size() != 40)
+    {
+        LOGGER_WARN("ZapRouter::attest_from_transport: domain='{}' user_id length {} != 40 — "
+                    "refusing to attest (not a value this ZAP handler produced)",
+                    zap_domain, transport_user_id.size());
+        return std::nullopt;
+    }
+
+    return AttestedKey(std::string(transport_user_id));
+}
 
 bool ZapRouter::pump_one(std::chrono::milliseconds timeout)
 {

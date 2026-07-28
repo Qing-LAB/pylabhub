@@ -71,6 +71,19 @@ TEST_F(ZapRouterTest, UnknownDomain_Denies)
     ExpectWorkerOk(w);
 }
 
+// An attestation may be minted ONLY where a ZAP domain is actually
+// enforced.  This is not hygiene: libzmq lets a peer send its own ZMTP
+// metadata property named "User-Id", and it is harmless only because ZAP
+// properties are inserted first and std::map::insert does not overwrite —
+// a protection that exists solely where ZAP ran.  Minting on an unenforced
+// socket would therefore stamp an attacker-chosen value as proven.
+TEST_F(ZapRouterTest, Attestation_RequiresEnforcedDomain)
+{
+    auto w = SpawnWorker("zap_router.attestation_requires_enforced_domain",
+                         {unique_dir("attestation_requires_enforced_domain")});
+    ExpectWorkerOk(w);
+}
+
 TEST_F(ZapRouterTest, Handle_UnregistersOnDestruction)
 {
     auto w = SpawnWorker("zap_router.handle_unregisters_on_destruction",

@@ -14,6 +14,7 @@
  * RAII helper is functionally equivalent to "your main loop forgot
  * to pump" being immediately observable as a test hang.
  */
+#include "utils/security/attested_key.hpp"
 #include "utils/file_lock.hpp"
 #include "utils/json_config.hpp"
 #include "utils/lifecycle.hpp"
@@ -227,6 +228,62 @@ int unknown_domain_denies(const char * /*tmpdir*/)
                                                std::chrono::milliseconds(300)));
         },
         "zap_router::unknown_domain_denies", Logger::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
+int attestation_requires_enforced_domain(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            using pylabhub::utils::security::attest_from_transport;
+
+            // A well-formed 40-char Z85 value, shaped exactly like what our
+            // own ZAP handler emits as `user_id`.  The point of the test is
+            // that shape is NOT what earns trust — provenance is.
+            const auto [peer_pub, peer_sec] = make_keypair();
+            ASSERT_EQ(peer_pub.size(), 40u);
+
+            // 1. No domain registered at all: nothing is enforced anywhere,
+            //    so nothing may be attested.  This is the case a peer can
+            //    actually reach — libzmq lets a client send its own ZMTP
+            //    metadata property named "User-Id", and it is only shadowed
+            //    where ZAP properties exist to shadow it.
+            EXPECT_FALSE(attest_from_transport("test.zap.attest.domain", peer_pub).has_value())
+                << "attested on a domain nobody is enforcing — an unvouched "
+                   "value would have been dressed up as proof";
+
+            InMemoryAdmission admission;
+            PeerAllowlist al;
+            al.unrestricted = true;
+            (void)admission.set_peer_allowlist(std::move(al));
+            auto handle =
+                ZapRouter::instance().register_domain("test.zap.attest.domain", admission);
+
+            // 2. Enforced domain + the value ZAP would have set: attests.
+            const auto ok = attest_from_transport("test.zap.attest.domain", peer_pub);
+            ASSERT_TRUE(ok.has_value()) << "enforced domain with a well-formed key did not attest";
+            EXPECT_EQ(ok->z85(), peer_pub);
+            EXPECT_EQ(ok->as_peer_identity().data, peer_pub);
+
+            // 3. A DIFFERENT domain is still unenforced — enforcement is
+            //    per-domain, not global.  Registering one domain must not
+            //    make every socket look vouched for.
+            EXPECT_FALSE(attest_from_transport("test.zap.some.other", peer_pub).has_value());
+
+            // 4. NULL-mechanism connection: no User-Id at all.  Legitimate
+            //    state (in-process harnesses, non-CURVE transports), not an
+            //    error — absence is reported, never invented.
+            EXPECT_FALSE(attest_from_transport("test.zap.attest.domain", "").has_value());
+
+            // 5. Malformed length: not a value this ZAP handler produces.
+            EXPECT_FALSE(attest_from_transport("test.zap.attest.domain", "too-short").has_value());
+
+            // 6. Empty domain — a socket with no ZAP domain set at all.
+            EXPECT_FALSE(attest_from_transport("", peer_pub).has_value());
+        },
+        "zap_router::attestation_requires_enforced_domain", Logger::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule(),
         pylabhub::hub::GetZMQContextModule());
 }
@@ -1195,6 +1252,8 @@ int dispatch_zap_router(int argc, char **argv)
 
     if (scenario == "handshake_accept_deny_cycle")
         return handshake_accept_deny_cycle(tmpdir);
+    if (scenario == "attestation_requires_enforced_domain")
+        return attestation_requires_enforced_domain(tmpdir);
     if (scenario == "unknown_domain_denies")
         return unknown_domain_denies(tmpdir);
     if (scenario == "handle_unregisters_on_destruction")
