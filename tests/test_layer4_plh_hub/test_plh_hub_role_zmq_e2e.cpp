@@ -1919,6 +1919,29 @@ TEST_F(PlhHubCliTest, ZmqE2E_InboxDelivery)
     WorkerProcess hub(plh_hub_binary(), hub_dir.string(), {});
     ASSERT_TRUE(wait_for_hub_marker(hub_dir, "Broker: listening on")) << "hub never bound.  Log:\n"
                                                                       << read_hub_log(hub_dir);
+
+    // Projection 1 — the CTRL ZAP allowlist is derived from the pubkey
+    // origin index (HEP-CORE-0035 §4.2), not from a second walk of the
+    // operator roster.  The counts are printed by the broker at
+    // ZAP-install time, before the bind marker above, so the line is
+    // already in the log.  Pinning the arithmetic rather than the
+    // sentence is what makes it fail loudly: an index that dropped
+    // local roles would read "= 0 allowed" here and lock every role out
+    // of the control plane.
+    //
+    // SCOPE: this hub has no federation peers, so the pin cannot yet
+    // distinguish "allowlist carries every kind" from "allowlist
+    // carries roles".  That distinction needs a non-role key in the
+    // index, which today means a federation peer — and the federation
+    // design is pending (#69), so this test does not configure one.
+    // The kind-split itself is pinned structurally at L2 by
+    // test_pubkey_origin.cpp (`AllowlistProjectsEveryKeyOfBothKinds` +
+    // `InboxRosterExcludesFederationPeers`); the wire-seam version
+    // lands with #69.
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir, "2 known_roles + 0 federation peers = 2 allowed"))
+        << "CTRL allowlist was not projected from the pubkey origin index.  Log:\n"
+        << read_hub_log(hub_dir);
+
     const std::string bound_ep = extract_bound_endpoint(read_hub_log(hub_dir));
     ASSERT_FALSE(bound_ep.empty()) << "no bound endpoint in hub log";
     {
@@ -1942,15 +1965,28 @@ TEST_F(PlhHubCliTest, ZmqE2E_InboxDelivery)
         << "sender never registered:\n"
         << send.get_stderr();
 
-    // Slice 1 (HEP-CORE-0027 §3.5): each role captures the hub-wide inbox
-    // roster from REG_ACK.known_roles.  Both roles are in the hub's
-    // known_roles, so the merge fires with a non-zero total — this is the
-    // seed the inbox ROUTER ZAP arm (slice 2) consumes.
-    ASSERT_TRUE(wait_for_role_marker(recv_dir, recv, "event=InboxKnownRolesMerged", seconds(10)))
-        << "receiver never captured the known_roles roster:\n"
+    // Projection 2 (HEP-CORE-0027 §3.5): each role captures the hub-wide
+    // inbox roster from REG_ACK.known_roles.  The COUNT is the assertion,
+    // not the marker's presence — the hub has exactly two local roles and
+    // both belong in a role-to-role roster:
+    //
+    //   total=1  the roster lost a legitimate role — the receiver would
+    //            then refuse the sender at its inbox ZAP, turning a
+    //            security regression into a silent delivery failure;
+    //   total=2  correct.
+    //
+    // The roster is projected from the static operator roster, not from
+    // who has registered so far, so both roles see the same numbers
+    // regardless of registration order.  (A roster that wrongly GREW —
+    // e.g. a non-role key leaking in — is the federation-peer case, which
+    // needs a peer configured to observe; see the scope note above.)
+    ASSERT_TRUE(wait_for_role_marker(recv_dir, recv,
+                                     "event=InboxKnownRolesMerged added=2 total=2", seconds(10)))
+        << "receiver's roster is not exactly the two local roles:\n"
         << read_role_log(recv_dir);
-    ASSERT_TRUE(wait_for_role_marker(send_dir, send, "event=InboxKnownRolesMerged", seconds(10)))
-        << "sender never captured the known_roles roster:\n"
+    ASSERT_TRUE(wait_for_role_marker(send_dir, send,
+                                     "event=InboxKnownRolesMerged added=2 total=2", seconds(10)))
+        << "sender's roster is not exactly the two local roles:\n"
         << read_role_log(send_dir);
 
     // Slice 2 (HEP-CORE-0027 §3.5): the receiver seeds its inbox ROUTER's
