@@ -1,14 +1,25 @@
 # DRAFT — Verified peer identity: closing the gap between the CURVE handshake and the admission gates
 
-**Status:** RATIFIED by the owner 2026-07-27. Slice 1 (the origin index)
-is shipped; the gap itself is **still open** — see §10 for the per-slice
-state. Nothing in the tree yet compares a claimed identity against the
-connection's verified key.
+**Status:** RATIFIED by the owner 2026-07-27; consolidated after three
+review passes. Slice 1 (the origin index) is shipped; **the gap itself is
+still open** — nothing in the tree yet compares a claimed identity against
+the connection's attested key. Per-slice state in §14.
+
+**Reading order.** §1–§3 establish what is wrong and what "trusted" means
+here. §4–§6 are the mechanism and the end-to-end chain. §7–§9 are the three
+things that make it a system rather than a patch: principal classes,
+integration shape, and the role-side half of the problem. §10–§13 are
+disposition and decisions. §14–§16 are the plan, the contract, and the
+residue audit.
+
+**If you read one section:** §3 (a public key is never trusted; an
+attestation is) and §15 (the invariants, each with its violation
+signature).
 **Scope:** the control planes that accept authenticated connections —
 role registration, inbox messaging, admin console, federation ingress.
 The data plane is already correct and is not modified.
 **Governing docs this affects:** HEP-CORE-0035 §4.1–§4.5, HEP-CORE-0036
-§6.1/§6.3/§6.6.1, HEP-CORE-0027 §3.6/§8, HEP-CORE-0046 §14.5,
+§6.1/§6.3/§6.6.1, HEP-CORE-0027 §3.6/§12, HEP-CORE-0046 §14.5,
 HEP-CORE-0033 §11.
 
 ---
@@ -123,7 +134,68 @@ and left describing the design in another.
 
 ---
 
-## 3. The layer model
+## 3. What is trusted is an attestation, never a public key
+
+This must be explicit, because every confusion in this area comes from
+skipping it.
+
+**A public key is not a secret and is never, by itself, trusted.** It is
+published; anyone can copy one. Presenting a public key proves nothing at
+all. What the CURVE handshake proves is possession of the corresponding
+**private** key — and the public key is merely the *name* of the thing that
+was proven.
+
+So the same 40 bytes carry completely different weight depending on how
+they arrived:
+
+| Path | Status | What it establishes |
+|---|---|---|
+| In a message body | **claim** | that the sender wrote those bytes. Nothing more. |
+| As ZAP-delivered `User-Id` metadata | **attestation** | that the transport completed a handshake with a peer who proved possession of the matching secret |
+
+**Trust lives in the provenance, not in the value.** This is why "compare
+the body key to the connection key" is meaningful while "check the body key
+looks right" is not: the comparison inherits its force entirely from the
+attested side.
+
+*Terminology note:* the attestation is deliberately NOT called a "token"
+here. `HubVault::admin_token()` is an existing 64-char hex secret for the
+admin plane (HEP-0033 §11.1); reusing the word for a transport attestation
+would collide with a live concept in this codebase.
+
+### What the index is, and what it is not
+
+The attestation says *a particular secret was proven*. It does not say what
+that means to this hub. The origin index supplies exactly that and nothing
+more:
+
+```
+handshake  →  attestation (which key)  →  index  →  principal (which subject)  →  gates (what may it do)
+   trust             identity                          meaning                        policy
+```
+
+**The index is a meaning layer, not a trust layer.** It cannot create trust
+and must never be asked to interpret a key that was merely claimed —
+resolving a body-supplied key would launder a claim into a principal, which
+is the precise shape of the bug this design exists to close.
+
+### API consequence — make the misuse unrepresentable
+
+Because the index must only ever see attested keys, `resolve()` must not
+accept a bare string. A signature like `resolve(std::string_view pubkey)`
+lets any caller pass a body field, and the resulting bug reads as
+completely reasonable code at the call site.
+
+The input is therefore a distinct type that **only the ingress capture path
+can construct** — carrying an attested key, not any key. A handler holding
+a claimed pubkey then has no way to obtain one, so the misuse fails to
+compile instead of failing in production. This is the same reasoning that
+puts capture and resolution at ingress (§8): if a mistake can be made
+structurally impossible, that is stronger than a rule saying not to make it.
+
+---
+
+## 4. The layer model
 
 ```mermaid
 flowchart TD
@@ -151,7 +223,7 @@ field, because the trustworthy one is the only identity on the envelope.
 
 ---
 
-## 4. The mechanism
+## 5. The mechanism
 
 Four steps, each in exactly one place.
 
@@ -197,7 +269,65 @@ a trust claim.
 
 ---
 
-## 5. Two principal classes, so federation composes
+## 6. The sequence, end to end — and what each step licenses
+
+Auth is not one check; it is a chain in which each step is only sound
+because the previous one held. Written out, the gate placement stops being
+a matter of taste.
+
+```mermaid
+sequenceDiagram
+    participant R as Role
+    participant Z as ZAP handler
+    participant B as Broker CTRL
+    participant P as Admission pipeline
+
+    Note over R: holds identity keypair (vault)
+    R->>B: CURVE handshake
+    B->>Z: ZAP request (pubkey)
+    Z->>Z: pubkey ∈ allowlist?
+    Z-->>B: 200 OK, user_id = Z85 pubkey
+    Note over B: libzmq now stamps User-Id on EVERY<br/>message from this connection
+    R->>B: REG_REQ (claims uid + pubkey)
+    B->>B: CAPTURE verified key from metadata
+    B->>B: RESOLVE key → principal (one index)
+    B->>P: envelope carries VerifiedPeer
+    P->>P: identity gate: claim vs principal
+    P->>P: remaining gates (assume identity settled)
+    B-->>R: REG_ACK (allowlist, roster, instance_id)
+    Note over R,B: every later message repeats CAPTURE+RESOLVE
+```
+
+**What each step licenses, and what it does not.**
+
+| Step | Establishes | Does NOT establish |
+|---|---|---|
+| Handshake + ZAP | this connection holds *an* allowlisted key | *which* subject it is |
+| Capture | which key this specific message came from | what that key means here |
+| Resolve | which principal that key denotes | whether the claim matches |
+| Identity gate | the claim belongs to this connection | anything about authority |
+| Later gates | authority, schema, topology | — they *assume* identity is settled |
+
+The ordering is forced: every later gate reasons about "this role", so a
+gate that runs before identity is settled is reasoning about an assumption.
+That is why resolution is step 0 of the pipeline (HEP-0046 §14.5) and not a
+peer of the other gates.
+
+**There is no session to hijack.** Attribution is re-derived per message
+from transport-verified metadata, not cached at registration. A registered
+role does not acquire a token that later messages present. This is why the
+design needs no session-fixation defence: there is no session object.
+
+**Reconnection is the reason principal beats routing id.** A role that
+drops and redials gets a *new* routing id and the *same* key. State keyed
+on routing id therefore fragments across reconnects (and is attacker-chosen
+besides); state keyed on principal survives them. Reconnect-correctness and
+anti-impersonation want the same key here, which is a good sign the axis is
+the right one.
+
+---
+
+## 7. Two principal classes, so federation composes
 
 A strict "claimed identity must equal the connection's identity" rule is
 wrong as a universal, and a per-gate patch would have shipped it wrong.
@@ -224,7 +354,7 @@ separate design pass.
 
 ---
 
-## 5b. Integration shape — why this is a system, not threaded parameters
+## 8. Integration shape — why this is a system, not threaded parameters
 
 The obvious way to build this is also the wrong way: capture the verified
 key, then pass it down through handler signatures and check it wherever a
@@ -288,10 +418,10 @@ These would each turn the design back into a patch:
 
 The CTRL allowlist admits **federation peer hubs** — it must, since a peer
 dials this broker's ROUTER (HEP-0022). So a peer's key *does* resolve, to
-`Kind::FederationPeer`. Nothing in §4 or §5 says what happens when such a
+`Kind::FederationPeer`. Nothing in §5 or §7 says what happens when such a
 principal arrives on the **registration** plane claiming a local role.
 
-Under §5 that is delegation, governed by the §4.3 trust modes — **which are
+Under §7 that is delegation, governed by the §4.3 trust modes — **which are
 unbuilt**. Leaving it undefined would put the most privileged principal
 class in front of an unimplemented policy, which is how holes ship.
 
@@ -304,65 +434,7 @@ would accidentally admit a peer whose `subject_uid` happened to match.
 
 ---
 
-## 5c. The sequence, end to end — and what each step licenses
-
-Auth is not one check; it is a chain in which each step is only sound
-because the previous one held. Written out, the gate placement stops being
-a matter of taste.
-
-```mermaid
-sequenceDiagram
-    participant R as Role
-    participant Z as ZAP handler
-    participant B as Broker CTRL
-    participant P as Admission pipeline
-
-    Note over R: holds identity keypair (vault)
-    R->>B: CURVE handshake
-    B->>Z: ZAP request (pubkey)
-    Z->>Z: pubkey ∈ allowlist?
-    Z-->>B: 200 OK, user_id = Z85 pubkey
-    Note over B: libzmq now stamps User-Id on EVERY<br/>message from this connection
-    R->>B: REG_REQ (claims uid + pubkey)
-    B->>B: CAPTURE verified key from metadata
-    B->>B: RESOLVE key → principal (one index)
-    B->>P: envelope carries VerifiedPeer
-    P->>P: identity gate: claim vs principal
-    P->>P: remaining gates (assume identity settled)
-    B-->>R: REG_ACK (allowlist, roster, instance_id)
-    Note over R,B: every later message repeats CAPTURE+RESOLVE
-```
-
-**What each step licenses, and what it does not.**
-
-| Step | Establishes | Does NOT establish |
-|---|---|---|
-| Handshake + ZAP | this connection holds *an* allowlisted key | *which* subject it is |
-| Capture | which key this specific message came from | what that key means here |
-| Resolve | which principal that key denotes | whether the claim matches |
-| Identity gate | the claim belongs to this connection | anything about authority |
-| Later gates | authority, schema, topology | — they *assume* identity is settled |
-
-The ordering is forced: every later gate reasons about "this role", so a
-gate that runs before identity is settled is reasoning about an assumption.
-That is why resolution is step 0 of the pipeline (HEP-0046 §14.5) and not a
-peer of the other gates.
-
-**There is no session to hijack.** Attribution is re-derived per message
-from transport-verified metadata, not cached at registration. A registered
-role does not acquire a token that later messages present. This is why the
-design needs no session-fixation defence: there is no session object.
-
-**Reconnection is the reason principal beats routing id.** A role that
-drops and redials gets a *new* routing id and the *same* key. State keyed
-on routing id therefore fragments across reconnects (and is attacker-chosen
-besides); state keyed on principal survives them. Reconnect-correctness and
-anti-impersonation want the same key here, which is a good sign the axis is
-the right one.
-
----
-
-## 5d. The same gap exists twice — and one structure closes both
+## 9. The same gap exists twice — and one structure closes both
 
 The broker is not the only ROUTER that authenticates peers. **Every role
 with an inbox owns one**, and it has exactly the same defect. This was
@@ -417,7 +489,7 @@ rather than adding a version flag.
 
 ---
 
-## 6. What this replaces, retires, or unifies
+## 10. What this replaces, retires, or unifies
 
 The proposal is mostly subtraction. That is the test of whether it is a
 mechanism or a patch.
@@ -441,7 +513,7 @@ currently wrong in a way that misleads security work.
 
 ---
 
-## 7. Conflicts found in the existing HEP corpus
+## 11. Conflicts found in the existing HEP corpus
 
 | Conflict | Detail | Resolution |
 |---|---|---|
@@ -458,7 +530,7 @@ is already the model this proposal brings to the control planes.
 
 ---
 
-## 8. Decisions (all resolved by the owner, 2026-07-27)
+## 12. Decisions (all resolved by the owner, 2026-07-27)
 
 - **D1 — resolution strategy.** Reverse index (HEP-0035 §4.2 as
   specified) versus claim-and-compare. Analysis in §9.
@@ -471,14 +543,14 @@ is already the model this proposal brings to the control planes.
   instead of a generic identity rejection.
 - **D3 — reject-code taxonomy.** With D2 decided, two distinct failures
   are now separately detectable, and each has a different owner and a
-  different fix. See §9.1.
+  different fix. See §13.1.
 - **D4 — scope of the first landing.** All three control planes at once,
   or registration first? A half-landing leaves the inbox trusting a
   self-asserted sender, which is hard to document honestly.
 
 ---
 
-## 9. D1 — reverse index versus claim-and-compare
+## 13. D1 — reverse index versus claim-and-compare
 
 **Claim-and-compare:** on a registration, look up `known_roles[claimed_uid]`
 (already done today) and additionally require the stored key to equal the
@@ -510,7 +582,7 @@ written down.
 
 ---
 
-### 9.1 D3 — two failures, two owners, two codes
+### 13.1 D3 — two failures, two owners, two codes
 
 Because D2 keeps the announced key on the request, three facts meet at
 the gate, and comparing them pairwise separates two genuinely different
@@ -545,7 +617,9 @@ against the hub's stored entry for the *announced* uid — two claims
 checked against a list, with the live connection ignored. Under this
 design every comparison has the proven key on one side.
 
-## 10. Implementation sequence (after ratification)
+---
+
+## 14. Implementation sequence (after ratification)
 
 Each slice is independently testable and leaves the tree green.
 
@@ -554,7 +628,7 @@ Each slice is independently testable and leaves the tree green.
 | 1 | **Index** — build `pubkey_to_origin`, collapse the duplicate projections | ✅ **SHIPPED** `f8ba8927`; wire-seam pin `1c805e84`. Five projections found (not three); four consolidated. Pure consolidation, no behaviour change. |
 | 2 | **Capture** — carry the verified key on `WireEnvelope` at every router ingress, observe-only | ⬜ pending |
 | 3 | **Registration enforcement** — resolve, compare, reject; retire `gate_identity_match` | ⬜ pending — **this is the commit that closes the gap** |
-| 4 | **Inbox** — roster carries `(uid, pubkey)` bindings; role builds its own index; principal replaces routing id for attribution, replay keying, sequence tracking | ⬜ pending — **larger than first scoped**: a wire-format change landing across broker and role in one commit (§5d) |
+| 4 | **Inbox** — roster carries `(uid, pubkey)` bindings; role builds its own index; principal replaces routing id for attribution, replay keying, sequence tracking | ⬜ pending — **larger than first scoped**: a wire-format change landing across broker and role in one commit (§9) |
 | 5 | **Admin** — session binds to the captured key; retire the peer-address proxy | ⬜ pending |
 | 6 | **Federation** — origin classification + §4.3 modes | ⬜ pending, lands with #69 |
 
@@ -585,16 +659,19 @@ than merely discouraged.
 
 ---
 
-## 11. Invariants this design establishes
+## 15. Invariants this design establishes
 
 Each is stated so a reviewer can find a violation by inspection, and each
 names what breaks if it is dropped.
 
-**I-IDENTITY-FROM-HANDSHAKE.** Every identity a control-plane handler acts
-on derives from the connection's transport-verified key. Never from a body
-field, never from a routing id.
+**I-IDENTITY-FROM-ATTESTATION.** Every identity a control-plane handler
+acts on derives from an *attested* key — one delivered by the transport as
+proof that the peer possesses the matching secret. Never from a claimed key
+(a body field), never from a routing id. A public key carries no authority
+by itself; only its provenance does (§3).
 *Violated by:* any handler that reads `zmq_pubkey`, `sender_uid` or frame 0
-to decide who is speaking.
+to decide who is speaking; or any call that resolves a key which did not
+come from ingress capture.
 
 **I-RESOLVED-AT-INGRESS.** Capture and resolution happen once, where the
 message enters. Handlers receive a resolved principal; no handler resolves
@@ -628,13 +705,13 @@ the unforgeable choice.
 authorize others carries `(uid, pubkey)` pairs, never bare keys. A bare-key
 roster can answer "is this someone we know" but never "who is this," which
 silently forces the recipient back onto a forgeable identifier.
-*This invariant is currently violated by the wire format* (§5d).
+*This invariant is currently violated by the wire format* (§9).
 
 **I-DELEGATION-IS-DECLARED.** An identity differing from the connection's
 principal is accepted only across a link explicitly classified as a
 federation peer, under a declared trust mode. Until those modes exist, a
 federation-peer principal is refused on the registration plane rather than
-silently permitted (§5b).
+silently permitted (§8).
 
 **I-ABSENCE-IS-MEANINGFUL.** A verified key that resolves to no principal
 is a legitimate state (the admin plane is deliberately not key-gated,
@@ -643,17 +720,17 @@ explicitly; planes that do not, proceed on the key alone.
 
 ---
 
-## 12. Risks and obsolete residues
+## 16. Risks and obsolete residues
 
-Detected by walking the chain in §5c against current code.
+Detected by walking the chain in §6 against current code.
 
 ### Live risks
 
 | Risk | Where | Disposition |
 |---|---|---|
 | **Inbox attribution, replay key and sequence key all derive from the routing id** | `hub_inbox_queue.cpp` `sender_id` at recv | The most serious remaining hole: an authenticated role can be attributed as another AND poison that role's replay/sequence state (integrity *and* availability). Slice 4. |
-| **Roster carries bare keys** | `REG_ACK`/`CONSUMER_REG_ACK` `known_roles`; role-side `unordered_set<std::string>` | Makes the above unfixable role-side. Protocol change, §5d. |
-| **Federation peer on the registration plane** | admission pipeline | Undefined today; peers resolve but §4.3 modes are unbuilt. Interim: refuse by kind (§5b). |
+| **Roster carries bare keys** | `REG_ACK`/`CONSUMER_REG_ACK` `known_roles`; role-side `unordered_set<std::string>` | Makes the above unfixable role-side. Protocol change, §9. |
+| **Federation peer on the registration plane** | admission pipeline | Undefined today; peers resolve but §4.3 modes are unbuilt. Interim: refuse by kind (§8). |
 | **Verified key discarded at every ingress** | broker and role ROUTERs | ZAP sets `user_id` for every domain; nothing above the socket reads it. This is the enabling defect for all of the above. |
 
 ### The `zmq_pubkey` request field — declaration, with consistency required
@@ -702,5 +779,5 @@ Per owner direction, the permanent text is to be written around:
 - **a formatted exchange protocol** — the roster's `(uid, pubkey)` binding
   shape stated normatively, with the old bare-key form named as rejected
   rather than merely superseded;
-- **explicit contract** — the §11 invariants, each with its violation
-  signature, plus the licensing table in §5c that fixes gate ordering.
+- **explicit contract** — the §15 invariants, each with its violation
+  signature, plus the licensing table in §6 that fixes gate ordering.
