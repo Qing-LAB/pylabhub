@@ -1,6 +1,9 @@
 # DRAFT — Verified peer identity: closing the gap between the CURVE handshake and the admission gates
 
-**Status:** design proposal, awaiting owner ratification. No code written.
+**Status:** RATIFIED by the owner 2026-07-27. Slice 1 (the origin index)
+is shipped; the gap itself is **still open** — see §10 for the per-slice
+state. Nothing in the tree yet compares a claimed identity against the
+connection's verified key.
 **Scope:** the control planes that accept authenticated connections —
 role registration, inbox messaging, admin console, federation ingress.
 The data plane is already correct and is not modified.
@@ -221,6 +224,86 @@ separate design pass.
 
 ---
 
+## 5b. Integration shape — why this is a system, not threaded parameters
+
+The obvious way to build this is also the wrong way: capture the verified
+key, then pass it down through handler signatures and check it wherever a
+claim appears. That yields identity policy smeared across a dozen call
+sites, each free to check slightly differently or to forget. It would pass
+review, because every individual check looks correct. Three rules keep the
+design whole.
+
+**Resolve at ingress, not at each consumer.** Capture and resolution are
+*both* ingress concerns. If the envelope carries only a raw key, every
+handler must call the index itself, handle "unknown key," and pick a
+rejection code — which is policy, duplicated. The envelope therefore
+carries a resolved value, not a key to look up:
+
+```
+VerifiedPeer {
+    PeerIdentity            connection_key;   // always present: ZAP verified it
+    std::optional<PubkeyOrigin> principal;    // absent = key known to ZAP, not a registered subject
+}
+```
+
+Absence is *meaningful*, not an error: the admin plane is deliberately not
+key-gated (HEP-0033 §11), so an operator legitimately resolves to no
+principal. A plane that needs "which key" is served without needing "which
+subject." **No handler calls `resolve()`. No function grows a
+`verified_key` parameter.**
+
+**One gate, not N checks.** The claim comparison belongs in the existing
+admission pipeline (`admission_gates.hpp`, `AdmissionContext`) as a single
+gate that replaces `gate_identity_match` at the same seam. Registration
+handlers do not grow an `if`. The pipeline already orders gates and owns
+rejection codes; identity becomes one more row there, evaluated after
+resolution (HEP-0046 §14.5 step 0) and before every gate that assumes an
+identity.
+
+**Per plane this is substitution, not addition.** This is the clearest
+evidence it is a mechanism rather than a patch — only one plane gains a
+check at all:
+
+| Plane | Change | Net |
+|---|---|---|
+| Registration | `gate_identity_match` (routing id vs config — two client-chosen values) replaced by a principal gate | one gate swapped, not added |
+| Inbox | attribution / replay key / sequence key move from routing id to principal | **substitution — no new check exists** |
+| Admin | session binds to the captured key instead of the `Peer-Address` proxy | one weaker fact replaced by a stronger one |
+| Federation | classification becomes a property of the key | replaces an exemption currently granted by accident |
+
+If an implementation of this design ends up adding checks to every plane,
+it has drifted and should be reworked, not merged.
+
+### Anti-goals
+
+These would each turn the design back into a patch:
+
+- a handler calling `resolve()` for itself;
+- any function signature growing a verified-key parameter;
+- a plane re-deriving identity from wire fields once the principal exists;
+- new rejection codes (D3: reuse `IDENTITY_MISMATCH` / `PUBKEY_MISMATCH`);
+- identity checks living outside the admission pipeline.
+
+### An unhandled case this review surfaced
+
+The CTRL allowlist admits **federation peer hubs** — it must, since a peer
+dials this broker's ROUTER (HEP-0022). So a peer's key *does* resolve, to
+`Kind::FederationPeer`. Nothing in §4 or §5 says what happens when such a
+principal arrives on the **registration** plane claiming a local role.
+
+Under §5 that is delegation, governed by the §4.3 trust modes — **which are
+unbuilt**. Leaving it undefined would put the most privileged principal
+class in front of an unimplemented policy, which is how holes ship.
+
+**Interim rule, to land with slice 3:** only `Kind::LocalRole` may register.
+A `FederationPeer` principal on the registration plane is rejected outright
+until §4.3 modes exist, at which point the rejection is replaced by a mode
+check rather than removed. The registration gate must therefore test the
+principal's *kind*, not merely compare uid strings — a string comparison
+would accidentally admit a peer whose `subject_uid` happened to match.
+
+---
+
 ## 6. What this replaces, retires, or unifies
 
 The proposal is mostly subtraction. That is the test of whether it is a
@@ -262,7 +345,7 @@ is already the model this proposal brings to the control planes.
 
 ---
 
-## 8. Open decisions for the owner
+## 8. Decisions (all resolved by the owner, 2026-07-27)
 
 - **D1 — resolution strategy.** Reverse index (HEP-0035 §4.2 as
   specified) versus claim-and-compare. Analysis in §9.
@@ -353,20 +436,25 @@ design every comparison has the proven key on one side.
 
 Each slice is independently testable and leaves the tree green.
 
-1. **Index.** Build `pubkey_to_origin` from the vault at load; collapse
-   the three existing projections onto it. No behaviour change yet —
-   pure consolidation, provable by existing tests.
-2. **Capture.** Carry the verified key on `WireEnvelope` at every router
-   ingress. Still no enforcement; add observability so a mismatch is
-   *visible* in logs before it is fatal.
-3. **Registration enforcement.** Resolve, compare, reject. Retire
-   `gate_identity_match` as a trust gate.
-4. **Inbox.** Principal replaces routing id for attribution, replay
-   keying, and sequence tracking.
-5. **Admin.** Session binds to the principal; retire the peer-address
-   proxy.
-6. **Federation.** Origin classification + the §4.3 modes — lands with
-   task #69 rather than before it.
+| # | Slice | State |
+|---|---|---|
+| 1 | **Index** — build `pubkey_to_origin`, collapse the duplicate projections | ✅ **SHIPPED** `f8ba8927`; wire-seam pin `1c805e84`. Five projections found (not three); four consolidated. Pure consolidation, no behaviour change. |
+| 2 | **Capture** — carry the verified key on `WireEnvelope` at every router ingress, observe-only | ⬜ pending |
+| 3 | **Registration enforcement** — resolve, compare, reject; retire `gate_identity_match` | ⬜ pending — **this is the commit that closes the gap** |
+| 4 | **Inbox** — principal replaces routing id for attribution, replay keying, sequence tracking | ⬜ pending |
+| 5 | **Admin** — session binds to the captured key; retire the peer-address proxy | ⬜ pending |
+| 6 | **Federation** — origin classification + §4.3 modes | ⬜ pending, lands with #69 |
+
+Everything shipped so far is foundation. **The exposure described in §1 is
+unchanged until slice 3 lands.** Slice 1 built the structure that answers
+"what does this key mean"; no caller yet asks it that question about a
+live connection.
+
+One gap in the coverage, not in the code: no test yet drives a peer that
+holds a *valid* key while claiming *another* role's identity and asserts
+the rejection. That is the test that would have caught the original
+defect, and it can only be written once slice 3 exists. Pinning index
+contents is not the same as pinning that impersonation fails.
 
 Slice 2 deliberately lands observation before enforcement: it turns "does
 anything in this system legitimately speak for another identity?" from a
@@ -396,4 +484,10 @@ than merely discouraged.
   address on every plane. No gate may read it as a trust claim.
 - **I-DELEGATION-IS-DECLARED.** An identity that differs from the
   connection's principal is accepted only across a link explicitly
-  classified as a federation peer, under a declared trust mode.
+  classified as a federation peer, under a declared trust mode. Until
+  those modes are built, a federation-peer principal is refused on the
+  registration plane rather than silently permitted (§5b).
+- **I-RESOLVED-AT-INGRESS.** Resolution happens once, where the message
+  enters. Handlers receive a resolved principal; no handler resolves for
+  itself and no signature carries a verified key. Identity policy lives in
+  the admission pipeline, never at a call site.
