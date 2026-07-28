@@ -345,7 +345,7 @@ int index_resolves_attested_keys(const char * /*tmpdir*/)
             // Empty index resolves nothing — deny-all is the bootstrap state.
             {
                 PubkeyOriginIndex empty;
-                EXPECT_FALSE(empty.resolve(*role_att).has_value());
+                EXPECT_FALSE((empty.resolve(*role_att) != nullptr));
             }
 
             PubkeyOriginIndex idx;
@@ -360,19 +360,19 @@ int index_resolves_attested_keys(const char * /*tmpdir*/)
             // A local role resolves to its own subject, tagged LocalRole —
             // the kind is what stops a peer registering as a role.
             const auto role_origin = idx.resolve(*role_att);
-            ASSERT_TRUE(role_origin.has_value());
+            ASSERT_NE(role_origin, nullptr);
             EXPECT_EQ(role_origin->subject_uid, "prod.alice.uid00000001");
             EXPECT_EQ(role_origin->kind, PubkeyOrigin::Kind::LocalRole);
 
             const auto peer_origin = idx.resolve(*peer_att);
-            ASSERT_TRUE(peer_origin.has_value());
+            ASSERT_NE(peer_origin, nullptr);
             EXPECT_EQ(peer_origin->subject_uid, "hub.peer.uid00000002");
             EXPECT_EQ(peer_origin->kind, PubkeyOrigin::Kind::FederationPeer);
 
             // Attested, but unknown to this hub.  With ZAP enforcing this is
             // unreachable on a live connection, so a caller seeing nullopt is
             // looking at mid-flight config change or a broken gate.
-            EXPECT_FALSE(idx.resolve(*stranger_att).has_value());
+            EXPECT_FALSE((idx.resolve(*stranger_att) != nullptr));
 
             // Immutability after publication is enforced by `const`, not by
             // a runtime flag: a published snapshot is
@@ -383,7 +383,7 @@ int index_resolves_attested_keys(const char * /*tmpdir*/)
             // could not be replaced would drift out of step with it.
             const auto published =
                 std::make_shared<const PubkeyOriginIndex>(std::move(idx));
-            EXPECT_TRUE(published->resolve(*role_att).has_value());
+            EXPECT_TRUE((published->resolve(*role_att) != nullptr));
             static_assert(
                 !std::is_invocable_v<decltype(&PubkeyOriginIndex::add_local_role),
                                      const PubkeyOriginIndex &,

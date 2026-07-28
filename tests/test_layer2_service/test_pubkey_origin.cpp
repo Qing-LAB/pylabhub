@@ -27,6 +27,7 @@
 #include <gtest/gtest.h>
 
 #include <stdexcept>
+#include <set>
 #include <string>
 
 namespace
@@ -140,12 +141,13 @@ TEST(PubkeyOriginIndex, InboxRosterExcludesFederationPeers)
     idx.add_local_role(make_role("cons.logger.uid02", key('a')));
     idx.add_federation_peer("hub.west", key('c'));
 
-    const auto roster = idx.local_role_pubkeys();
+    const auto &roster = idx.local_role_pubkeys();
     // Role-to-role messaging authorizes local roles only; a peer hub's
     // key belongs to a different plane and must not leak into it.
-    ASSERT_EQ(roster.size(), 2u);
-    EXPECT_EQ(roster[0], key('a'));
-    EXPECT_EQ(roster[1], key('b')); // sorted — stable across processes
+    // Held as a std::set, so membership AND deterministic order come from
+    // the container rather than from a sort on every read — the roster is
+    // read on every registration, and a published index never changes.
+    EXPECT_EQ(roster, (std::set<std::string>{key('a'), key('b')}));
 }
 
 } // namespace

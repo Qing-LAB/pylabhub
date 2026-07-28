@@ -422,7 +422,13 @@ class BrokerServiceImpl
     pylabhub::utils::detail::PortableAtomicSharedPtr<const pylabhub::utils::security::PubkeyOriginIndex>
         pubkey_index_snapshot;
 
-    /// Current snapshot.  Never null after construction.
+    /// Current snapshot.  NEVER null — an empty index is published by this
+    /// class's constructor before anything can read one, so callers may
+    /// dereference without checking.  An empty index resolves nothing and
+    /// projects a deny-all allowlist, which is the correct bootstrap state
+    /// for a hub with no configured roles (HEP-CORE-0035 §4.8.4) — so the
+    /// non-null guarantee costs no safety, it just removes a null window
+    /// that previously existed only until config ingestion happened to run.
     [[nodiscard]] std::shared_ptr<const pylabhub::utils::security::PubkeyOriginIndex>
     pubkey_index() const
     {
@@ -431,6 +437,12 @@ class BrokerServiceImpl
 
     /// Install a rebuilt index.  The caller builds a complete new index;
     /// there is deliberately no way to edit the published one.
+    BrokerServiceImpl()
+    {
+        // Establish the non-null invariant before any reader exists.
+        publish_pubkey_index(pylabhub::utils::security::PubkeyOriginIndex{});
+    }
+
     void publish_pubkey_index(pylabhub::utils::security::PubkeyOriginIndex built)
     {
         pubkey_index_snapshot.store(

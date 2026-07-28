@@ -56,6 +56,10 @@ void PubkeyOriginIndex::insert_(std::string pubkey_z85, PubkeyOrigin origin)
             "(plh_hub --init / --keygen).");
     }
 
+    const bool is_role = origin.kind == PubkeyOrigin::Kind::LocalRole;
+    allowlist_.peers.insert(PeerIdentity{"curve", pubkey_z85});
+    if (is_role)
+        local_role_keys_.insert(pubkey_z85);
     by_pubkey_.emplace(std::move(pubkey_z85), std::move(origin));
 }
 
@@ -74,38 +78,15 @@ void PubkeyOriginIndex::add_federation_peer(std::string_view peer_uid,
                                                   std::string(display_name)});
 }
 
-std::optional<PubkeyOrigin> PubkeyOriginIndex::resolve(const AttestedKey &attested) const
+const PubkeyOrigin *PubkeyOriginIndex::resolve(const AttestedKey &attested) const
 {
     const std::string_view pubkey_z85 = attested.key().view();
     const auto it = by_pubkey_.find(pubkey_z85);
     if (it == by_pubkey_.end())
-        return std::nullopt;
-    return it->second;
+        return nullptr;
+    return &it->second;
 }
 
-PeerAllowlist PubkeyOriginIndex::as_peer_allowlist() const
-{
-    PeerAllowlist al;
-    for (const auto &[pubkey, origin] : by_pubkey_)
-        al.peers.insert(PeerIdentity{"curve", pubkey});
-    return al;
-}
-
-std::vector<std::string> PubkeyOriginIndex::local_role_pubkeys() const
-{
-    std::vector<std::string> out;
-    out.reserve(by_pubkey_.size());
-    for (const auto &[pubkey, origin] : by_pubkey_)
-    {
-        if (origin.kind == PubkeyOrigin::Kind::LocalRole)
-            out.push_back(pubkey);
-    }
-    // Deterministic order — the roster rides REG_ACK, and a set that
-    // reshuffles per process makes wire captures and test pins unstable
-    // for no reason.
-    std::sort(out.begin(), out.end());
-    return out;
-}
 
 } // namespace pylabhub::utils::security
 
@@ -148,8 +129,8 @@ ClaimVerdict PubkeyOriginIndex::check_registration_claim(
     if (announced_pubkey != attested->key().view())
         return ClaimVerdict::pubkey_mismatch;
 
-    const auto origin = resolve(*attested);
-    if (!origin.has_value())
+    const PubkeyOrigin *origin = resolve(*attested);
+    if (origin == nullptr)
         return ClaimVerdict::unknown_key;
 
     // Kind before uid, deliberately.  A federation peer whose subject_uid

@@ -38,6 +38,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -161,7 +162,15 @@ class PYLABHUB_UTILS_EXPORT PubkeyOriginIndex
     /// caller seeing `nullopt` is looking at either a configuration
     /// change mid-flight or a gate that is not doing its job.  Treat it
     /// as a rejection AND as something worth logging loudly.
-    [[nodiscard]] std::optional<PubkeyOrigin> resolve(const AttestedKey &attested) const;
+    /// Returns `nullptr` when the hub has no record of this key.
+    ///
+    /// A POINTER INTO THE SNAPSHOT, not a copy: resolution runs on the
+    /// message path, and returning by value copied two strings per message.
+    /// This is safe precisely because a published index is immutable and
+    /// the caller holds a `shared_ptr<const>` keeping it alive — the
+    /// snapshot design is what makes the borrow sound.  The pointer is valid
+    /// for as long as the caller's snapshot handle is.
+    [[nodiscard]] const PubkeyOrigin *resolve(const AttestedKey &attested) const;
 
     /// Decide whether a registration claim belongs to this connection.
     ///
@@ -200,7 +209,10 @@ class PYLABHUB_UTILS_EXPORT PubkeyOriginIndex
     /// deny-all, which is the correct bootstrap state for a hub with no
     /// configured roles (HEP-CORE-0035 §4.8.4), not an invitation to
     /// admit everyone.
-    [[nodiscard]] PeerAllowlist as_peer_allowlist() const;
+    /// Computed ONCE while building, not per call.  A published index never
+    /// changes, so its projections never change either; recomputing them
+    /// per use was work the immutability had already made unnecessary.
+    [[nodiscard]] const PeerAllowlist &as_peer_allowlist() const noexcept { return allowlist_; }
 
     /// Keys of kind `LocalRole` only, as a Z85 list.
     ///
@@ -209,7 +221,14 @@ class PYLABHUB_UTILS_EXPORT PubkeyOriginIndex
     /// keys, which authorize a different plane (HEP-CORE-0027 §3.5).
     /// Having one index expose both views keeps that distinction in one
     /// place instead of relying on each call site to filter correctly.
-    [[nodiscard]] std::vector<std::string> local_role_pubkeys() const;
+    /// Local-role keys only, in deterministic order — the roster rides
+    /// REG_ACK, and an order that reshuffles per process makes wire captures
+    /// and test pins unstable for no reason.  Held sorted (a `std::set`)
+    /// rather than sorted per call: this is read on every registration.
+    [[nodiscard]] const std::set<std::string> &local_role_pubkeys() const noexcept
+    {
+        return local_role_keys_;
+    }
 
     [[nodiscard]] std::size_t size() const noexcept { return by_pubkey_.size(); }
     [[nodiscard]] bool empty() const noexcept { return by_pubkey_.empty(); }
@@ -231,6 +250,10 @@ class PYLABHUB_UTILS_EXPORT PubkeyOriginIndex
     };
 
     std::unordered_map<std::string, PubkeyOrigin, KeyHash, std::equal_to<>> by_pubkey_;
+
+    // Projections maintained as entries are added, so readers pay nothing.
+    PeerAllowlist allowlist_;
+    std::set<std::string> local_role_keys_;
 
 };
 
