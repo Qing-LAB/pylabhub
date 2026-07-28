@@ -636,15 +636,6 @@ federation peer, under a declared trust mode. Until those modes exist, a
 federation-peer principal is refused on the registration plane rather than
 silently permitted (§5b).
 
-**I-CROSS-CHECKS-FAIL-CLOSED.** A declared value that duplicates something
-the transport already establishes (today: `zmq_pubkey` on registration) is
-consulted only inside denial predicates — absent, malformed, or
-inconsistent all refuse, and no value of it grants anything. Such a field
-strictly narrows the accepted set and therefore cannot be an escalation
-vector, which is what makes redundant declarations safe to require.
-*Violated by:* any code path where a body-declared value being *present and
-well-formed* is what causes acceptance.
-
 **I-ABSENCE-IS-MEANINGFUL.** A verified key that resolves to no principal
 is a legitimate state (the admin plane is deliberately not key-gated,
 HEP-0033 §11), not an error. Planes that require a principal reject
@@ -665,16 +656,12 @@ Detected by walking the chain in §5c against current code.
 | **Federation peer on the registration plane** | admission pipeline | Undefined today; peers resolve but §4.3 modes are unbuilt. Interim: refuse by kind (§5b). |
 | **Verified key discarded at every ingress** | broker and role ROUTERs | ZAP sets `user_id` for every domain; nothing above the socket reads it. This is the enabling defect for all of the above. |
 
-### The `zmq_pubkey` request field is a required cross-check, not a risk
+### The `zmq_pubkey` request field — declaration, with consistency required
 
-An earlier draft of this section called the retained `zmq_pubkey` body
-field a "trap". That was wrong, and worth correcting precisely because the
-reasoning behind it is the useful part.
-
-**It is load-bearing — for denial.** The role is not *authorized* by this
-field; authority comes from the connection's verified key resolving to a
-principal. But the field is required, and every check over it can only
-refuse:
+Nothing trusts this field. The role is authorized by the connection's
+verified key resolving to a principal; the body field is a declaration that
+must be consistent with what is already known, and every check over it
+denies:
 
 | Condition | Outcome | Enforced |
 |---|---|---|
@@ -683,25 +670,14 @@ refuse:
 | announced key ≠ **connection's verified key** | deny (`PUBKEY_MISMATCH`) | **slice 3 — the missing leg** |
 | claimed uid ≠ connection principal's subject | deny (`IDENTITY_MISMATCH`) | **slice 3** |
 
-**Why that shape is safe, stated as a property rather than a caution:** a
-field consulted *only* inside denial predicates cannot be a
-privilege-escalation vector, because no value of it can cause an acceptance
-that would not otherwise occur. Lying in it can only get you refused. It
-strictly narrows the accepted set; it can never widen it.
+The two existing checks compare the claim against the operator's roster.
+What is missing is the leg comparing it against the *connection* — that
+absence is the defect this design closes.
 
-The two existing checks compare the claim against the *operator's roster*.
-What is missing is the leg that compares it against the *connection* — and
-that absence, not the field, is the defect this design closes.
-
-**What it buys, which is why D2 keeps it:** the request is self-describing
-rather than relying on out-of-band context; a mismatch is diagnosable and
-distinguishes config drift (role's vault and config disagree) from an
-attack; and an operator reading a rejected request can see what was claimed
-without reconstructing it from transport state.
-
-The generic concern — "some future handler might read a body field as
-authority" — is real but is not a property of this field. It is covered by
-**I-IDENTITY-FROM-HANDSHAKE**, which applies to every body field equally.
+Why D2 keeps the field: the request is self-describing rather than leaning
+on out-of-band context, and a mismatch distinguishes config drift (a role
+whose vault and config disagree) from an attack, which an operator acts on
+differently.
 
 ### Obsolete residues
 
