@@ -73,8 +73,13 @@ today from config alone.  What must wait for #69 is the admission half: a real
 peer hub completing a handshake against the CTRL ROUTER.  Do not treat a green
 sweep as evidence the peer path works.
 
-Implementation slices (none started): index → capture (observe-only) →
-registration enforcement → inbox → admin → federation (with #69).  Merges
+Implementation slices: **index ✅ SHIPPED 2026-07-27** (`f8ba8927`
+`PubkeyOriginIndex`; wire-seam pin `1c805e84`) → capture verified key on the
+envelope (observe-only) → **registration enforcement — this is the commit that
+actually closes the impersonation gap** → inbox principal → admin session →
+federation (with #69).  Everything shipped so far is foundation: **no code yet
+compares a claimed identity against the connection's verified key**, so the
+gap described above is still open.  Merges
 with **#66**: `BrokerWireClient`'s documented "role_uid this wire client
 masquerades as" becomes structurally impossible.  Open decisions recorded on
 task #83.  Draft: `docs/tech_draft/DRAFT_verified_peer_identity_2026-07-27.md`.
