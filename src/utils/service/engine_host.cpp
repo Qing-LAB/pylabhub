@@ -133,7 +133,19 @@ template <typename ApiT> void EngineHost<ApiT>::startup_()
         // ConfigT (Phase 7 Option E — see engine_host.hpp ctor docs).
         api_ = std::make_unique<ApiT>(core_, std::string(short_tag_), uid_);
 
-        api_->thread_manager().spawn("worker", [this] { worker_main_(); });
+        // `ready_promise_` is fulfilled by `worker_main_`, so a refused spawn
+        // is not a silent degradation — it is a permanent block on the
+        // `ready_future.get()` below, with nothing left alive to satisfy it.
+        // The surrounding catch already implements the rollback this needs
+        // ("Construction failure or worker spawn failure"), and it was written
+        // when spawn failure could only arrive as an exception; convert the
+        // `false` back into that path rather than duplicating the rollback.
+        if (!api_->thread_manager().spawn("worker", [this] { worker_main_(); }))
+        {
+            throw std::runtime_error("EngineHost: worker thread spawn refused for host '" + uid_ +
+                                     "' — the ThreadManager is closing or the thread could not "
+                                     "be created; startup cannot proceed");
+        }
 
         const bool ok = ready_future.get();
         if (!ok)

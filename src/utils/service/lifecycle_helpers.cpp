@@ -215,45 +215,108 @@ ShutdownOutcome timedShutdown(const std::function<void()> &func, std::chrono::mi
     // Formatting goes through format_to_n into a stack buffer so narrating
     // never allocates on a teardown path.
     const std::string label_copy(label);
-    std::thread thread(
-        [func, state, label_copy]()
+    // Named rather than passed inline, because it runs on EITHER of two
+    // paths: normally on a worker thread with a deadline, and — when the
+    // thread cannot be created — directly on this one.  Single-sourcing it
+    // means the inline fallback produces byte-identical narration and
+    // identical exception capture, so a reader of the trace does not have
+    // to know which path ran to interpret it.
+    auto narrated_run = [func, state, label_copy]()
+    {
         {
-            {
-                char line[256];
-                const auto res = fmt::format_to_n(line, sizeof(line),
-                                                  "[trace|t{}|{}us] event=ShutdownEnter module='{}'\n",
-                                                  pylabhub::platform::get_native_thread_id(),
-                                                  trace_now_us(), label_copy);
-                lifecycle_trace() += std::string_view(line, res.size < sizeof(line) ? res.size
-                                                                                   : sizeof(line));
-            }
-            bool threw = false;
+            char line[256];
+            const auto res = fmt::format_to_n(
+                line, sizeof(line), "[trace|t{}|{}us] event=ShutdownEnter module='{}'\n",
+                pylabhub::platform::get_native_thread_id(), trace_now_us(), label_copy);
+            lifecycle_trace() +=
+                std::string_view(line, res.size < sizeof(line) ? res.size : sizeof(line));
+        }
+        bool threw = false;
+        try
+        {
+            func();
+        }
+        catch (...)
+        {
+            threw = true;
+            state->ex_ptr = std::current_exception();
+        }
+        {
+            char line[256];
+            const auto res = fmt::format_to_n(
+                line, sizeof(line), "[trace|t{}|{}us] event=ShutdownExit module='{}' outcome={}\n",
+                pylabhub::platform::get_native_thread_id(), trace_now_us(), label_copy,
+                threw ? "threw" : "ok");
+            lifecycle_trace() +=
+                std::string_view(line, res.size < sizeof(line) ? res.size : sizeof(line));
+            if (threw)
+                lifecycle_trace().mark_anomaly();
+        }
+        {
+            std::lock_guard<std::mutex> lk(state->mu);
+            state->completed = true;
+        }
+        state->cv.notify_one();
+    };
+
+    // Tail shared by every path that actually RAN the callback: translate a
+    // captured exception into the outcome's message field.
+    auto outcome_from_state = [&state]() -> ShutdownOutcome
+    {
+        if (state->ex_ptr)
+        {
             try
             {
-                func();
+                std::rethrow_exception(state->ex_ptr);
+            }
+            catch (const std::exception &e)
+            {
+                return {false, false, e.what()};
             }
             catch (...)
             {
-                threw = true;
-                state->ex_ptr = std::current_exception();
+                return {false, false, "unknown exception"};
             }
-            {
-                char line[256];
-                const auto res =
-                    fmt::format_to_n(line, sizeof(line), "[trace|t{}|{}us] event=ShutdownExit module='{}' outcome={}\n",
-                                     pylabhub::platform::get_native_thread_id(), trace_now_us(),
-                                     label_copy, threw ? "threw" : "ok");
-                lifecycle_trace() += std::string_view(line, res.size < sizeof(line) ? res.size
-                                                                                   : sizeof(line));
-                if (threw)
-                    lifecycle_trace().mark_anomaly();
-            }
-            {
-                std::lock_guard<std::mutex> lk(state->mu);
-                state->completed = true;
-            }
-            state->cv.notify_one();
-        });
+        }
+        return {true, false, {}};
+    };
+
+    // Creating the thread is the one step here that can fail for a reason
+    // outside this process's control — `pthread_create` returns EAGAIN at the
+    // thread or memory limit, surfacing as `std::system_error`.  Letting that
+    // escape is fatal rather than merely unfortunate: this function is
+    // reached from `finalize()` under `~LifecycleGuard()`, which is
+    // `noexcept`, so an escaping exception is `std::terminate` — no trace
+    // dump, and every module after this one never tears down.  And the
+    // triggering condition is resource exhaustion, i.e. exactly the shutdown
+    // that most needs to finish and report.
+    //
+    // So the deadline is what we give up, not the teardown.  Running the
+    // callback inline is the same bargain modules that opt into
+    // `set_synchronous_shutdown(true)` already accept: no deadline, no
+    // detach, and a hang here wedges the finalize thread.  That is strictly
+    // better than terminating, and the trace says which one happened.
+    std::thread thread;
+    try
+    {
+        thread = std::thread(narrated_run);
+    }
+    catch (const std::exception &e)
+    {
+        {
+            char line[256];
+            const auto res = fmt::format_to_n(
+                line, sizeof(line),
+                "[trace|t{}|{}us] event=ShutdownWorkerSpawnFailed module='{}' "
+                "action=ran_inline_without_deadline reason='{}'\n",
+                pylabhub::platform::get_native_thread_id(), trace_now_us(), label, e.what());
+            lifecycle_trace() +=
+                std::string_view(line, res.size < sizeof(line) ? res.size : sizeof(line));
+        }
+        lifecycle_trace().mark_anomaly();
+        narrated_run();
+        return outcome_from_state();
+    }
 
     {
         std::unique_lock<std::mutex> lk(state->mu);
@@ -287,22 +350,7 @@ ShutdownOutcome timedShutdown(const std::function<void()> &func, std::chrono::mi
 
     thread.join();
 
-    if (state->ex_ptr)
-    {
-        try
-        {
-            std::rethrow_exception(state->ex_ptr);
-        }
-        catch (const std::exception &e)
-        {
-            return {false, false, e.what()};
-        }
-        catch (...)
-        {
-            return {false, false, "unknown exception"};
-        }
-    }
-    return {true, false, {}};
+    return outcome_from_state();
 }
 
 } // namespace pylabhub::utils::lifecycle_internal

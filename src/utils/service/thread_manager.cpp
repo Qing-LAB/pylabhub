@@ -524,7 +524,33 @@ bool ThreadManager::spawn(const std::string &name, std::function<void(SlotContex
     slot.active_loop_depth = active_loop_depth;
     slot.shutdown_requested = shutdown_requested;
     slot.is_master = opts.is_master;
-    slot.thread = std::thread(std::move(wrapped));
+    // Creating the thread is the only step here that can fail for a reason
+    // outside this process's control: `pthread_create` returns EAGAIN when
+    // the thread or memory limit is reached, which surfaces as
+    // `std::system_error`.  Every OTHER refusal in this function — `closing`
+    // above, the single-master invariant above — reports through the `bool`,
+    // and callers read `false` as "the thread did not start".  Letting the
+    // one genuine RESOURCE failure throw instead would make this function
+    // signal the same outcome two different ways, and the exceptional one
+    // through a `bool`-returning API nobody wraps in a `try`.
+    //
+    // `slot` is still a local at this point and is discarded on the failure
+    // path, so no half-built slot reaches `pImpl->slots` and `drain()` has
+    // nothing extra to walk.  The per-slot atomics die with it; nothing can
+    // be waiting on them because the slot was never published.
+    try
+    {
+        slot.thread = std::thread(std::move(wrapped));
+    }
+    catch (const std::exception &e)
+    {
+        LOGGER_ERROR("[ThreadManager:{}] spawn('{}') failed — could not create "
+                     "thread: {}. The thread was NOT started and no slot was "
+                     "registered; treat this as the `false` return, not a "
+                     "transient.",
+                     pImpl->composed_identity, name, e.what());
+        return false;
+    }
     pImpl->slots.emplace_back(std::move(slot));
 
     LOGGER_INFO("[ThreadManager:{}] spawned thread '{}' (join_timeout={}ms)",

@@ -24,6 +24,106 @@ removals from D2 / D3 drift batches).
 > `docs/archive/transient-2026-07-18/todo-completions/`.  #235 residual: L3 parity
 > regression tests → fold into **#232**.
 
+### #88 — Thread-spawn resource failure escapes the non-throwing failure channel
+
+**Found 2026-07-28** while auditing allocation on the shutdown, panic, and
+validation paths.  Governing design: `HEP-CORE-0031` (ThreadManager),
+`HEP-CORE-0001` (lifecycle finalize).
+
+Both places the framework creates a thread have a deliberate non-throwing
+failure channel, and both bypass it for the one failure that is genuinely an
+OS resource failure — `pthread_create` returning `EAGAIN`/`ENOMEM`, which
+surfaces as `std::system_error` from the `std::thread` constructor.
+
+| Site | Failure channel it already has | What bypasses it |
+|---|---|---|
+| `thread_manager.cpp:527` | `spawn()` returns `bool` | `std::thread` ctor throws out of a `bool`-returning API |
+| `lifecycle_helpers.cpp:218` | `ShutdownOutcome{success, timed_out, exception_msg}` | same, into a `noexcept` destructor |
+
+**Why this is a design gap and not a missing `try`.**  `ThreadManager::spawn`
+routes *both* policy refusals through the bool — the `closing` flag at `:492`
+(set under the same lock `drain()` uses to move slots, so a spawn racing
+teardown cannot orphan a joinable thread) and the single-master invariant at
+`:504` (§4.2).  Only the resource acquisition itself is unguarded.  The
+facility built to make thread failure survivable does not cover the one
+failure that is not the caller's fault.
+
+**Escape path for the lifecycle half**, traced through real frames:
+
+```
+~LifecycleGuard() noexcept          lifecycle.hpp:604
+  -> FinalizeApp -> finalize()      lifecycle.cpp:429
+    -> dispatch_shutdown            lifecycle.cpp:578          no try/catch
+      -> shutdownModuleWithTimeout  lifecycle_dynamic.cpp:382  no try/catch
+        -> timedShutdown -> std::thread ctor   THROWS
+```
+
+An escaping exception from a `noexcept` destructor is `std::terminate`: no
+trace dump, no teardown of the remaining modules — and the triggering
+condition is resource exhaustion, i.e. the shutdown that most needs to
+complete and report.  The async unload path has the same shape
+(`dynShutdownThreadMain` → `processOneUnloadInThread`,
+`lifecycle_dynamic.cpp:544` → `timedShutdown` at `:659`), where a throw
+terminates from a thread function.
+
+The asymmetry showing this was never considered: the *synchronous* sibling
+path `run_inline` (`lifecycle.cpp:525-553`) is fully wrapped in
+`catch (const std::exception &)` / `catch (...)`.  Direct-call is
+exception-safe; thread-spawn is not.
+
+**Fix — finish the existing channel, do not add machinery.**
+
+1. `thread_manager.cpp:527` — `try`/`catch` around the construction,
+   `LOGGER_ERROR` + `return false`.  No API change; the four call sites that
+   already test the bool handle it correctly as-is (`hub_host.cpp:318`,
+   `:401`, `role_api_base.cpp:4124`, `role_host_frame.cpp:593`).  Ensure no
+   half-built slot lands in `pImpl->slots`.
+2. `lifecycle_helpers.cpp:218` — catch, run the callback inline on this
+   thread, report through `ShutdownOutcome`.  That module loses its deadline;
+   teardown continues and the trace records why.  `timedShutdown` **cannot**
+   delegate to `ThreadManager` — ThreadManager registers as a lifecycle
+   module whose own teardown runs *through* `timedShutdown`, so the
+   dependency would be circular.  It mirrors the discipline instead.
+3. Three `spawn()` call sites discard the bool and continue as if the thread
+   exists — `engine_host.cpp:136`, `hub_zmq_queue.cpp:2118`, `:2125`.  Live
+   today independent of the throw, and precisely the scenario the `closing`
+   flag was added to catch.
+
+**Status: all three implemented 2026-07-29.**  Full unfiltered sweeps green in
+both configurations — Debug 2714/2714, Release 2711/2711 (the count differs by
+pre-existing per-config skips, not by coverage lost here).  Release was not
+optional: this is a library change on the teardown path, where
+`PYLABHUB_ENABLE_DEBUG_MESSAGES` is off and `NDEBUG` is on.
+`timedShutdown` was restructured rather than patched — the worker body is
+hoisted into a named `narrated_run` lambda so the threaded path and the
+inline fallback emit byte-identical narration and capture exceptions
+identically (a trace reader should not have to know which path ran), and the
+exception-to-outcome tail is hoisted into `outcome_from_state` so it is not
+duplicated across both.  The fallback narrates
+`event=ShutdownWorkerSpawnFailed action=ran_inline_without_deadline` through
+`format_to_n` into a stack buffer and marks the anomaly.
+`engine_host.cpp` turned out to be worse than a silent degradation: a refused
+spawn is a *permanent block* on `ready_future.get()`, since `ready_promise_`
+is fulfilled by `worker_main_` and nothing is left alive to fulfil it.
+
+**Testing — no new test, deliberately.**  The *policy* half of the channel is
+already pinned (`thread_manager_active_loop_workers.cpp:544`,
+`request_shutdown_all_flips_closing_and_rejects_new_spawn`).  The *resource*
+half is not reachable without a production fault-injection hook, which is
+forbidden.  `ZmqQueue::start()`'s new `false` return is likewise unreachable:
+its `ThreadManager` is constructed fresh inside `start()`, so `closing` is
+false, and re-entry is already refused by the `running_.exchange(true)`
+guard.  If a fault-injection facility ever lands **in the test framework**,
+the three assertions to write are: spawn failure → `spawn()` returns false
+with no slot registered; `timedShutdown` runs the callback inline and reports
+through `ShutdownOutcome`; `ZmqQueue::start()` returns false rather than true.
+
+Siblings from the same audit: **#86** (panic allocates before it emits; nine
+finalize-path narration sites allocate to feed an allocation-free buffer;
+`PLH_PANIC_BUFFER_BYTES` CMake option, default 4096) and **#83** items A–E
+(borrowed `resolve()` return, two latent range-for use-after-free landmines,
+`Z85PublicKey` storing a `std::string` for a fixed 40-char value).
+
 ### #85 — `plh_hub` CLI hangs at exit; shutdown diagnostics are mute in Release
 
 **Discovered 2026-07-27** during the #84 verification sweep.  **Cause NOT

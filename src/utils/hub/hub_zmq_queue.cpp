@@ -2112,19 +2112,39 @@ bool ZmqQueue::start()
     pImpl->thread_mgr_ = std::make_unique<pylabhub::utils::ThreadManager>(
         "ZmqQueue", owner_id, std::vector<std::string>{"ZMQContext"});
 
+    // `spawn` reports refusal by returning false — the manager is closing, or
+    // the thread could not be created (HEP-CORE-0031).  Dropping that answer
+    // would leave a queue whose socket is bound and whose state says Active
+    // with nothing servicing it: every send would queue forever and every
+    // receive would silently never arrive.  Treat it exactly like the socket
+    // setup failures above and fail `start()`.
+    bool worker_started = false;
     if (pImpl->mode == ZmqQueueImpl::Mode::Read)
     {
         pImpl->recv_stop_.store(false, std::memory_order_release);
-        pImpl->thread_mgr_->spawn(
+        worker_started = pImpl->thread_mgr_->spawn(
             "recv", [impl_ptr](pylabhub::utils::ThreadManager::SlotContext &ctx)
             { ctx.with_active_loop([impl_ptr, &ctx] { impl_ptr->run_recv_thread_(ctx); }); });
     }
     else // Write
     {
         pImpl->send_stop_.store(false, std::memory_order_release);
-        pImpl->thread_mgr_->spawn(
+        worker_started = pImpl->thread_mgr_->spawn(
             "send", [impl_ptr](pylabhub::utils::ThreadManager::SlotContext &ctx)
             { ctx.with_active_loop([impl_ptr, &ctx] { impl_ptr->run_send_thread_(ctx); }); });
+    }
+
+    if (!worker_started)
+    {
+        pImpl->socket.close();
+        pImpl->mechanism_.store(Mechanism::Uninitialized, std::memory_order_release);
+        pImpl->running_.store(false, std::memory_order_release);
+        LOGGER_ERROR("[hub::ZmqQueue] {} thread spawn refused for '{}' (endpoint '{}'); "
+                     "start() fails rather than reporting Active with no thread "
+                     "servicing the socket",
+                     pImpl->mode == ZmqQueueImpl::Mode::Read ? "recv" : "send", pImpl->queue_name,
+                     pImpl->bind_socket ? pImpl->actual_endpoint : pImpl->endpoint);
+        return false;
     }
 
     // HEP-CORE-0036 §6.7 — queue has bound/connected its socket and

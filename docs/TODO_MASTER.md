@@ -168,6 +168,12 @@ post-reconcile shipped-sprint detail).
   per-step probes** (design done: HEP-CORE-0048 + HEP-CORE-0001 §"Lifecycle
   trace"; instrument shipped inside lifecycle, `0dc1143b`); **#85 teardown
   stall — cause UNKNOWN, likely the same open bug as #93/#242 in HEP-CORE-0004**;
+  #88 thread-spawn resource failure escaping the non-throwing failure channel
+  ✅ SHIPPED 2026-07-29 (`std::thread` ctor threw out of
+  `ThreadManager::spawn`'s `bool` and out of `timedShutdown` into
+  `~LifecycleGuard() noexcept` → `std::terminate` during teardown; now routed
+  through the existing `bool` / `ShutdownOutcome` channels, with three
+  discarded `spawn()` returns fixed);
   deferred: Python client SDK, script-spawned worker threads, `src/` restructure.
 - **MessageHub / broker protocol (`MESSAGEHUB_TODO.md`)** — #92 `_REQ`-frame
   half-mix audit; (H43 federation role-disconnect → folded into #69); Wave-M2 MP4
