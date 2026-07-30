@@ -1462,7 +1462,8 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json &artifacts) noexcept
                     for (const auto &p : src)
                     {
                         allowlist.peers.insert(
-                            pylabhub::utils::security::PeerIdentity{"curve", p.pubkey_z85});
+                            pylabhub::utils::security::PeerIdentity{pylabhub::utils::security::kCurveMechanism,
+                                                        p.pubkey_z85});
                     }
                 }
                 if (!set_peer_allowlist(std::move(allowlist)))

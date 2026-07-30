@@ -104,130 +104,142 @@ enum class ClaimVerdict
 /// Human-readable name, for logs and reject details.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::string_view to_string(ClaimVerdict v) noexcept;
 
-/// **Publication contract — build, publish as const, replace wholesale.**
+/// One local role as the roster carries it: the uid AND the key.
 ///
-/// This index is read concurrently from message paths and carries no lock,
-/// so a published instance must never mutate.  But the operator roster it
-/// mirrors DOES change during hub lifetime — roles are added and revoked,
-/// and the CTRL allowlist this index projects into is already a
-/// `PortableAtomicSharedPtr<PeerAllowlist>` swapped atomically on reload
-/// (HEP-CORE-0035 §4.8.5).  An index that could not be replaced would drift
-/// out of step with the allowlist it feeds: a revoked role still resolving
-/// to a valid principal while ZAP had begun denying it.  Divergence between
-/// those two views is precisely what collapsing five projections into one
-/// index exists to prevent.
+/// A bare key is not enough for the receiving side. A role that gets only
+/// keys can see that a message came from `BBBB` and has no way to learn
+/// that `BBBB` is alice — so it cannot name the sender to the application,
+/// cannot keep per-sender sequence state, and cannot key replay tracking.
+/// That is the defect the inbox plane has today (HEP-CORE-0027 §3.6), and
+/// it is why this projection carries pairs even though the wire has not
+/// migrated yet: nothing new should be written against the shape that is
+/// already known to be wrong.
+struct PYLABHUB_UTILS_EXPORT RosterEntry
+{
+    std::string uid;
+    std::string pubkey_z85;
+
+    [[nodiscard]] bool operator<(const RosterEntry &o) const noexcept { return uid < o.uid; }
+};
+
+/// Key → subject, and the questions this hub can answer about a peer.
 ///
-/// So immutability and updatability are BOTH required, and the resolution is
-/// the pattern already used for the allowlist: build a fresh index, publish
-/// it as `std::shared_ptr<const PubkeyOriginIndex>`, and swap the pointer.
-/// Readers take a snapshot that cannot change under them; a reload installs
-/// a new snapshot and old readers drain naturally.
+/// **Immutable by construction, not by convention.**  There are no mutating
+/// members: an instance is produced complete by `Builder` and can only be
+/// asked questions thereafter.  An earlier revision put `add_local_role` /
+/// `add_federation_peer` directly on this class and relied on publishing it
+/// as `shared_ptr<const>` to stop later edits — a rule enforced by a
+/// keyword on the handle rather than by the type. Anyone holding a non-const
+/// reference could edit a live authority.
 ///
-/// Immutability after publication is therefore enforced by `const`, at
-/// compile time — a reader holding `shared_ptr<const>` cannot reach `add_*`
-/// at all.  An earlier revision used a `finalize()` flag that threw on later
-/// mutation; that was worse in both directions, since it checked at runtime
-/// what `const` checks at compile time AND it forbade the reload the
-/// surrounding design requires.
+/// The roster it mirrors DOES change during hub lifetime (roles are added
+/// and revoked), and the CTRL allowlist it projects into is swapped
+/// atomically on reload (HEP-CORE-0035 §4.8.5). Both are satisfied by
+/// replacement rather than mutation: build a fresh authority, publish it as
+/// `std::shared_ptr<const PeerAuthority>`, swap the pointer. Readers hold a
+/// snapshot that cannot change under them; old readers drain naturally.
 ///
-/// **Never mutate an index that has been published.  Build a new one.**
-class PYLABHUB_UTILS_EXPORT PubkeyOriginIndex
+/// **Questions return answers, not subjects.**  There is deliberately no
+/// `resolve()` handing back the internal record. Every authorization
+/// question returns a `ClaimVerdict`, so there are no per-call-site
+/// comparisons to get subtly wrong — a forgotten kind test, a laxer string
+/// rule, a missing absent-case — and adding a plane cannot silently skip a
+/// check it does not perform. The one exception is `local_role_uid`, which
+/// exists because the inbox genuinely needs a NAME (see `RosterEntry`); it
+/// returns the uid alone, by value, and only for a local role.
+class PYLABHUB_UTILS_EXPORT PeerAuthority
 {
   public:
-    /// Register a local role's key.
-    /// @throws std::runtime_error if the key is already registered to a
-    ///         different subject, or is not a 40-char Z85 key.
-    /// Build-time only — call before publishing as `shared_ptr<const>`.
-    /// See the publication contract above.
-    void add_local_role(const ::pylabhub::broker::KnownRole &role);
+    /// Fills in an authority, then hands over a finished one.
+    ///
+    /// Nested rather than a separate class with `friend` access: a nested
+    /// class is a member of its enclosing class and can reach its private
+    /// constructor without any encapsulation hole.
+    class PYLABHUB_UTILS_EXPORT Builder
+    {
+      public:
+        /// @throws std::runtime_error if the key is already registered to a
+        ///         different subject, or is not a 40-char Z85 key.
+        void add_local_role(const ::pylabhub::broker::KnownRole &role);
 
-    /// Register a federation peer hub's key.
-    /// @throws std::runtime_error under the same conditions as
-    ///         `add_local_role`.
-    void add_federation_peer(std::string_view peer_uid, std::string_view pubkey_z85);
+        /// @throws std::runtime_error under the same conditions.
+        void add_federation_peer(std::string_view peer_uid, std::string_view pubkey_z85);
 
-    /// Resolve an ATTESTED key to its subject.
-    ///
-    /// Takes an `AttestedKey` and not a string, deliberately.  A caller
-    /// holding a key that merely arrived in a request body has nothing to
-    /// pass here, so laundering a claim into an identity fails to COMPILE
-    /// rather than silently succeeding.  That is the entire point of the
-    /// surrounding mechanism, and a `string_view` overload would hand it
-    /// straight back — do not add one.
-    ///
-    /// `std::nullopt` means the hub has no record of this key.  With
-    /// Layer-1 ZAP enforcing, that is unreachable on an established
-    /// connection — an unlisted key never completes a handshake — so a
-    /// caller seeing `nullopt` is looking at either a configuration
-    /// change mid-flight or a gate that is not doing its job.  Treat it
-    /// as a rejection AND as something worth logging loudly.
-    /// Returns `nullptr` when the hub has no record of this key.
-    ///
-    /// A POINTER INTO THE SNAPSHOT, not a copy: resolution runs on the
-    /// message path, and returning by value copied two strings per message.
-    /// This is safe precisely because a published index is immutable and
-    /// the caller holds a `shared_ptr<const>` keeping it alive — the
-    /// snapshot design is what makes the borrow sound.  The pointer is valid
-    /// for as long as the caller's snapshot handle is.
-    [[nodiscard]] const PubkeyOrigin *resolve(const AttestedKey &attested) const;
+        /// Hand over the finished authority.  Consumes the builder, so a
+        /// half-built authority cannot be published and the builder cannot
+        /// keep editing what it already handed out.
+        [[nodiscard]] PeerAuthority build() &&;
+
+      private:
+        void insert_(std::string_view pubkey_z85, PubkeyOrigin origin);
+        std::unordered_map<Z85PublicKey, PubkeyOrigin> by_pubkey_;
+    };
 
     /// Decide whether a registration claim belongs to this connection.
-    ///
-    /// **Gates call this; they do not call `resolve()` and compare for
-    /// themselves.**  Handing a caller the principal so it can do its own
-    /// comparison invites every call site to compare slightly differently —
-    /// a forgotten kind test, a laxer string rule, a missing absent-case.
-    /// With the comparison in here there are no per-site comparisons left
-    /// to get wrong, and adding a plane cannot silently skip a check it
-    /// does not perform.
-    ///
-    /// The federation rule lives here for exactly that reason: a
-    /// `FederationPeer` may legitimately carry identities other than its
-    /// own, but only under the delegation modes of HEP-CORE-0035 §4.3,
-    /// which are NOT built.  Until they are, such a principal is refused on
-    /// the registration plane rather than silently permitted — leaving the
-    /// most privileged principal class in front of an unimplemented policy
-    /// is how holes ship.  Note this tests the KIND, not just the uid
-    /// string: a peer whose subject_uid happened to match would otherwise
-    /// slip through a string comparison.
     ///
     /// @param attested         what the transport vouched for, if anything.
     /// @param claimed_uid      the role_uid in the request body.
     /// @param announced_pubkey the zmq_pubkey in the request body.  Nothing
     ///                         trusts it; it is a declaration that must be
     ///                         consistent, and every check over it denies.
+    ///
+    /// The federation rule lives here rather than at the call site: a
+    /// `FederationPeer` may legitimately carry identities other than its own,
+    /// but only under the delegation modes of HEP-CORE-0035 §4.3, which are
+    /// NOT built. Until they are, such a principal is refused on the
+    /// registration plane rather than silently permitted — leaving the most
+    /// privileged principal class in front of an unimplemented policy is how
+    /// holes ship. Note this tests the KIND, not just the uid string: a peer
+    /// whose subject_uid happened to match would otherwise slip through a
+    /// string comparison.
     [[nodiscard]] ClaimVerdict check_registration_claim(
         const std::optional<AttestedKey> &attested, std::string_view claimed_uid,
         std::string_view announced_pubkey) const;
 
-    /// The ZAP layer's view of this index: every known key as a
-    /// `{"curve", key}` identity.
+    /// The uid of the local role this key belongs to, for message
+    /// ATTRIBUTION (inbox sender, replay key, per-sender sequence state —
+    /// HEP-CORE-0035 §4.2.2).  `nullopt` for an unknown key or a federation
+    /// peer.
     ///
-    /// This is the ONLY sanctioned way to build a control-plane
-    /// allowlist.  `unrestricted` is always false — an empty index is
-    /// deny-all, which is the correct bootstrap state for a hub with no
-    /// configured roles (HEP-CORE-0035 §4.8.4), not an invitation to
-    /// admit everyone.
-    [[nodiscard]] PeerAllowlist as_peer_allowlist() const;
+    /// The only query that returns an identity rather than a decision,
+    /// because attribution genuinely needs a name. It returns the uid by
+    /// value and nothing else — not the kind, not a pointer into the table.
+    [[nodiscard]] std::optional<std::string> local_role_uid(const AttestedKey &attested) const;
 
-    /// Keys of kind `LocalRole` only, as a Z85 list.
+    /// Is this key a federation peer hub rather than a local role?
     ///
-    /// This is the inbox roster: role-to-role messaging authorizes any
-    /// authenticated local role, but must NOT hand out federation peer
-    /// keys, which authorize a different plane (HEP-CORE-0027 §3.5).
-    /// Having one index expose both views keeps that distinction in one
-    /// place instead of relying on each call site to filter correctly.
-    /// Local-role keys only, in deterministic order — the roster rides
-    /// REG_ACK, and an order that reshuffles per process makes wire captures
-    /// and test pins unstable for no reason.  Held sorted (a `std::set`)
-    /// rather than sorted per call: this is read on every registration.
-    [[nodiscard]] std::set<std::string> local_role_pubkeys() const;
+    /// The whole of this structure's share of the federation decision. The
+    /// rest — trust mode, and the peer's delegated role list from
+    /// HUB_PEER_HELLO (§4.3/§4.4) — is peer state that does not live here.
+    [[nodiscard]] bool is_federation_peer(const AttestedKey &attested) const;
+
+    /// The ZAP layer's view: every known key as a `{curve, key}` identity.
+    ///
+    /// The ONLY sanctioned way to build a control-plane allowlist.
+    /// `unrestricted` is always false — an empty authority is deny-all,
+    /// which is the correct bootstrap state for a hub with no configured
+    /// roles (HEP-CORE-0035 §4.8.4), not an invitation to admit everyone.
+    [[nodiscard]] PeerAllowlist zap_allowlist() const;
+
+    /// Local roles only, as `{uid, key}` pairs in uid order.
+    ///
+    /// Federation peer keys are excluded: they authorize a different plane
+    /// (HEP-CORE-0027 §3.5). Deterministic order because this rides REG_ACK
+    /// and an order that reshuffles per process makes wire captures and test
+    /// pins unstable for no reason.
+    [[nodiscard]] std::set<RosterEntry> local_role_roster() const;
 
     [[nodiscard]] std::size_t size() const noexcept { return by_pubkey_.size(); }
     [[nodiscard]] bool empty() const noexcept { return by_pubkey_.empty(); }
 
   private:
-    void insert_(std::string_view pubkey_z85, PubkeyOrigin origin);
+    explicit PeerAuthority(std::unordered_map<Z85PublicKey, PubkeyOrigin> by_pubkey) noexcept
+        : by_pubkey_(std::move(by_pubkey))
+    {
+    }
+
+    /// Internal. Deliberately not exposed — callers get verdicts.
+    [[nodiscard]] const PubkeyOrigin *resolve_(const AttestedKey &attested) const;
 
     /// The ONLY stored state.  Keyed on the validated key type, so a lookup
     /// cannot be performed with — nor an entry stored from — an unvalidated
@@ -236,7 +248,6 @@ class PYLABHUB_UTILS_EXPORT PubkeyOriginIndex
     /// second at most, and per-registration for the roster), so there is
     /// nothing here worth trading memory or a second container for.
     std::unordered_map<Z85PublicKey, PubkeyOrigin> by_pubkey_;
-
 };
 
 } // namespace pylabhub::utils::security

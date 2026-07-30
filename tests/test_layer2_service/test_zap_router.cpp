@@ -98,10 +98,10 @@ TEST_F(ZapRouterTest, ClaimCheck_CoversEveryVerdict)
     ExpectWorkerOk(w);
 }
 
-TEST_F(ZapRouterTest, Index_ResolvesAttestedKeys)
+TEST_F(ZapRouterTest, Authority_AnswersQuestionsAboutAttestedKeys)
 {
-    auto w = SpawnWorker("zap_router.index_resolves_attested_keys",
-                         {unique_dir("index_resolves_attested_keys")});
+    auto w = SpawnWorker("zap_router.authority_answers_questions_about_attested_keys",
+                         {unique_dir("authority_answers_questions")});
     ExpectWorkerOk(w);
 }
 

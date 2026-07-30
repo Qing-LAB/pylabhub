@@ -38,8 +38,8 @@
  *     with no enforced domain, a client-supplied `User-Id` lands unopposed.
  *
  * Minting anywhere else would therefore produce an `AttestedKey` whose name
- * is a lie.  `AttestedKey::from_transport()` refuses unless the domain is
- * registered with the live `ZapRouter`.
+ * is a lie.  `AttestedKey::from_message()` reads the domain off the SOCKET
+ * and refuses unless that domain is registered with the live `ZapRouter`.
  *
  * See HEP-CORE-0035 §4.2 and the design draft §3 / §5b.
  */
@@ -50,6 +50,12 @@
 #include <optional>
 #include <string>
 #include <string_view>
+
+namespace zmq
+{
+class message_t;
+class socket_t;
+} // namespace zmq
 
 namespace pylabhub::utils::security
 {
@@ -63,26 +69,41 @@ class PYLABHUB_UTILS_EXPORT AttestedKey
     /// this single checked factory is what makes the type's name true:
     /// there is no path to an instance that skipped the check.
     ///
-    /// @param zap_domain        the receiving socket's `ZMQ_ZAP_DOMAIN`.
-    /// @param transport_user_id the `User-Id` metadata libzmq attached to
-    ///                          the message, or empty when the connection
-    ///                          carried no security mechanism.
+    /// **Both facts are read from the objects themselves, never named by
+    /// the caller.**  The ZAP domain comes from @p sock; the proven key
+    /// comes from @p msg.  An earlier signature took the domain as a
+    /// `std::string_view` the caller typed in, which meant code reading
+    /// from an UNENFORCED socket could pass an ENFORCED domain's name and
+    /// receive a valid-looking attestation for a message nobody vouched
+    /// for.  Nothing did that — but the whole point of this type is that
+    /// the mistake should not be writable, and it was.  Taking the socket
+    /// removes the argument that could disagree.
+    ///
+    /// @param sock the socket the message was received on.
+    /// @param msg  the received message (frame 0 on a ROUTER; libzmq
+    ///             attaches the same metadata to every frame of a
+    ///             multipart, so any frame of the message answers).
     ///
     /// Returns `nullopt` — "nothing was attested here" — when:
-    ///   - @p zap_domain is empty or is not registered with the live
-    ///     `ZapRouter`, meaning no enforcement ran, so any `User-Id`
-    ///     present is unvouched and must not be dressed up as proof;
-    ///   - @p transport_user_id is empty (NULL-mechanism connection:
-    ///     in-process harnesses, non-CURVE transports);
+    ///   - the socket carries no `ZMQ_ZAP_DOMAIN`, or the domain is not
+    ///     registered with the live `ZapRouter`, meaning no enforcement
+    ///     ran, so any `User-Id` present is unvouched and must not be
+    ///     dressed up as proof;
+    ///   - the message carries no `User-Id` property (NULL-mechanism
+    ///     connection: in-process harnesses, non-CURVE transports);
     ///   - the value is not a well-formed Z85 key (delegated to
-///     `Z85PublicKey::validate`, which checks the ALPHABET and not
-///     merely the length — a length-only check was the gap that made
-///     this type worth revisiting).
+    ///     `Z85PublicKey::validate`, which checks the ALPHABET and not
+    ///     merely the length — a length-only check was the gap that made
+    ///     this type worth revisiting).
     ///
     /// Absence is a legitimate state, not an error.  Planes that require an
     /// attestation reject on absence; planes that do not, proceed.
-    [[nodiscard]] static std::optional<AttestedKey>
-    from_transport(std::string_view zap_domain, std::string_view transport_user_id);
+    ///
+    /// `noexcept`: this runs on the message-ingest path, where a throw
+    /// would abort a poll loop over a peer-supplied value.  Every failure
+    /// is a `nullopt`.
+    [[nodiscard]] static std::optional<AttestedKey> from_message(const zmq::socket_t &sock,
+                                                                const zmq::message_t &msg) noexcept;
 
     /// The public key the transport attested.
     ///
@@ -95,11 +116,11 @@ class PYLABHUB_UTILS_EXPORT AttestedKey
     /// Projection for admission APIs that speak `PeerIdentity`.
     [[nodiscard]] PeerIdentity as_peer_identity() const
     {
-        return PeerIdentity{"curve", key_.str()};
+        return PeerIdentity{kCurveMechanism, key_.str()};
     }
 
   private:
-    // Construction is private and `from_transport` is the only factory, so
+    // Construction is private and `from_message` is the only factory, so
     // an instance cannot exist without having passed the enforcement check.
     // Do NOT add a public constructor and do NOT add a second factory
     // taking a bare string: either reopens the hole this type closes.

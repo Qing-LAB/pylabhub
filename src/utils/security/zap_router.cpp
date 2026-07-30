@@ -361,34 +361,41 @@ bool ZapRouter::is_domain_enforced(std::string_view domain) const
     return impl_->routing.contains(domain);
 }
 
-std::optional<AttestedKey> AttestedKey::from_transport(std::string_view zap_domain,
-                                                      std::string_view transport_user_id)
+std::optional<AttestedKey> AttestedKey::from_message(const zmq::socket_t &sock,
+                                                     const zmq::message_t &msg) noexcept
 {
-    // No enforcement on this socket => nothing here was vouched for by us.
-    // A `User-Id` may still be PRESENT (a peer can send a ZMTP metadata
-    // property of that name), which is exactly why this refusal matters:
-    // dressing an unvouched value as an attestation would make the type a
-    // lie at its very first use.
-    if (!ZapRouter::instance().is_domain_enforced(zap_domain))
-        return std::nullopt;
-
-    // NULL-mechanism connection — legitimate, not an error.
-    if (transport_user_id.empty())
-        return std::nullopt;
-
-    // Our ZAP reply always carries a well-formed Z85 key (see pump_one's
-    // send_zap_reply).  Validation is delegated to Z85PublicKey rather
-    // than re-checked here: it is the project's validated representation
-    // and it checks the Z85 ALPHABET, not just the length.
+    // Both facts come from the objects, so a caller cannot pair the wrong
+    // socket with the wrong message.  See the header for why that matters.
     try
     {
-        return AttestedKey(Z85PublicKey::validate(transport_user_id));
+        // The socket's own ZAP domain.  An unset domain means the socket was
+        // never armed for authentication, so nothing on it was vouched for.
+        const std::string domain = sock.get(zmq::sockopt::zap_domain);
+        if (!ZapRouter::instance().is_domain_enforced(domain))
+            return std::nullopt;
+
+        // `User-Id` is what our own ZAP reply set, and libzmq attaches it to
+        // every message from that connection.  Absent means the connection
+        // carried no security mechanism — legitimate, not an error.
+        //
+        // A peer MAY send a ZMTP property of the same name; that is harmless
+        // only because libzmq inserts ZAP properties first and does not
+        // overwrite, which is precisely why the domain check above must pass
+        // before this value is read at all.
+        const char *user_id = zmq_msg_gets(const_cast<zmq::message_t &>(msg).handle(), "User-Id");
+        if (user_id == nullptr || *user_id == '\0')
+            return std::nullopt;
+
+        return AttestedKey(Z85PublicKey::validate(user_id));
     }
-    catch (const std::invalid_argument &e)
+    catch (const std::exception &e)
     {
-        LOGGER_WARN("AttestedKey::from_transport: domain='{}' user_id is not a valid Z85 key "
-                    "({}) — refusing to attest; this is not a value this ZAP handler produced",
-                    zap_domain, e.what());
+        // Covers a malformed Z85 value from Z85PublicKey::validate and any
+        // sockopt failure.  Either way we have no proof, and this path must
+        // not throw into a poll loop.
+        LOGGER_WARN("AttestedKey::from_message: refusing to attest ({}) — this is not a value "
+                    "this ZAP handler produced",
+                    e.what());
         return std::nullopt;
     }
 }
@@ -543,7 +550,7 @@ bool ZapRouter::pump_one(std::chrono::milliseconds timeout)
     // See HEP-CORE-0036 §7.4 + peer_admission.hpp.
     const std::optional<bool> decision = impl_->routing.with_admission(
         domain, this, [&](PeerAdmission &admission)
-        { return admission.is_peer_allowed(PeerIdentity{"curve", z85}); });
+        { return admission.is_peer_allowed(PeerIdentity{kCurveMechanism, z85}); });
 
     if (!decision.has_value())
     {

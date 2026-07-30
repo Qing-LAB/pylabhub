@@ -541,7 +541,7 @@ struct RoleAPIBase::Impl
             // roster grew AND this role owns an inbox ROUTER to gate.
             if (added > 0 && inbox_queue != nullptr)
                 for (const auto &pk : inbox_known_roles)
-                    allowlist.peers.insert(sec::PeerIdentity{"curve", pk});
+                    allowlist.peers.insert(sec::PeerIdentity{sec::kCurveMechanism, pk});
         }
         if (added == 0)
             return;
@@ -2706,7 +2706,7 @@ void RoleAPIBase::handle_channel_auth_notifies(
                         const auto pk = entry.get<std::string>();
                         if (pk.empty())
                             continue;
-                        allowlist.peers.insert(sec::PeerIdentity{"curve", pk});
+                        allowlist.peers.insert(sec::PeerIdentity{sec::kCurveMechanism, pk});
                         script_view.push_back(AllowedPeer{/*role_uid=*/std::string{}, pk});
                     }
                     const auto reason = it->details.value("reason", std::string{"unknown"});

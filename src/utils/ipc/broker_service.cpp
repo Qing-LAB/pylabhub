@@ -10,7 +10,7 @@
 #include "utils/recovery_api.hpp"
 #include "utils/schema_loader.hpp"
 #include "utils/schema_utils.hpp" // canonical_fields_str, compute_fingerprint_from_wire, make_schema_record
-#include "utils/security/pubkey_origin.hpp" // PubkeyOriginIndex (HEP-CORE-0035 §4.2)
+#include "utils/security/pubkey_origin.hpp" // PeerAuthority (HEP-CORE-0035 §4.2)
 
 #include "plh_platform.hpp"
 #include "utils/backoff_strategy.hpp"
@@ -412,15 +412,15 @@ class BrokerServiceImpl
     /// security defect waiting for the copies to disagree.
     /// The one key->subject index, held as a REPLACEABLE IMMUTABLE SNAPSHOT.
     ///
-    /// Readers take `pubkey_index()` and hold a `shared_ptr<const>` that
+    /// Readers take `peer_authority()` and hold a `shared_ptr<const>` that
     /// cannot change under them; a roster reload builds a fresh index and
     /// swaps the pointer, and in-flight readers drain on their old snapshot.
     /// Same shape as `BrokerCtrlAdmission`'s allowlist, deliberately: the
     /// allowlist is a PROJECTION of this index, so the two must be able to
     /// move together or a revoked role could still resolve to a valid
     /// principal while ZAP had already begun denying it.
-    pylabhub::utils::detail::PortableAtomicSharedPtr<const pylabhub::utils::security::PubkeyOriginIndex>
-        pubkey_index_snapshot;
+    pylabhub::utils::detail::PortableAtomicSharedPtr<const pylabhub::utils::security::PeerAuthority>
+        peer_authority_snapshot;
 
     /// Current snapshot.  NEVER null — an empty index is published by this
     /// class's constructor before anything can read one, so callers may
@@ -429,10 +429,10 @@ class BrokerServiceImpl
     /// for a hub with no configured roles (HEP-CORE-0035 §4.8.4) — so the
     /// non-null guarantee costs no safety, it just removes a null window
     /// that previously existed only until config ingestion happened to run.
-    [[nodiscard]] std::shared_ptr<const pylabhub::utils::security::PubkeyOriginIndex>
-    pubkey_index() const
+    [[nodiscard]] std::shared_ptr<const pylabhub::utils::security::PeerAuthority>
+    peer_authority() const
     {
-        return pubkey_index_snapshot.load();
+        return peer_authority_snapshot.load();
     }
 
     /// Install a rebuilt index.  The caller builds a complete new index;
@@ -440,13 +440,13 @@ class BrokerServiceImpl
     BrokerServiceImpl()
     {
         // Establish the non-null invariant before any reader exists.
-        publish_pubkey_index(pylabhub::utils::security::PubkeyOriginIndex{});
+        publish_peer_authority(pylabhub::utils::security::PeerAuthority::Builder{}.build());
     }
 
-    void publish_pubkey_index(pylabhub::utils::security::PubkeyOriginIndex built)
+    void publish_peer_authority(pylabhub::utils::security::PeerAuthority built)
     {
-        pubkey_index_snapshot.store(
-            std::make_shared<const pylabhub::utils::security::PubkeyOriginIndex>(
+        peer_authority_snapshot.store(
+            std::make_shared<const pylabhub::utils::security::PeerAuthority>(
                 std::move(built)));
     }
 
@@ -1033,7 +1033,7 @@ void BrokerServiceImpl::run()
     // may register, and federation peer hubs that may dial this
     // broker's ROUTER (HEP-CORE-0022).  An empty allowlist is the legal
     // deny-all bootstrap state per HEP-CORE-0035 §4.8.4.
-    pylabhub::utils::security::PeerAllowlist initial = pubkey_index()->as_peer_allowlist();
+    pylabhub::utils::security::PeerAllowlist initial = peer_authority()->zap_allowlist();
     const auto allowlist_size = initial.peers.size();
 
     // The ZAP domain MUST be unique per BrokerService instance.  Two
@@ -2801,9 +2801,14 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
         // defined over — NOT a guard against peers "leaking" in.  Before the
         // index existed the roster read `cfg.known_roles` directly and peers
         // lived in `cfg.peers`; the two could never have mixed.
+        // The projection carries {uid, key} pairs; this wire field still
+        // carries bare keys.  Migrating it to pairs is the inbox slice's
+        // protocol change (a role cannot attribute a sender without the uid),
+        // done as one commit across broker and role — not smuggled in here.
+        const auto authority = peer_authority();
         nlohmann::json roster = nlohmann::json::array();
-        for (auto &pubkey : pubkey_index()->local_role_pubkeys())
-            roster.push_back(std::move(pubkey));
+        for (const auto &entry : authority->local_role_roster())
+            roster.push_back(entry.pubkey_z85);
         resp["known_roles"] = std::move(roster);
     }
 
@@ -3964,9 +3969,14 @@ BrokerServiceImpl::handle_consumer_reg_req(const ::pylabhub::wire::WireEnvelope 
         // defined over — NOT a guard against peers "leaking" in.  Before the
         // index existed the roster read `cfg.known_roles` directly and peers
         // lived in `cfg.peers`; the two could never have mixed.
+        // The projection carries {uid, key} pairs; this wire field still
+        // carries bare keys.  Migrating it to pairs is the inbox slice's
+        // protocol change (a role cannot attribute a sender without the uid),
+        // done as one commit across broker and role — not smuggled in here.
+        const auto authority = peer_authority();
         nlohmann::json roster = nlohmann::json::array();
-        for (auto &pubkey : pubkey_index()->local_role_pubkeys())
-            roster.push_back(std::move(pubkey));
+        for (const auto &entry : authority->local_role_roster())
+            roster.push_back(entry.pubkey_z85);
         resp["known_roles"] = std::move(roster);
     }
 
@@ -6873,12 +6883,12 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState &state)
     // routine is what a roster reload re-runs: build a complete new index
     // and swap it, never edit a published one (which `const` forbids).
     {
-        pylabhub::utils::security::PubkeyOriginIndex index;
+        pylabhub::utils::security::PeerAuthority::Builder authority;
         for (const auto &kr : pImpl->cfg.known_roles)
         {
             try
             {
-                index.add_local_role(kr);
+                authority.add_local_role(kr);
             }
             catch (const std::exception &e)
             {
@@ -6900,7 +6910,7 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState &state)
                 continue;
             try
             {
-                index.add_federation_peer(peer.hub_uid, peer.pubkey_z85);
+                authority.add_federation_peer(peer.hub_uid, peer.pubkey_z85);
             }
             catch (const std::exception &e)
             {
@@ -6909,7 +6919,7 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState &state)
                             peer.hub_uid, e.what());
             }
         }
-        pImpl->publish_pubkey_index(std::move(index));
+        pImpl->publish_peer_authority(std::move(authority).build());
     }
 
     // HEP-CORE-0046 §14.5 admission binder — bind the callbacks the

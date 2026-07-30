@@ -56,8 +56,8 @@ pylabhub::broker::KnownRole make_role(std::string uid, std::string pubkey, std::
 // `resolve()` takes an `AttestedKey`, which only `AttestedKey::from_transport`
 // can produce and only where a ZAP domain is actually enforced.  So the
 // resolution cases need a live ZAP domain and live in
-// `ZapRouterTest.Index_ResolvesAttestedKeys` (worker
-// `zap_router::index_resolves_attested_keys`).
+// `ZapRouterTest.Authority_AnswersQuestionsAboutAttestedKeys` (worker
+// `zap_router::authority_answers_questions_about_attested_keys`).
 //
 // Two former cases are GONE rather than moved: resolving a 39-character key
 // and resolving an empty string.  Neither is expressible any more —
@@ -66,9 +66,9 @@ pylabhub::broker::KnownRole make_role(std::string uid, std::string pubkey, std::
 // ones that remain genuinely about the INDEX: what it refuses to store, and
 // what its projections contain.
 
-TEST(PubkeyOriginIndex, OneKeyForTwoRolesIsRefused)
+TEST(PeerAuthority, OneKeyForTwoRolesIsRefused)
 {
-    sec::PubkeyOriginIndex idx;
+    sec::PeerAuthority::Builder idx;
     idx.add_local_role(make_role("prod.sensor.uid01", key('a')));
 
     // Two subjects behind one key cannot be resolved to one identity.
@@ -81,9 +81,9 @@ TEST(PubkeyOriginIndex, OneKeyForTwoRolesIsRefused)
     // a refused write must not corrupt the index.
 }
 
-TEST(PubkeyOriginIndex, KeySharedBetweenRoleAndPeerIsRefused)
+TEST(PeerAuthority, KeySharedBetweenRoleAndPeerIsRefused)
 {
-    sec::PubkeyOriginIndex idx;
+    sec::PeerAuthority::Builder idx;
     idx.add_local_role(make_role("prod.sensor.uid01", key('a')));
 
     // This is the collision the known-roles store cannot see, because
@@ -91,21 +91,23 @@ TEST(PubkeyOriginIndex, KeySharedBetweenRoleAndPeerIsRefused)
     // is the first place both categories meet, so it is where the
     // cross-category clash must be caught.
     EXPECT_THROW(idx.add_federation_peer("hub.west", key('a')), std::runtime_error);
-    EXPECT_EQ(idx.size(), 1u);
+    // The original mapping survives the refused insert: a rejected write
+    // must not corrupt what is already there.
+    EXPECT_EQ(std::move(idx).build().size(), 1u);
 }
 
-TEST(PubkeyOriginIndex, ReAddingTheSameSubjectAndKeyIsIdempotent)
+TEST(PeerAuthority, ReAddingTheSameSubjectAndKeyIsIdempotent)
 {
-    sec::PubkeyOriginIndex idx;
+    sec::PeerAuthority::Builder idx;
     idx.add_local_role(make_role("prod.sensor.uid01", key('a'), "sensor"));
     // Same subject, same key — a reload of identical config, not a clash.
     EXPECT_NO_THROW(idx.add_local_role(make_role("prod.sensor.uid01", key('a'), "sensor")));
-    EXPECT_EQ(idx.size(), 1u);
+    EXPECT_EQ(std::move(idx).build().size(), 1u);
 }
 
-TEST(PubkeyOriginIndex, MalformedKeyLengthIsRefused)
+TEST(PeerAuthority, MalformedKeyLengthIsRefused)
 {
-    sec::PubkeyOriginIndex idx;
+    sec::PeerAuthority::Builder idx;
 
     EXPECT_THROW(idx.add_local_role(make_role("prod.sensor.uid01", "")), std::runtime_error);
     EXPECT_THROW(idx.add_local_role(make_role("prod.sensor.uid01", std::string(39, 'a'))),
@@ -113,41 +115,52 @@ TEST(PubkeyOriginIndex, MalformedKeyLengthIsRefused)
     EXPECT_THROW(idx.add_local_role(make_role("prod.sensor.uid01", std::string(41, 'a'))),
                  std::runtime_error);
     EXPECT_THROW(idx.add_federation_peer("hub.west", "short"), std::runtime_error);
-    EXPECT_TRUE(idx.empty());
+    EXPECT_TRUE(std::move(idx).build().empty());
 }
 
-TEST(PubkeyOriginIndex, AllowlistProjectsEveryKeyOfBothKinds)
+TEST(PeerAuthority, AllowlistProjectsEveryKeyOfBothKinds)
 {
-    sec::PubkeyOriginIndex idx;
+    sec::PeerAuthority::Builder idx;
     idx.add_local_role(make_role("prod.sensor.uid01", key('a')));
     idx.add_local_role(make_role("cons.logger.uid02", key('b')));
     idx.add_federation_peer("hub.west", key('c'));
 
-    const auto al = idx.as_peer_allowlist();
+    const auto al = std::move(idx).build().zap_allowlist();
     // The control-plane allowlist admits roles AND peer hubs — both
     // legitimately connect to the broker's control socket.
     EXPECT_EQ(al.peers.size(), 3u);
-    EXPECT_TRUE(al.contains(sec::PeerIdentity{"curve", key('a')}));
-    EXPECT_TRUE(al.contains(sec::PeerIdentity{"curve", key('b')}));
-    EXPECT_TRUE(al.contains(sec::PeerIdentity{"curve", key('c')}));
-    EXPECT_FALSE(al.contains(sec::PeerIdentity{"curve", key('z')}));
+    EXPECT_TRUE(al.contains(sec::PeerIdentity{sec::kCurveMechanism, key('a')}));
+    EXPECT_TRUE(al.contains(sec::PeerIdentity{sec::kCurveMechanism, key('b')}));
+    EXPECT_TRUE(al.contains(sec::PeerIdentity{sec::kCurveMechanism, key('c')}));
+    EXPECT_FALSE(al.contains(sec::PeerIdentity{sec::kCurveMechanism, key('z')}));
     EXPECT_FALSE(al.unrestricted);
 }
 
-TEST(PubkeyOriginIndex, InboxRosterExcludesFederationPeers)
+TEST(PeerAuthority, InboxRosterExcludesFederationPeers)
 {
-    sec::PubkeyOriginIndex idx;
+    sec::PeerAuthority::Builder idx;
     idx.add_local_role(make_role("prod.sensor.uid01", key('b')));
     idx.add_local_role(make_role("cons.logger.uid02", key('a')));
     idx.add_federation_peer("hub.west", key('c'));
 
-    const auto &roster = idx.local_role_pubkeys();
-    // Role-to-role messaging authorizes local roles only; a peer hub's
-    // key belongs to a different plane and must not leak into it.
-    // Held as a std::set, so membership AND deterministic order come from
-    // the container rather than from a sort on every read — the roster is
-    // read on every registration, and a published index never changes.
-    EXPECT_EQ(roster, (std::set<std::string>{key('a'), key('b')}));
+    const auto roster = std::move(idx).build().local_role_roster();
+
+    // Role-to-role messaging authorizes local roles only; a peer hub's key
+    // belongs to a different plane and must not leak into it.
+    ASSERT_EQ(roster.size(), 2u);
+
+    // Each entry carries the uid WITH the key.  A bare-key roster is exactly
+    // what leaves the receiving role unable to name a sender — it can see
+    // that a message came from some key and has no way to learn whose.
+    // Ordered by uid (RosterEntry::operator<), deterministic across
+    // processes because this rides REG_ACK and unstable ordering would make
+    // wire captures and test pins flap for no reason.
+    auto it = roster.begin();
+    EXPECT_EQ(it->uid, "cons.logger.uid02");
+    EXPECT_EQ(it->pubkey_z85, key('a'));
+    ++it;
+    EXPECT_EQ(it->uid, "prod.sensor.uid01");
+    EXPECT_EQ(it->pubkey_z85, key('b'));
 }
 
 } // namespace

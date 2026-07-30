@@ -506,17 +506,76 @@ Standby → Active).
 maintained by capability ops:
 
 ```cpp
-// HEP-CORE-0035 — pubkey provenance index.
-struct PubkeyOrigin
+// HEP-CORE-0035 — what a CURVE key means to this hub.
+// src/include/utils/security/pubkey_origin.hpp
+struct PubkeyOrigin                        // INTERNAL — never a return type
 {
     enum class Kind { LocalRole, FederationPeer };
     Kind        kind;
-    std::string subject_uid;     // role uid OR peer hub uid
-    std::string subject_name;    // for diagnostics
+    std::string subject_uid;               // role uid OR peer hub uid
 };
 
-std::unordered_map<std::string, PubkeyOrigin>  pubkey_to_origin;
+class PeerAuthority
+{
+  public:
+    class Builder                          // the only thing that can fill one in
+    {
+        void add_local_role(const KnownRole &);
+        void add_federation_peer(std::string_view uid, std::string_view pubkey);
+        PeerAuthority build() &&;          // rvalue-only: consumes the builder
+    };
+
+    // Authorization — a verdict, never a subject
+    ClaimVerdict check_registration_claim(const std::optional<AttestedKey> &,
+                                          std::string_view claimed_uid,
+                                          std::string_view announced_pubkey) const;
+    // Attribution — the minimum datum, local roles only
+    std::optional<std::string> local_role_uid(const AttestedKey &) const;
+    // Federation classification — this structure's whole share of §4.3
+    bool is_federation_peer(const AttestedKey &) const;
+
+    // Transport projections
+    PeerAllowlist         zap_allowlist() const;
+    std::set<RosterEntry> local_role_roster() const;   // {uid, pubkey} pairs
+
+  private:
+    std::unordered_map<Z85PublicKey, PubkeyOrigin> by_pubkey_;
+};
 ```
+
+**Four properties of this shape are normative, and each replaced something
+that was tried and found wanting.**
+
+1. **Keyed on `Z85PublicKey`, not `std::string`.** The key type validates the
+   Z85 alphabet, so an unvalidated string can neither be stored nor used as a
+   lookup.
+
+2. **Immutable by construction.**  `Builder` holds the only mutators and
+   `build()` is rvalue-qualified, so a published authority has no mutator to
+   reach and a builder cannot hand out one authority and keep editing for the
+   next.  An earlier revision put the mutators on the queried class and relied
+   on publishing it as `shared_ptr<const>` — immutability by keyword on the
+   handle rather than by the type.
+
+3. **No `resolve()`.**  Questions return answers.  Handing a caller the
+   principal so it can compare for itself invites every call site to compare
+   slightly differently — a forgotten kind test, a laxer string rule, a missing
+   absent-case — and it returned a pointer into a snapshot the caller had to
+   remember to keep alive.  `local_role_uid` is the one query returning an
+   identity, because attribution genuinely needs a name (§4.2.2, inbox row);
+   it returns the uid by value and nothing else.
+
+4. **The roster carries `{uid, pubkey}` pairs, not bare keys.**  A role that
+   receives only keys can see that a message came from some key and has no way
+   to learn whose — so it cannot name the sender to the application, keep
+   per-sender sequence state, or key replay tracking (HEP-CORE-0027 §3.6).
+   The REG_ACK wire field still carries bare keys; migrating it is the inbox
+   slice's protocol change across broker and role.
+
+**Where it lives.**  Currently published by the broker as
+`PortableAtomicSharedPtr<const PeerAuthority>` rather than held in `HubState`
+as this section originally specified.  Replacement-not-mutation satisfies the
+reload requirement either way; the home is an open item.
 
 Both the ZAP handler (Layer 1) and the federation-trust gate (Layer 2)
 read from this single index. There is exactly one structure that
@@ -547,6 +606,14 @@ therefore established **once per connection**, at handshake time, and
 inherited by every message on that connection for its lifetime — no
 per-message cryptography, and no way for a caller's identity to change
 mid-conversation.
+
+The value is minted into an `AttestedKey` by `AttestedKey::from_message(sock,
+msg)`, which reads the ZAP domain off the **socket** and the proven key off the
+**message**.  Neither is named by the caller: an earlier signature took the
+domain as a string, which meant code reading from an unenforced socket could
+pass an enforced domain's name and receive a valid-looking attestation for a
+message nobody vouched for.  The type exists so that mistake cannot be
+written, so the argument that could disagree was removed.
 
 Ingress captures that value and puts it on the envelope:
 
@@ -579,11 +646,11 @@ stop being four different notions of "who sent this."
 | Admin console | The *captured key only* — the admin plane is deliberately not key-gated, so an operator resolves to no index entry.  The session binds to the connection's verified key at establishment, and later commands must present the same one (HEP-CORE-0033 §11) |
 | Federation ingress | Classification of the link as `FederationPeer`, which is the precondition for any delegated identity (§4.3) |
 
-**Threading.** The index is read from the ZAP pump and from the
-handler paths.  It is built once at vault load and mutated only by
-capability ops, so it follows the same reader-writer discipline as the
-rest of `HubState` — many concurrent readers, exclusive writers, no
-lock held across a callback.
+**Threading.** Read from the ZAP pump and from the handler paths.  It is
+never mutated after publication: a roster change builds a fresh authority and
+swaps the pointer, so readers hold a snapshot that cannot change under them
+and old readers drain naturally.  This is stronger than the reader-writer
+discipline originally specified here — there is no writer to exclude.
 
 **Why not compare the claim against the vault instead.**  A
 claim-and-compare check ("look up the claimed uid, require its stored

@@ -25,7 +25,7 @@ const char *kind_label(PubkeyOrigin::Kind k) noexcept
 
 } // namespace
 
-void PubkeyOriginIndex::insert_(std::string_view pubkey_z85, PubkeyOrigin origin)
+void PeerAuthority::Builder::insert_(std::string_view pubkey_z85, PubkeyOrigin origin)
 {
     // Validation is Z85PublicKey's job, not a length check repeated here.
     // Constructing the key IS the validation, and because the map is keyed
@@ -65,18 +65,23 @@ void PubkeyOriginIndex::insert_(std::string_view pubkey_z85, PubkeyOrigin origin
     by_pubkey_.emplace(std::move(key), std::move(origin));
 }
 
-void PubkeyOriginIndex::add_local_role(const ::pylabhub::broker::KnownRole &role)
+void PeerAuthority::Builder::add_local_role(const ::pylabhub::broker::KnownRole &role)
 {
     insert_(role.pubkey_z85, PubkeyOrigin{PubkeyOrigin::Kind::LocalRole, role.uid});
 }
 
-void PubkeyOriginIndex::add_federation_peer(std::string_view peer_uid,
+void PeerAuthority::Builder::add_federation_peer(std::string_view peer_uid,
                                             std::string_view pubkey_z85)
 {
     insert_(pubkey_z85, PubkeyOrigin{PubkeyOrigin::Kind::FederationPeer, std::string(peer_uid)});
 }
 
-const PubkeyOrigin *PubkeyOriginIndex::resolve(const AttestedKey &attested) const
+PeerAuthority PeerAuthority::Builder::build() &&
+{
+    return PeerAuthority(std::move(by_pubkey_));
+}
+
+const PubkeyOrigin *PeerAuthority::resolve_(const AttestedKey &attested) const
 {
     const auto it = by_pubkey_.find(attested.key());
     if (it == by_pubkey_.end())
@@ -110,7 +115,7 @@ std::string_view to_string(ClaimVerdict v) noexcept
     return "unknown";
 }
 
-ClaimVerdict PubkeyOriginIndex::check_registration_claim(
+ClaimVerdict PeerAuthority::check_registration_claim(
     const std::optional<AttestedKey> &attested, std::string_view claimed_uid,
     std::string_view announced_pubkey) const
 {
@@ -126,7 +131,7 @@ ClaimVerdict PubkeyOriginIndex::check_registration_claim(
     if (announced_pubkey != attested->key().view())
         return ClaimVerdict::pubkey_mismatch;
 
-    const PubkeyOrigin *origin = resolve(*attested);
+    const PubkeyOrigin *origin = resolve_(*attested);
     if (origin == nullptr)
         return ClaimVerdict::unknown_key;
 
@@ -147,23 +152,36 @@ ClaimVerdict PubkeyOriginIndex::check_registration_claim(
 namespace pylabhub::utils::security
 {
 
-PeerAllowlist PubkeyOriginIndex::as_peer_allowlist() const
+std::optional<std::string> PeerAuthority::local_role_uid(const AttestedKey &attested) const
+{
+    const PubkeyOrigin *origin = resolve_(attested);
+    if (origin == nullptr || origin->kind != PubkeyOrigin::Kind::LocalRole)
+        return std::nullopt;
+    return origin->subject_uid;
+}
+
+bool PeerAuthority::is_federation_peer(const AttestedKey &attested) const
+{
+    const PubkeyOrigin *origin = resolve_(attested);
+    return origin != nullptr && origin->kind == PubkeyOrigin::Kind::FederationPeer;
+}
+
+PeerAllowlist PeerAuthority::zap_allowlist() const
 {
     PeerAllowlist al;
     for (const auto &[key, origin] : by_pubkey_)
-        al.peers.insert(PeerIdentity{"curve", key.str()});
+        al.peers.insert(PeerIdentity{kCurveMechanism, key.str()});
     return al;
 }
 
-std::set<std::string> PubkeyOriginIndex::local_role_pubkeys() const
+std::set<RosterEntry> PeerAuthority::local_role_roster() const
 {
-    // std::set: membership and deterministic order from the container.  The
-    // roster rides REG_ACK, and an order that reshuffles per process makes
-    // wire captures and test pins unstable for no reason.
-    std::set<std::string> out;
+    // std::set: deterministic uid order from the container, per RosterEntry's
+    // operator<.  The roster rides REG_ACK.
+    std::set<RosterEntry> out;
     for (const auto &[key, origin] : by_pubkey_)
         if (origin.kind == PubkeyOrigin::Kind::LocalRole)
-            out.insert(key.str());
+            out.insert(RosterEntry{origin.subject_uid, key.str()});
     return out;
 }
 

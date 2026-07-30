@@ -71,6 +71,17 @@ namespace pylabhub::utils::security
 /// meant for set-membership tests, not for rich identity-attribute
 /// matching.  Two identities differ if either field differs by even
 /// one byte.
+/// The ONE spelling of the CURVE mechanism name.
+///
+/// `PeerIdentity` comparison is byte-exact on (kind, data), so this string
+/// has to match between the ZAP handler that constructs the identity to
+/// test and every place that builds an allowlist to test it against. It was
+/// previously written out as a literal at eight separate sites; a single
+/// typo there would not fail to compile, it would silently produce an
+/// allowlist that never matches anything — a deny-all that looks like a
+/// populated allowlist.
+inline constexpr const char *kCurveMechanism = "curve";
+
 struct PYLABHUB_UTILS_EXPORT PeerIdentity
 {
     std::string kind;
