@@ -95,13 +95,13 @@ pre-existing per-config skips, not by coverage lost here).  Release was not
 optional: this is a library change on the teardown path, where
 `PYLABHUB_ENABLE_DEBUG_MESSAGES` is off and `NDEBUG` is on.
 `timedShutdown` was restructured rather than patched — the worker body is
-hoisted into a named `narrated_run` lambda so the threaded path and the
-inline fallback emit byte-identical narration and capture exceptions
-identically (a trace reader should not have to know which path ran), and the
+hoisted into a named `reported_run` lambda so the threaded path and the
+inline fallback emit byte-identical reports and capture exceptions
+identically (a reader should not have to know which path ran), and the
 exception-to-outcome tail is hoisted into `outcome_from_state` so it is not
-duplicated across both.  The fallback narrates
+duplicated across both.  The fallback reports
 `event=ShutdownWorkerSpawnFailed action=ran_inline_without_deadline` through
-`format_to_n` into a stack buffer and marks the anomaly.
+`format_to_n` into a stack buffer and marks the report dirty.
 `engine_host.cpp` turned out to be worse than a silent degradation: a refused
 spawn is a *permanent block* on `ready_future.get()`, since `ready_promise_`
 is fulfilled by `worker_main_` and nothing is left alive to fulfil it.
@@ -118,10 +118,11 @@ the three assertions to write are: spawn failure → `spawn()` returns false
 with no slot registered; `timedShutdown` runs the callback inline and reports
 through `ShutdownOutcome`; `ZmqQueue::start()` returns false rather than true.
 
-Siblings from the same audit: **#86** (panic allocates before it emits; nine
-finalize-path narration sites allocate to feed an allocation-free buffer;
-`PLH_PANIC_BUFFER_BYTES` CMake option, default 4096) and **#83** items A–E
-(borrowed `resolve()` return, two latent range-for use-after-free landmines,
+Siblings from the same audit: **#86** — SHIPPED 2026-07-29; the last-resort
+buffer now lives in the debug module with a set-only dirty latch, `panic()` no
+longer allocates before emitting, and `PLH_DEBUG_TRACE_BYTES` (default 16384)
+replaced the invented 64 KiB constant — and **#83** items A–E (borrowed
+`resolve()` return, two latent range-for use-after-free landmines,
 `Z85PublicKey` storing a `std::string` for a fixed 40-char value).
 
 ### #85 — `plh_hub` CLI hangs at exit; shutdown diagnostics are mute in Release
@@ -153,25 +154,28 @@ The framework is *designed* to warn on shutdown timeouts, so a silent hang
 is not explained by a timeout — unless the warning cannot be emitted,
 which is exactly item (B).  Settle (B) before believing any timeout story.
 
-**(B) Established by code — the shutdown path cannot report.**
-`finalize()` appends every breadcrumb (phase entry, per-module dispatch,
-per-module result) to a local `debug_info` string and emits it **once** at
-`lifecycle.cpp:575`, after Phase 3 — so a hang mid-finalize discards the
-whole narrative.  That single emit is `PLH_DEBUG`, which expands to
-`do{}while(0)` unless `PYLABHUB_ENABLE_DEBUG_MESSAGES` is defined
-(`debug_info.hpp:212-221`); `cmake/ToplevelOptions.cmake:187-191` defaults
-it ON for Debug and OFF otherwise, and `build-release/CMakeCache.txt:464`
-is OFF.  The timeout path has the same problem: `timedShutdown`
-(`lifecycle_helpers.cpp:85-94`) **detaches** the worker on timeout, and the
-caller records that only into `debug_info` — a detached runaway shutdown
-thread is currently an invisible event in Release.
+**(B) ✅ RESOLVED 2026-07-29 (#86).**  As originally established: `finalize()`
+accumulated every breadcrumb into a local `debug_info` string and emitted it
+**once** after Phase 3, so a hang mid-finalize discarded the whole record — and
+that single emit was `PLH_DEBUG`, compiled out of Release.  A detached runaway
+shutdown thread was an invisible event in a release build.
 
-**Follow-up, in order.**  (1) Fix (B) first, or (A) can never be caught:
-emit incrementally instead of buffering, and make finalize enter/exit,
-per-module start/finish, and above all "module X exceeded its Nms deadline;
-worker DETACHED" always-on rather than `PLH_DEBUG`.  The sink must not be
-Logger — Logger is itself a module being torn down — so use the existing
-direct-to-stderr path.  (2) Then wait for a recurrence with real
+Now: every step is written **as it happens** to the debug module's last-resort
+buffer (HEP-CORE-0048) — fixed storage, no queue, nothing to flush — and
+`finalize()` calls `trace_print()` unconditionally at its end.  A module that
+overruns its deadline, throws, or cannot spawn its worker marks the report
+dirty, and a dirty report prints in **every** build.  Logger's own shutdown
+brackets its two blocking steps (`worker_thread_.join()`,
+`callback_dispatcher_.shutdown()`) directly into that buffer, since it cannot
+use `LOGGER_*` while joining the thread that would drain the queue.  The
+SIGTERM watcher prints it too, which covers the signature every observed
+instance of (A) has actually arrived as.
+
+**(A) is still open and its cause is still unknown.**  Do not close it on a
+plausible story.  What changed is only that the next recurrence should be
+readable: a marker with no matching exit names the step that hung.
+
+**Follow-up.**  (1) ✅ done — see (B) above.  (2) Wait for a recurrence with real
 breadcrumbs, or attach `gdb -p <pid> -batch -ex "thread apply all bt full"`
 to a caught instance.  (3) Only then name a cause.
 

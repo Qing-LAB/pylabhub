@@ -189,6 +189,30 @@ struct InteractiveSignalHandler::Impl
             ::pylabhub::utils::Logger::instance().debug_dump_state_to_stderr(
                 "InteractiveSignalHandler::watcher_loop signaled");
 
+            // Then the last-resort trace, for the same reason and in this
+            // order: the Logger dump above is a STATE snapshot ("queue=Y,
+            // worker_joinable=Z"), while this is the SEQUENCE that led here
+            // ("Logger reached worker_join and never came back").  State
+            // first, then how we got into it.
+            //
+            // This is the case that matters most.  Every observed instance
+            // of the teardown stall has arrived as a ctest SIGTERM, and
+            // until now nothing printed the steps before the process died.
+            //
+            // Safe to call from here because this is the WATCHER THREAD,
+            // not the signal handler — per HEP-CORE-0020 §4.1 the handler
+            // only sets a flag and writes one byte to the self-pipe, and
+            // all I/O happens out here.
+            //
+            // trace_print() drains, so a shutdown that gets going normally
+            // afterwards will print only what happens from here on, and
+            // panic() would print only what follows that.  No duplication,
+            // no coordination needed between the three.
+            // Being signalled is not a clean exit: mark dirty so the report
+            // is emitted even in a release build, where a clean one is silent.
+            ::pylabhub::debug::trace_mark_dirty();
+            ::pylabhub::debug::trace_print();
+
             if (!interactive || count >= 2)
             {
                 // Non-interactive, or double-signal: immediate shutdown.

@@ -156,7 +156,7 @@ enum class DynModuleState : int
  */
 /**
  * @brief Record one step of the calling module's shutdown into the
- *        lifecycle's narration pool.
+ *        lifecycle's critical-report buffer.
  *
  * **Shutdown callbacks should call this as they go, not summarise at the
  * end.**  A callback that overruns its deadline has its worker thread
@@ -167,7 +167,7 @@ enum class DynModuleState : int
  * That matters even if nothing ever prints it.  The end-of-phase dump only
  * runs if the phase finishes; a process killed mid-teardown (a test harness
  * timeout, an operator's SIGTERM) never reaches it.  But the pool is a
- * never-destroyed global at a fixed address, so whatever was narrated up to
+ * never-destroyed global at a fixed address, so whatever was reported up to
  * the instant of death is still recoverable from a debugger or a core file.
  * A module that logged "draining queue" and nothing after did not merely
  * hang — it hung while draining the queue.
@@ -196,15 +196,17 @@ enum class DynModuleState : int
  * with general progress messages and it stops being a last-resort record,
  * becoming an unfiltered log that merely happens to survive a crash.
  *
- * Capacity is capped; overflow is counted and reported rather than
- * silently dropped.  See HEP-CORE-0001 §"Lifecycle trace — the shared
- * narration pool".
+ * Storage, capacity and the overflow accounting all belong to the debug
+ * module (`pylabhub::debug::trace_add`); lifecycle owns no buffer of its own
+ * and merely adds its context before forwarding.  See HEP-CORE-0048.
  */
-PYLABHUB_UTILS_EXPORT void lifecycle_narrate(std::string_view step) noexcept;
-
 class PYLABHUB_UTILS_EXPORT LifecycleManager
 {
   public:
+    /// Record one critical teardown step in the process-wide last-resort
+    /// trace (`pylabhub::debug`).  See the contract above.
+    static void critical_report(std::string_view step) noexcept;
+
     /**
      * @brief Accessor for the singleton instance.
      * @return A reference to the single global instance of the LifecycleManager.

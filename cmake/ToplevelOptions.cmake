@@ -198,6 +198,30 @@ if(PLH_RECURSION_GUARD_MAX_DEPTH LESS 1 OR PLH_RECURSION_GUARD_MAX_DEPTH GREATER
   message(FATAL_ERROR "PLH_RECURSION_GUARD_MAX_DEPTH must be between 1 and 1024, got ${PLH_RECURSION_GUARD_MAX_DEPTH}")
 endif()
 
+# --- Last-resort trace buffer size ---
+# Bytes of the process-global debug trace (pylabhub::debug::trace_add).  Holds
+# the last critical steps before an abnormal exit and is printed by panic(),
+# by the SIGTERM watcher, and at the end of lifecycle finalize.
+#
+# Sized from the real write volume of one full teardown, not guessed.  An
+# entry runs 60-90 bytes; finalize emits ~30 of them for a role process with
+# 8-12 modules (phase markers, plus dispatch + worker ENTER/EXIT per module)
+# before any module-internal markers, and the modules that narrate their own
+# blocking steps — Logger's worker join, ZMQContext's zmq_ctx_term,
+# ThreadManager's detach reports — add several KB more on a hub.  ~2.5 KB of
+# framework markers plus module detail lands near 4-5 KB, so 16 KiB is about
+# 4x headroom.
+#
+# It is still not a log, and size does not license turning it into one: on
+# overflow the NEWEST bytes are dropped, which is the end where a wedge
+# actually is.  The dropped-byte count is reported by every print, so an
+# overflowing teardown says so rather than quietly losing its tail.
+# See HEP-CORE-0048.
+set(PLH_DEBUG_TRACE_BYTES 16384 CACHE STRING "Bytes of the last-resort debug trace buffer (compile-time).")
+if(PLH_DEBUG_TRACE_BYTES LESS 256 OR PLH_DEBUG_TRACE_BYTES GREATER 1048576)
+  message(FATAL_ERROR "PLH_DEBUG_TRACE_BYTES must be between 256 and 1048576, got ${PLH_DEBUG_TRACE_BYTES}")
+endif()
+
 # --- Logger Compile-Time Level ---
 # Set the default compile-time log level. This controls which LOGGER_* macros
 # are compiled into the binary.

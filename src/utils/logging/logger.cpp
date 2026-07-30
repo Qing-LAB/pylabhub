@@ -799,6 +799,21 @@ void Logger::Impl::shutdown()
     };
 #endif
 
+    // Every marker below is written straight to the debug module's
+    // last-resort trace, NOT through LOGGER_* and not via
+    // LifecycleManager::critical_report.
+    //
+    // Not LOGGER_*, because this function is tearing the logger down: the
+    // worker that would drain the queue is the thread we are about to join.
+    // Not lifecycle, because Logger must not depend on pylabhub::utils.
+    //
+    // Until now these steps were PLH_DEBUG only, which compiles to nothing
+    // outside Debug builds — so in Release the logger's shutdown was
+    // completely silent, which is exactly why a hang here (open #93/#242,
+    // HEP-CORE-0004) has never been diagnosable from a release log.  The
+    // PLH_DEBUG lines stay for the live `tail -f` view; the trace markers
+    // are the durable record.
+    pylabhub::debug::trace_add("module=Logger op=shutdown phase=enter");
     PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] ENTER tid={}", since_t0(),
               static_cast<unsigned long long>(pylabhub::platform::get_native_thread_id()));
     if (shutdown_completed_.load() || shutdown_requested_.exchange(true))
@@ -817,7 +832,11 @@ void Logger::Impl::shutdown()
         PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] before "
                   "worker_thread_.join()",
                   since_t0());
+        // The known blocking step.  A marker with no matching 'joined'
+        // names this join as where the process stopped.
+        pylabhub::debug::trace_add("module=Logger op=worker_join");
         worker_thread_.join();
+        pylabhub::debug::trace_add("module=Logger op=worker_join outcome=joined");
         PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] after  "
                   "worker_thread_.join()",
                   since_t0());
@@ -831,11 +850,15 @@ void Logger::Impl::shutdown()
     PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] before "
               "callback_dispatcher_.shutdown()",
               since_t0());
+    // The second blocking step — it joins the dispatcher's own thread.
+    pylabhub::debug::trace_add("module=Logger op=dispatcher_shutdown");
     callback_dispatcher_.shutdown();
+    pylabhub::debug::trace_add("module=Logger op=dispatcher_shutdown outcome=returned");
     PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] after  "
               "callback_dispatcher_.shutdown()",
               since_t0());
     shutdown_completed_.store(true);
+    pylabhub::debug::trace_add("module=Logger op=shutdown phase=exit");
     PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] EXIT", since_t0());
 }
 

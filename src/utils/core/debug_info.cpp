@@ -61,8 +61,256 @@
 
 #include "utils/format_tools.hpp"
 
+#include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <cstring>
+
+#if defined(PYLABHUB_PLATFORM_WIN64)
+#include <io.h> // _write
+#else
+#include <unistd.h> // write, STDERR_FILENO
+#endif
+
 namespace pylabhub::debug
 {
+
+// ─────────────────────── last-resort trace buffer ───────────────────────
+// Contract and rationale live in debug_info.hpp; HEP-CORE-0048 is the
+// design authority.  Everything here is lock-free, allocation-free and
+// non-throwing, because every one of its callers is on a path where the
+// process is already going down.
+
+namespace
+{
+
+// Storage.  File-scope, constant-initialised, and never destroyed: a
+// shutdown worker abandoned at its deadline can still be reporting after
+// the code that started it returned, so storage that died on schedule
+// would be written to after death.
+alignas(64) std::array<char, kTraceBytes> g_trace_buf{};
+std::atomic<std::size_t> g_trace_len{0};
+std::atomic<std::size_t> g_trace_dropped{0};
+
+/// One-way latch: set by any reporter, cleared by nothing — not by
+/// `trace_clear()`, not by `trace_print()`.  See the header contract.
+std::atomic<bool> g_trace_dirty{false};
+
+/// Sentinel length meaning "a print is in progress; refuse all appends".
+///
+/// Distinct from `kTraceBytes` rather than reusing it, because a buffer that
+/// is legitimately full and a buffer that is frozen for emission must be
+/// distinguishable: two printers running at once (finalize on the main
+/// thread while the SIGTERM watcher fires, say) would otherwise both see
+/// "full" and both emit the entire buffer.
+constexpr std::size_t kTraceFrozen = static_cast<std::size_t>(-1);
+
+void write_stderr_impl(const char *data, std::size_t n) noexcept
+{
+    while (n > 0)
+    {
+#if defined(PYLABHUB_PLATFORM_WIN64)
+        const int wrote = ::_write(2, data, static_cast<unsigned int>(n));
+#else
+        const auto wrote = ::write(STDERR_FILENO, data, n);
+#endif
+        if (wrote <= 0)
+            return; // stderr is gone or wedged; nothing better to do here
+        data += wrote;
+        n -= static_cast<std::size_t>(wrote);
+    }
+}
+
+/// Unsigned to decimal, into `out`, returning the count written.
+/// Hand-rolled rather than `fmt`: this is the one formatting step that
+/// runs before every entry, and keeping it dependency-free keeps
+/// `trace_add` free of anything that could allocate or reenter.
+std::size_t write_u64(char *out, std::size_t cap, std::uint64_t v) noexcept
+{
+    char tmp[20];
+    std::size_t n = 0;
+    do
+    {
+        tmp[n++] = static_cast<char>('0' + (v % 10));
+        v /= 10;
+    } while (v != 0 && n < sizeof(tmp));
+
+    if (n > cap)
+        return 0;
+    for (std::size_t i = 0; i < n; ++i)
+        out[i] = tmp[n - 1 - i];
+    return n;
+}
+
+std::uint64_t monotonic_us() noexcept
+{
+    // Monotonic, not wall-clock: this exists to ORDER events during a
+    // teardown, and a wall clock can be stepped backwards by NTP mid-
+    // shutdown, which would reorder the very sequence being read.
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+
+/// Copy as much of `src` as fits, reporting what did not.
+std::size_t append_clamped(char *out, std::size_t cap, std::size_t used, std::string_view src,
+                           std::size_t &lost) noexcept
+{
+    const std::size_t room = cap - used;
+    const std::size_t n = src.size() < room ? src.size() : room;
+    std::memcpy(out + used, src.data(), n);
+    lost += src.size() - n;
+    return used + n;
+}
+
+} // namespace
+
+/// Not stdio: `fmt::print`/`fwrite` take a lock and may allocate, and this
+/// runs on paths where either can be the reason we are here.  Partial
+/// writes are retried rather than silently truncating the one record that
+/// explains the failure.
+void trace_write_stderr(const char *data, std::size_t n) noexcept
+{
+    write_stderr_impl(data, n);
+}
+
+void trace_add(std::string_view msg) noexcept
+{
+    // Formatted on the caller's stack, then copied in under a single
+    // atomic reservation.  Nothing here touches the heap.
+    char line[kTraceEntryBytes];
+    std::size_t used = 0;
+    std::size_t lost = 0;
+
+    used = append_clamped(line, sizeof(line), used, "[t", lost);
+    used += write_u64(line + used, sizeof(line) - used,
+                      pylabhub::platform::get_native_thread_id());
+    used = append_clamped(line, sizeof(line), used, "|", lost);
+    used += write_u64(line + used, sizeof(line) - used, monotonic_us());
+    used = append_clamped(line, sizeof(line), used, "us] ", lost);
+    used = append_clamped(line, sizeof(line), used, msg, lost);
+
+    // Guarantee the terminator even when the caller's text filled the
+    // buffer: two records run together are worse than one truncated one,
+    // because the reader cannot tell that it happened.
+    if (used == 0 || line[used - 1] != '\n')
+    {
+        if (used == sizeof(line))
+        {
+            used = sizeof(line) - 1;
+            ++lost;
+        }
+        line[used++] = '\n';
+    }
+
+    // Reserve a slice, then fill only that slice.  compare_exchange
+    // rather than fetch_add so a full buffer cannot push the length past
+    // capacity and leave a later reader with an out-of-range count.
+    std::size_t old = g_trace_len.load(std::memory_order_relaxed);
+    for (;;)
+    {
+        // Written as a subtraction rather than `old + used > kTraceBytes` so
+        // the freeze sentinel (SIZE_MAX) cannot overflow the addition and wrap
+        // into a false "there is room" result.
+        if (old >= kTraceBytes || used > kTraceBytes - old)
+        {
+            lost += used;
+            break;
+        }
+        if (g_trace_len.compare_exchange_weak(old, old + used, std::memory_order_acq_rel,
+                                              std::memory_order_relaxed))
+        {
+            std::memcpy(g_trace_buf.data() + old, line, used);
+            break;
+        }
+    }
+
+    if (lost > 0)
+        g_trace_dropped.fetch_add(lost, std::memory_order_relaxed);
+}
+
+void trace_print() noexcept
+{
+    // The whole print-or-not decision lives here, so no call site has to
+    // carry it and no two call sites can disagree.
+    //
+    // A dirty report always prints, in every build.  A clean one prints only
+    // where PLH_DEBUG is compiled in — that switch already marks "this build
+    // is for someone working on the code", which is exactly who benefits from
+    // seeing a healthy exit sequence.  In a release build a clean report is
+    // silent AND left in the buffer: dropping it would throw away context
+    // that a later failure would want, and there is nothing to gain by
+    // clearing storage in a process that is on its way out.
+#if !defined(PYLABHUB_ENABLE_DEBUG_MESSAGES)
+    if (!g_trace_dirty.load(std::memory_order_acquire))
+        return;
+#endif
+
+    // FREEZE, EMIT, UNFREEZE.
+    //
+    // One atomic exchange both takes the current length and parks the counter
+    // at a value no append can fit into.  That is what protects the report:
+    // for the duration of the write, every `trace_add` sees a full buffer and
+    // takes its normal drop path, so nothing can overwrite the bytes being
+    // emitted — and nothing is lost silently either, because those entries
+    // land in the dropped-byte counter and get reported.
+    //
+    // The two simpler shapes are both worse.  Zeroing the length first lets a
+    // concurrent writer restart at offset 0 and corrupt the report actually
+    // being printed.  Zeroing it last leaves appends landing past the printed
+    // region, where the reset then discards them without a word.
+    //
+    // Draining is what lets finalize(), the SIGTERM watcher and panic() all
+    // call this without coordinating: the first caller empties it, later ones
+    // print only what arrived since, and nothing is emitted twice.
+    std::size_t n = g_trace_len.exchange(kTraceFrozen, std::memory_order_acq_rel);
+    if (n == kTraceFrozen)
+        return; // another thread is already emitting; do not print it twice
+    if (n > kTraceBytes)
+        n = kTraceBytes;
+    if (n > 0)
+        trace_write_stderr(g_trace_buf.data(), n);
+
+    // Report the drops accrued so far, then subtract EXACTLY that many rather
+    // than zeroing.  Appends refused during the write above are counted while
+    // we are still emitting; a blind reset would throw those counts away, so
+    // the loss would happen and nobody would ever learn of it.  Subtracting
+    // what was reported leaves the rest to be reported next time.
+    const std::size_t lost = g_trace_dropped.load(std::memory_order_acquire);
+    if (lost > 0)
+    {
+        char note[64];
+        std::size_t used = 0;
+        std::size_t ignored = 0; // the note itself cannot overflow 64 bytes
+        used = append_clamped(note, sizeof(note), used, "[trace] dropped=", ignored);
+        used += write_u64(note + used, sizeof(note) - used, lost);
+        used = append_clamped(note, sizeof(note), used, " bytes\n", ignored);
+        trace_write_stderr(note, used);
+        g_trace_dropped.fetch_sub(lost, std::memory_order_acq_rel);
+    }
+
+    // Unfreeze.  Only the length is reset — the dirty latch is one-way, and
+    // the dropped counter was adjusted above by exactly what was reported.
+    g_trace_len.store(0, std::memory_order_release);
+}
+
+void trace_clear() noexcept
+{
+    g_trace_len.store(0, std::memory_order_release);
+    g_trace_dropped.store(0, std::memory_order_release);
+    // g_trace_dirty is deliberately NOT reset — the latch is one-way.
+}
+
+void trace_mark_dirty() noexcept
+{
+    g_trace_dirty.store(true, std::memory_order_release);
+}
+
+bool trace_is_dirty() noexcept
+{
+    return g_trace_dirty.load(std::memory_order_acquire);
+}
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
 namespace

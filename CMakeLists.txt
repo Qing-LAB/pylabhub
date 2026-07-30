@@ -94,6 +94,7 @@ if(PYLABHUB_ENABLE_DEBUG_MESSAGES)
   add_compile_definitions(PYLABHUB_ENABLE_DEBUG_MESSAGES)
 endif()
 add_compile_definitions(PLH_RECURSION_GUARD_MAX_DEPTH=${PLH_RECURSION_GUARD_MAX_DEPTH})
+add_compile_definitions(PLH_DEBUG_TRACE_BYTES=${PLH_DEBUG_TRACE_BYTES})
 
 # Timeout tier overrides: cmake -DPYLABHUB_SHORT_TIMEOUT_MS=2000 etc.
 # See src/include/utils/timeout_constants.hpp for defaults and documentation.

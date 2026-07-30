@@ -25,37 +25,19 @@ namespace pylabhub::utils
 {
 namespace
 {
-/// Emit the accumulated lifecycle narrative.
-///
-/// Takes a private snapshot via `copy_out` rather than a view into the
-/// pool: detached shutdown workers may still be appending, so printing
-/// straight from the pool's storage would race them.  A pool that could
-/// not be acquired is reported as such — an unavailable trace and an empty
-/// trace mean very different things and must not look alike.
-void dump_lifecycle_trace(const lifecycle_internal::LifecycleTrace &trace)
-{
-    static thread_local std::array<char, lifecycle_internal::LifecycleTrace::kCapacity> snapshot;
-    const std::size_t n = trace.copy_out(snapshot.data(), snapshot.size());
-    if (n == 0)
-    {
-        PLH_DEBUG("[PLH_LifeCycle] lifecycle trace unavailable (pool busy or empty)");
-        return;
-    }
-    const std::string_view text(snapshot.data(), n);
-    if (trace.had_anomaly())
-    {
-        // Teardown misbehaved.  Go straight to stderr rather than through
-        // PLH_DEBUG, which is compiled out of every non-Debug build — the
-        // reason a hung Release process previously died without a word.
-        fmt::print(stderr, "{}", text);
-        if (const auto lost = trace.dropped(); lost.value_or(0) > 0)
-            fmt::print(stderr, "[PLH_LifeCycle] ... trace truncated: {} byte(s) dropped\n", *lost);
-        std::fflush(stderr);
-        return;
-    }
-    PLH_DEBUG("{}", text);
-}
 } // namespace
+
+namespace lifecycle_internal
+{
+void critical_report(const char *data, std::size_t n) noexcept
+{
+    // `fmt::format_to_n` reports the size the output WOULD have needed, so a
+    // truncated line reports more than the buffer holds.  Clamp here, once,
+    // rather than at each call site.
+    pylabhub::debug::trace_add(
+        std::string_view(data, n < kCriticalReportLineBytes ? n : kCriticalReportLineBytes));
+}
+} // namespace lifecycle_internal
 
 using lifecycle_internal::ShutdownOutcome;
 using lifecycle_internal::timedShutdown;
@@ -350,16 +332,17 @@ void LifecycleManagerImpl::initialize(std::source_location loc)
     {
         return;
     }
-    // Narrate into the process-wide pool, not a local string: a wedge in
-    // this phase must not take the record of how far it got with it.
-    auto &debug_info = lifecycle_internal::lifecycle_trace();
-    debug_info.clear();
+    // Startup progress goes to the live debug channel, NOT to the critical
+    // report buffer.  That buffer is an EXIT life line: it exists so that a
+    // process which fails to quit can still say how far it got.  A startup
+    // failure is a different situation — the logger is coming up or already
+    // up, and `printStatusAndAbort` reports it directly — so writing startup
+    // steps here would spend a fixed, scarce budget on the phase that does
+    // not need it, and could push out the teardown record that does.
+    PLH_DEBUG("[PLH_LifeCycle] [{}]:PID[{}] initialize() from {} ({}:{})", m_app_name, m_pid,
+              loc.function_name(), pylabhub::format_tools::filename_only(loc.file_name()),
+              loc.line());
 
-    debug_info += fmt::format("[PLH_LifeCycle] [{}]:PID[{}]\n"
-                              "     **** initialize() triggered from {} ({}:{})\n"
-                              "     -> Initializing application...\n",
-                              m_app_name, m_pid, loc.function_name(),
-                              pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
     try
     {
         buildStaticGraph();
@@ -385,33 +368,29 @@ void LifecycleManagerImpl::initialize(std::source_location loc)
     {
         try
         {
-            debug_info += fmt::format("     -> Starting static module: '{}'...", mod->name);
+            PLH_DEBUG("[PLH_LifeCycle] event=ModuleStartupEnter module='{}'", mod->name);
             mod->status.store(ModuleStatus::Initializing, std::memory_order_release);
             if (mod->startup)
             {
                 mod->startup();
             }
             mod->status.store(ModuleStatus::Started, std::memory_order_release);
-            debug_info += "done.\n";
+            PLH_DEBUG("[PLH_LifeCycle] event=ModuleStartupExit module='{}' outcome=ok", mod->name);
+
         }
         catch (const std::exception &e)
         {
             mod->status.store(ModuleStatus::Failed, std::memory_order_release);
-            dump_lifecycle_trace(debug_info);
             printStatusAndAbort("\n     **** Exception during startup: " + std::string(e.what()),
                                 mod->name);
-            debug_info.clear();
         }
         catch (...)
         {
             mod->status.store(ModuleStatus::Failed, std::memory_order_release);
-            dump_lifecycle_trace(debug_info);
             printStatusAndAbort("\n     **** Unknown exception during startup.", mod->name);
-            debug_info.clear();
         }
     }
-    debug_info += "     -> Application_initialization complete.\n";
-    dump_lifecycle_trace(debug_info);
+    PLH_DEBUG("[PLH_LifeCycle] event=InitializeExit outcome=ok");
 }
 
 /**
@@ -434,22 +413,19 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
         return;
     }
 
-    // Narrate into the process-wide pool, not a local string: a wedge in
-    // this phase must not take the record of how far it got with it.
-    auto &debug_info = lifecycle_internal::lifecycle_trace();
-    // NOTE: deliberately NOT cleared here.  An asynchronous unload can
-    // time out and detach its worker BEFORE finalize() is entered; clearing
-    // at this point would erase that record — and reset the anomaly flag —
-    // destroying exactly the evidence this phase exists to report.  The
-    // pool is capped and reports its own truncation, so accumulating
-    // startup + teardown together is strictly better than dropping either.
+    // NOT cleared on entry, deliberately.  An asynchronous unload can time
+    // out and detach its worker BEFORE finalize() is reached, and that
+    // record is exactly what this phase exists to report — clearing here
+    // would erase it.
+    {
+        char line[lifecycle_internal::kCriticalReportLineBytes];
+        const auto res = fmt::format_to_n(line, sizeof(line), "event=FinalizeEnter app='{}' pid={} from='{}' at='{}:{}'", m_app_name,
+                                          m_pid, loc.function_name(),
+                                          pylabhub::format_tools::filename_only(loc.file_name()),
+                                          loc.line());
+        lifecycle_internal::critical_report(line, res.size);
+    }
 
-    debug_info +=
-        fmt::format("[PLH_LifeCycle] [{}]:PID[{}]\n"
-                    "     **** finalize() called, associated with a constructor from {} ({}:{}):\n"
-                    "     <- Finalizing application...\n",
-                    m_app_name, m_pid, loc.function_name(),
-                    pylabhub::format_tools::filename_only(loc.file_name()), loc.line());
 
     // Phase 1: Drain the dynamic shutdown thread.
     // Signal it to stop (after it empties its queue) and join.
@@ -463,9 +439,18 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
 
     if (m_dyn_shutdown_thread_started && m_dyn_shutdown_thread.joinable())
     {
-        debug_info += "     -> Waiting for dynamic shutdown thread to drain...\n";
+        {
+            char line[lifecycle_internal::kCriticalReportLineBytes];
+            const auto res = fmt::format_to_n(line, sizeof(line), "event=DynShutdownThreadDrainEnter");
+            lifecycle_internal::critical_report(line, res.size);
+        }
         m_dyn_shutdown_thread.join(); // bounded by per-module shutdown timeouts
-        debug_info += "     --- Dynamic shutdown thread drained ---\n";
+        {
+            char line[lifecycle_internal::kCriticalReportLineBytes];
+            const auto res = fmt::format_to_n(line, sizeof(line), "event=DynShutdownThreadDrainExit");
+            lifecycle_internal::critical_report(line, res.size);
+        }
+
     }
 
     // Phase 2: Handle any remaining LOADED dynamic modules (those not scheduled via
@@ -490,16 +475,13 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
     // callback runs on, which matters for resources with hard
     // thread-affinity (CPython's `Py_FinalizeEx` requires it).
     //
-    // **Logging discipline.**  Each per-module step is PLH_DEBUG'd
-    // BEFORE and AFTER the actual call rather than accumulated into
-    // `debug_info` (which is only flushed at the end of finalize()).
-    // A hang inside a module's shutdown callback would otherwise hide
-    // the operator's last sign of progress; with immediate flush an
-    // operator can `tail -f` the log and see exactly which module's
-    // shutdown is in flight when the hang happens.  The aggregated
-    // `debug_info` string still gets the same content for the final
-    // bulk-flush summary.
-    auto run_inline = [&debug_info](InternalGraphNode &mod)
+    // **Two channels, on purpose.**  PLH_DEBUG gives an operator watching
+    // a Debug build a live `tail -f` view of which module is in flight.
+    // The trace marker is the durable one: it is written synchronously to
+    // fixed storage and survives a wedge, a kill, and a Release build
+    // where PLH_DEBUG compiles to nothing.  The live view is a
+    // convenience; the marker is the record.
+    auto run_inline = [](InternalGraphNode &mod)
     {
         const char *const type_str = mod.is_dynamic ? "dynamic" : "static";
 
@@ -508,13 +490,21 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
                   "deadline; if this is the last log line before a hang, "
                   "the stall is INSIDE this module's shutdown callback).",
                   pylabhub::platform::get_native_thread_id(), type_str, mod.name);
-        debug_info +=
-            fmt::format("     <- [SYNC] Shutting down {} module: '{}'...", type_str, mod.name);
+        {
+            char line[lifecycle_internal::kCriticalReportLineBytes];
+            const auto res = fmt::format_to_n(line, sizeof(line), "event=ShutdownEnter module='{}' kind={} dispatch=sync", mod.name, type_str);
+            lifecycle_internal::critical_report(line, res.size);
+        }
 
         if (!mod.shutdown.func)
         {
             mod.status.store(ModuleStatus::Shutdown, std::memory_order_release);
-            debug_info += "no-op done.\n";
+            {
+                char line[lifecycle_internal::kCriticalReportLineBytes];
+                const auto res = fmt::format_to_n(line, sizeof(line), "event=ShutdownExit module='{}' outcome=noop", mod.name);
+                lifecycle_internal::critical_report(line, res.size);
+            }
+
             PLH_DEBUG("[PLH_LifeCycle] [SYNC|inline-shutdown|thread={}] "
                       "EXIT {} module '{}' — no shutdown.func registered "
                       "(no-op).",
@@ -526,7 +516,12 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
         {
             mod.shutdown.func();
             mod.status.store(ModuleStatus::Shutdown, std::memory_order_release);
-            debug_info += "done.\n";
+            {
+                char line[lifecycle_internal::kCriticalReportLineBytes];
+                const auto res = fmt::format_to_n(line, sizeof(line), "event=ShutdownExit module='{}' outcome=ok", mod.name);
+                lifecycle_internal::critical_report(line, res.size);
+            }
+
             PLH_DEBUG("[PLH_LifeCycle] [SYNC|inline-shutdown|thread={}] EXIT "
                       "{} module '{}' — shutdown callback returned cleanly.",
                       pylabhub::platform::get_native_thread_id(), type_str, mod.name);
@@ -534,8 +529,14 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
         catch (const std::exception &e)
         {
             mod.status.store(ModuleStatus::FailedShutdown, std::memory_order_release);
-            debug_info += fmt::format("\n     **** ERROR: {} module '{}' threw on shutdown: {}\n",
-                                      type_str, mod.name, e.what());
+            pylabhub::debug::trace_mark_dirty();
+            {
+                char line[lifecycle_internal::kCriticalReportLineBytes];
+                const auto res = fmt::format_to_n(line, sizeof(line), "event=ShutdownExit module='{}' outcome=threw reason='{}'", mod.name,
+                                  e.what());
+                lifecycle_internal::critical_report(line, res.size);
+            }
+
             PLH_DEBUG("[PLH_LifeCycle] [SYNC|inline-shutdown|thread={}] EXIT "
                       "{} module '{}' — shutdown callback THREW: {}",
                       pylabhub::platform::get_native_thread_id(), type_str, mod.name, e.what());
@@ -543,9 +544,14 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
         catch (...)
         {
             mod.status.store(ModuleStatus::FailedShutdown, std::memory_order_release);
-            debug_info += fmt::format(
-                "\n     **** ERROR: {} module '{}' threw a non-std exception on shutdown.\n",
-                type_str, mod.name);
+            pylabhub::debug::trace_mark_dirty();
+            {
+                char line[lifecycle_internal::kCriticalReportLineBytes];
+                const auto res = fmt::format_to_n(line, sizeof(line), "event=ShutdownExit module='{}' outcome=threw reason='non-std exception'",
+                                  mod.name);
+                lifecycle_internal::critical_report(line, res.size);
+            }
+
             PLH_DEBUG("[PLH_LifeCycle] [SYNC|inline-shutdown|thread={}] EXIT "
                       "{} module '{}' — shutdown callback threw a non-std "
                       "exception.",
@@ -575,7 +581,7 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
                       "spawning timedShutdown worker (deadline {}ms).",
                       pylabhub::platform::get_native_thread_id(), mod.name,
                       mod.shutdown.timeout.count());
-            shutdownModuleWithTimeout(mod, debug_info);
+            shutdownModuleWithTimeout(mod);
         }
     };
 
@@ -583,26 +589,30 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
     {
         auto dyn_shutdown_order = topologicalSort(loaded_dyn_nodes);
         std::reverse(dyn_shutdown_order.begin(), dyn_shutdown_order.end());
-        debug_info +=
-            fmt::format("     -> [Phase-2|thread={}] tearing down {} remaining "
-                        "dynamic module(s) in reverse-topological order; per-module "
-                        "dispatch (SYNC direct-call vs ASYNC timed-thread) selected "
-                        "by ModuleDef::set_synchronous_shutdown().\n",
-                        pylabhub::platform::get_native_thread_id(), dyn_shutdown_order.size());
+        {
+            char line[lifecycle_internal::kCriticalReportLineBytes];
+            const auto res = fmt::format_to_n(line, sizeof(line), "event=PhaseEnter phase=2 kind=dynamic remaining={}",
+                                          dyn_shutdown_order.size());
+            lifecycle_internal::critical_report(line, res.size);
+        }
         for (auto *mod : dyn_shutdown_order)
             dispatch_shutdown(*mod);
     }
     else
     {
-        debug_info += fmt::format("     --- [Phase-2|thread={}] no remaining dynamic modules ---\n",
-                                  pylabhub::platform::get_native_thread_id());
+        {
+            char line[lifecycle_internal::kCriticalReportLineBytes];
+            const auto res = fmt::format_to_n(line, sizeof(line), "event=PhaseSkip phase=2 kind=dynamic reason=none_remaining");
+            lifecycle_internal::critical_report(line, res.size);
+        }
     }
 
     // Phase 3: static modules in reverse startup order.
-    debug_info += fmt::format("\n     <- [Phase-3|thread={}] tearing down static modules "
-                              "in reverse-topological order; per-module dispatch selected "
-                              "by ModuleDef::set_synchronous_shutdown().\n",
-                              pylabhub::platform::get_native_thread_id());
+    {
+        char line[lifecycle_internal::kCriticalReportLineBytes];
+        const auto res = fmt::format_to_n(line, sizeof(line), "event=PhaseEnter phase=3 kind=static count={}", m_shutdown_order.size());
+        lifecycle_internal::critical_report(line, res.size);
+    }
     for (auto *mod : m_shutdown_order)
     {
         if (mod->status.load(std::memory_order_acquire) == ModuleStatus::Started)
@@ -610,14 +620,29 @@ void LifecycleManagerImpl::finalize(std::source_location loc)
         else
         {
             mod->status.store(ModuleStatus::Shutdown, std::memory_order_release);
-            debug_info +=
-                fmt::format("     <- static module '{}' (skip — not Started)\n", mod->name);
+            {
+                char line[lifecycle_internal::kCriticalReportLineBytes];
+                const auto res = fmt::format_to_n(line, sizeof(line), "event=ShutdownSkip module='{}' reason=not_started", mod->name);
+                lifecycle_internal::critical_report(line, res.size);
+            }
         }
     }
-    debug_info += fmt::format("\n     --- [SYNC|Phase-2+3|thread={}] complete; application "
-                              "finalization done. ---\n",
-                              pylabhub::platform::get_native_thread_id());
-    dump_lifecycle_trace(debug_info);
+    {
+        char line[lifecycle_internal::kCriticalReportLineBytes];
+        const auto res = fmt::format_to_n(line, sizeof(line), "event=FinalizeExit outcome={}",
+                                          pylabhub::debug::trace_is_dirty() ? "unclean" : "clean");
+        lifecycle_internal::critical_report(line, res.size);
+    }
+
+    // Unconditional call, and no decision made here.  If an async unload
+    // timed out and detached before we were even entered, or a module threw,
+    // that reporter already marked the report dirty — and trace_print()
+    // consults the latch itself, so a clean release run stays silent while an
+    // accident always speaks.  Whether to emit is the debug module's rule, in
+    // one place, rather than a build-conditional repeated at every print site.
+    //
+    // This is the last moment anything in teardown is guaranteed to run.
+    pylabhub::debug::trace_print();
 }
 
 // ============================================================================
@@ -652,43 +677,20 @@ void LifecycleManagerImpl::lifecycleLog(LifecycleLogLevel level, std::string msg
 
 LifecycleManager::LifecycleManager() : pImpl(std::make_unique<LifecycleManagerImpl>()) {}
 LifecycleManager::~LifecycleManager() = default;
-void lifecycle_narrate(std::string_view step) noexcept
+void LifecycleManager::critical_report(std::string_view step) noexcept
 {
-    // The thread id is not decoration.  One pool receives narration from the
-    // finalize thread AND from every module's shutdown worker, and a worker
-    // that was detached at its deadline keeps writing while the NEXT module
-    // tears down — so steps from different modules genuinely interleave.
-    // Without the writer's identity those lines cannot be attributed, and an
-    // interleaved pool is worse than no pool: it invites a wrong conclusion.
-    // The worker's ENTER line carries the same id, which is what binds a
-    // thread to the module it is tearing down.
-    // Line integrity is the framework's guarantee, identity is the caller's.
-    // We stamp only the thread id — the one thing the caller cannot cheaply
-    // know and the one thing needed to demultiplex interleaved writers — and
-    // we guarantee the entry is newline-terminated so a caller who forgets
-    // cannot run two records together into one unparseable line.  WHAT the
-    // step refers to (task, module, request id, source) is the caller's to
-    // state: the framework must not guess at identity it does not own.
-    // Monotonic, not wall-clock: this exists to order events during a
-    // teardown, and steady_clock cannot be dragged backwards by an NTP step
-    // mid-shutdown.  Raw microseconds, no formatting — cheap enough to be
-    // safe on a path where the allocator's state is already suspect.
-    const auto now_us = static_cast<unsigned long long>(
-        std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now().time_since_epoch())
-            .count());
-    char line[320];
-    auto res = fmt::format_to_n(line, sizeof(line),
-                                "[trace|t{}|{}us] event=ShutdownStep step='{}'",
-                                pylabhub::platform::get_native_thread_id(), now_us, step);
-    std::size_t n = res.size < sizeof(line) ? res.size : sizeof(line);
-    if (n == 0 || line[n - 1] != '\n')
-    {
-        if (n == sizeof(line))
-            n = sizeof(line) - 1; // make room rather than drop the terminator
-        line[n++] = '\n';
-    }
-    lifecycle_internal::lifecycle_trace() += std::string_view(line, n);
+    // Lifecycle's single door onto the debug module's last-resort trace,
+    // for module shutdown callbacks and the async workers they spawn.
+    //
+    // The framework stamps thread id and timestamp (debug module) and adds
+    // the lifecycle tag; WHAT the step refers to — module, resource, which
+    // call is in flight — is the caller's to state, because the framework
+    // must not guess at identity it does not own.  A module tearing down a
+    // socket knows it is about to block in `zmq_ctx_term`; nothing here can
+    // infer that.
+    char line[lifecycle_internal::kCriticalReportLineBytes];
+    const auto res = fmt::format_to_n(line, sizeof(line), "event=ShutdownStep step='{}'", step);
+    lifecycle_internal::critical_report(line, res.size);
 }
 
 LifecycleManager &LifecycleManager::instance()

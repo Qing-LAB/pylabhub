@@ -163,11 +163,15 @@ post-reconcile shipped-sprint detail).
   demo-harness follow-ups #78-#87; Wave-MD1 ThreadManager shutdown-
   contract sweep; #66 `ZmqQueue`+`InboxQueue` → `apply_socket_policy`;
   Connection/Inbox/Band review D2+D3 follow-ups (C2,C4,C5,I1,I3,X1-X6); HEP-0032
-  ABI-compat broader impl (fingerprint chain shipped); **#86 relocate the
-  last-resort trace into the debug module + wire `panic()` + migrate Logger's
-  per-step probes** (design done: HEP-CORE-0048 + HEP-CORE-0001 §"Lifecycle
-  trace"; instrument shipped inside lifecycle, `0dc1143b`); **#85 teardown
-  stall — cause UNKNOWN, likely the same open bug as #93/#242 in HEP-CORE-0004**;
+  ABI-compat broader impl (fingerprint chain shipped); #86 last-resort trace ✅ SHIPPED 2026-07-29 — buffer moved into the debug
+  module (`debug_info.hpp`/`.cpp`) with a set-only dirty latch, freeze-on-print,
+  `PLH_DEBUG_TRACE_BYTES` (16384); `panic()` no longer allocates before
+  emitting; clients are lifecycle (`LifecycleManager::critical_report`), Logger,
+  ZMQContext, ThreadManager, ZapPumpThread and the SIGTERM watcher; lifecycle
+  owns no storage.  Residual: release clean-silence branch needs a subprocess
+  test; **#85 teardown stall — cause STILL UNKNOWN** (likely the same open bug as
+  #93/#242 in HEP-CORE-0004); its diagnosability half is now closed by #86, so
+  the next recurrence should name the step that hung;
   #88 thread-spawn resource failure escaping the non-throwing failure channel
   ✅ SHIPPED 2026-07-29 (`std::thread` ctor threw out of
   `ThreadManager::spawn`'s `bool` and out of `timedShutdown` into

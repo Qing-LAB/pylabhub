@@ -60,6 +60,13 @@ void zmq_context_shutdown()
     // all sockets already default to LINGER=0, so socket closes are instant and
     // zmq_ctx_term() normally returns quickly.  shutdown() handles the edge case
     // where a socket was explicitly set to LINGER > 0 after creation.
+    // Both of the next two calls can block indefinitely if a foreign thread
+    // still holds a socket on this context, and the only log line in this
+    // function comes after BOTH — so a wedge here has historically left no
+    // record of which one it was stuck in (the #75 failure class).  These
+    // markers are written synchronously to fixed storage, so they survive
+    // the process never returning from either call.
+    pylabhub::utils::LifecycleManager::critical_report("module=ZMQContext op=ctx_shutdown");
     ctx->shutdown();
 
 #if defined(PYLABHUB_PLATFORM_WIN64)
@@ -73,7 +80,9 @@ void zmq_context_shutdown()
     // [REVIEW-22] Store nullptr BEFORE delete so no other thread can observe a
     // valid-looking pointer to freed memory between delete and the store.
     g_context.store(nullptr, std::memory_order_release);
-    delete ctx;
+    pylabhub::utils::LifecycleManager::critical_report("module=ZMQContext op=ctx_term");
+    delete ctx; // zmq_ctx_term
+    pylabhub::utils::LifecycleManager::critical_report("module=ZMQContext op=ctx_term outcome=returned");
     LOGGER_INFO("ZMQContext: ZeroMQ context destroyed.");
 }
 

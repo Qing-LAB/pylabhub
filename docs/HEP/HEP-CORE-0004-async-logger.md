@@ -391,22 +391,33 @@ The probes documented below exist so the next failure is diagnosable
 in one shot instead of one more inconclusive sample.  See `Risk
 Analysis` "Shutdown stalls > deadline" row.
 
-**Second instrument — the lifecycle trace.**  The probes above are
-`PLH_DEBUG`, which is compiled out of every non-Debug build.  That is why
-this signature has also been observed in Release with *no* clue at all:
+**Second instrument — the last-resort trace, and Logger is a client of it.**
+The probes above are `PLH_DEBUG`, compiled out of every non-Debug build. That
+is why this signature has also been observed in Release with *no* clue at all:
 not even the `spawning timedShutdown worker` line survives, so the process
-appears to die silently rather than stalling in a named module.  The
-lifecycle now additionally narrates teardown into a shared, preallocated
-pool that the shutdown workers themselves write to, and emits it
-unconditionally when teardown misbehaves — the buffer is specified in
-HEP-CORE-0048 (Debug Diagnostics and the Last-Resort Trace); HEP-CORE-0001
-describes how the lifecycle narrates into it.  **Logger is the intended next
-client**: the per-step probes above are exactly the ones that should move onto
-that facility, since they are compiled out of released binaries today and
-Logger is the module observed to exceed its deadline here.  A module that recorded an
-entry with no matching exit names the stall directly, in any build.  When
-this signature next fires, read that dump before reaching for the
-`PLH_DEBUG` probes.
+appears to die silently rather than stalling in a named module.
+
+`Logger::Impl::shutdown` therefore writes step markers to
+`pylabhub::debug::trace_add` — **directly**, not through
+`LifecycleManager::critical_report`, because Logger must not depend on
+`pylabhub::utils` and the buffer belongs to the debug module in any case
+(HEP-CORE-0048). It brackets the two steps that can block: the
+`worker_thread_.join()` and `callback_dispatcher_.shutdown()`.
+
+This is not merely "the flag is off in Release". `Impl::shutdown` **cannot**
+use `LOGGER_*` at all — it is joining the very thread that would drain the
+queue, so a message logged there has no one left to flush it. The trace is a
+synchronous `memcpy` into fixed storage with nothing to flush, which is why it
+survives where both channels fail.
+
+The `PLH_DEBUG` probes stay as the live `tail -f` view for a developer working
+in Debug; the trace markers are the durable record. A marker with no matching
+exit names the stall directly, in any build. When this signature next fires,
+read that report before reaching for the `PLH_DEBUG` probes.
+
+The lifecycle marks the report dirty when a module overruns its deadline, so
+this case prints unconditionally even in a release build where a clean teardown
+is silent.
 
 **Routing.**  All shutdown-path probes use `PLH_DEBUG(...)`, which
 routes via `pylabhub::debug::debug_msg()` directly to `stderr`

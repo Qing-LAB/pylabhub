@@ -38,6 +38,158 @@ inline std::string SRCLOC_TO_STR(std::source_location loc)
 namespace pylabhub::debug
 {
 
+// ─────────────────────── last-resort trace buffer ───────────────────────
+//
+// A single process-global buffer that holds the last critical steps a
+// process took before it died.
+//
+// **This is not a log.**  The logger is asynchronous: `LOGGER_*` puts a
+// message on a queue that a worker thread drains later.  That is the right
+// design for logging and the wrong one for forensics, because a process
+// that wedges or is killed never drains the queue — so the messages that
+// would have explained the failure die with it.  This buffer is the
+// opposite trade: a synchronous memcpy into fixed storage, no queue, no
+// worker, nothing to flush.  It survives because there is nothing left to
+// go wrong between writing and reading.
+//
+// The rule for choosing between them:
+//
+//     Would I still need this if the process never finished shutting down?
+//       yes -> trace_add()      no -> LOGGER_*
+//
+// So it holds step markers on shutdown / exit / panic paths, and nothing
+// else.  Filling it with ordinary progress messages destroys the one
+// property it exists for: that what is in it is what mattered.
+//
+// **Lifetime.**  The storage is a file-scope array with static storage
+// duration and no destructor, deliberately.  A shutdown worker abandoned
+// at its deadline may still be running — and still reporting — after the
+// code that started it gave up, so anything that could be destroyed on
+// schedule would be written to after death.
+//
+// **Concurrency.**  Lock-free.  Writers reserve a byte range with an
+// atomic compare-exchange and then fill only their own slice.  A lock
+// would be simpler to write and wrong to use: a worker wedged or killed
+// mid-append would hold it forever, and every later reader — including
+// the one at the end of teardown that exists to explain the wedge — would
+// block on the corpse or need a bounded-retry hack to give up.
+//
+// See HEP-CORE-0048.
+
+/// Capacity of the trace buffer in bytes.  Build option
+/// `PLH_DEBUG_TRACE_BYTES` — see cmake/ToplevelOptions.cmake for how the
+/// default was sized against the write volume of one full teardown.
+#ifndef PLH_DEBUG_TRACE_BYTES
+#define PLH_DEBUG_TRACE_BYTES 16384
+#endif
+inline constexpr std::size_t kTraceBytes = PLH_DEBUG_TRACE_BYTES;
+
+/// Maximum size of ONE entry, stamp included.  Entries are formatted on
+/// the caller's stack before being copied in, so this bounds a stack
+/// buffer, not the pool.  Anything longer is truncated and the lost bytes
+/// are counted the same as pool overflow.
+inline constexpr std::size_t kTraceEntryBytes = 256;
+
+/// Append one entry.  Stamps thread id and a monotonic microsecond
+/// timestamp, and guarantees the entry ends in '\n' so a caller who
+/// forgets cannot run two records into one unreadable line.
+///
+/// WHAT the step refers to — module, phase, task, request id — is the
+/// caller's to say, in `event=<Verb> key='value'` form
+/// (docs/IMPLEMENTATION_GUIDANCE.md).  The framework stamps only what the
+/// caller cannot cheaply know and what is needed to demultiplex
+/// concurrent writers; it must not guess at identity it does not own.
+///
+/// Never allocates, never throws, never blocks.  Bytes that do not fit —
+/// whether because the entry is too long or the pool is full — are
+/// counted and reported by the next `trace_print()`.
+PYLABHUB_UTILS_EXPORT void trace_add(std::string_view msg) noexcept;
+
+/// Write everything accumulated to stderr, then reset the buffer.
+///
+/// Printing drains, and that is what lets every printer compose with no
+/// coordination at all: whoever gets there first empties it, and anyone
+/// arriving later prints only what accumulated since. No ownership, no
+/// duplicate output.
+///
+/// Drains by FREEZING rather than by zeroing: one atomic exchange takes the
+/// current length and parks the counter where no append can fit, so for the
+/// duration of the write every `trace_add` takes its normal drop path. The
+/// bytes being emitted cannot be overwritten, and the refused entries are
+/// counted rather than vanishing. Concurrent printers are handled by the
+/// same mechanism — a second caller sees the freeze sentinel and returns
+/// rather than emitting the buffer twice.
+///
+/// **Whether to print is decided HERE, from the dirty latch** — not by the
+/// caller, and not with a `trace_clear()` beforehand:
+///
+///   - dirty (`trace_mark_dirty` was called) — prints, in EVERY build. This
+///     is the case the facility exists for and it is never suppressed.
+///   - clean, Debug build — prints. A developer wants to see what a normal
+///     exit looks like; that is what makes an abnormal one recognisable.
+///   - clean, Release build — prints NOTHING and leaves the buffer intact.
+///     An operator running a CLI command should not get an exit dump every
+///     time. The content is left in place rather than dropped, so if
+///     something later marks dirty its report carries this context too.
+///
+/// A caller that wants to force emission marks dirty first — which is what
+/// `panic()` and the fatal-signal path do, since arriving there is itself
+/// the thing that went wrong.
+///
+/// Uses `write(2)` rather than stdio, which takes a lock and may allocate.
+/// Emits nothing when the buffer is empty, so callers never need to ask
+/// whether it is worth calling.
+PYLABHUB_UTILS_EXPORT void trace_print() noexcept;
+
+/// Mark this process's report as DIRTY — something went wrong.
+///
+/// A one-way latch. **Any** number of reporters may set it; **nothing**
+/// clears it, not even `trace_clear()`. That asymmetry is the design: the
+/// accident already happened, and no later phase completing normally makes
+/// it un-happen. A clearable flag would let a subsystem that tore down
+/// cleanly after someone else's failure erase the record of that failure —
+/// exactly the loss this buffer exists to prevent.
+///
+/// Owned here, not by any client. This module depends on nothing and is
+/// usable on its own, so a program that never touches lifecycle can still
+/// say "my exit was not clean" and have its report survive. Putting the
+/// flag in a client would deny that to every other user and tie a general
+/// facility to one caller.
+PYLABHUB_UTILS_EXPORT void trace_mark_dirty() noexcept;
+
+/// Has anything marked this process's report dirty?
+///
+/// Provided for diagnostics and tests. Callers do NOT need to consult this
+/// before printing — `trace_print()` applies it internally, which is what
+/// keeps the policy in one place instead of at every print site.
+[[nodiscard]] PYLABHUB_UTILS_EXPORT bool trace_is_dirty() noexcept;
+
+/// Write `n` bytes to stderr with `write(2)`, retrying partial writes.
+///
+/// Exposed because `panic()` must emit its own message through the same
+/// door the trace uses: stdio takes a lock and may allocate, and on a
+/// panic path either can be the reason we are here.  Not for general use
+/// — ordinary output belongs to the logger.
+PYLABHUB_UTILS_EXPORT void trace_write_stderr(const char *data, std::size_t n) noexcept;
+
+/// Discard the accumulated entries and the dropped-byte count without
+/// printing.
+///
+/// Does **not** reset the dirty latch — see `trace_mark_dirty`. Clearing
+/// content is a caller saying "these particular steps were unremarkable";
+/// it is not a claim that the process is healthy, and it must never be able
+/// to become one.
+///
+/// `trace_print()` does NOT call this. It drains by parking the length at a
+/// freeze sentinel for the duration of the write and then resetting it,
+/// which lets it subtract exactly the dropped bytes it reported instead of
+/// zeroing a counter that may have grown while it was still emitting.
+///
+/// This is here for a caller that deliberately wants to discard without
+/// emitting — legitimate, but such a caller had better know what it is
+/// throwing away, including any drop count it has not reported.
+PYLABHUB_UTILS_EXPORT void trace_clear() noexcept;
+
 /**
  * @brief Prints the current call stack (stack trace) to `stderr`.
  *
@@ -84,25 +236,59 @@ template <typename... Args>
 [[noreturn]] inline void panic(std::source_location loc, fmt::format_string<Args...> fmt_str,
                                Args &&...args) noexcept
 {
-    try
+    // Formatted into a fixed stack buffer, never into a std::string.
+    // `fmt::format` returns a heap string, so the previous shape asked the
+    // allocator for memory as the FIRST act of dying — and one common
+    // reason to be here is that the heap is exhausted or corrupt.  The old
+    // code caught the resulting `bad_alloc`, but its fallback formatted
+    // too, so a real out-of-memory panic lost its message entirely and
+    // aborted without ever saying why.
     {
-        const auto body = fmt::format(fmt_str, std::forward<Args>(args)...);
-        fmt::print(stderr, "[PANIC] {} -- {}\n", SRCLOC_TO_STR(loc), body);
+        char msg[kTraceEntryBytes * 4];
+        std::size_t n = 0;
+        auto room = [&]() { return sizeof(msg) - n; };
+        auto advance = [&](std::size_t written) { n += written < room() ? written : room(); };
+        try
+        {
+            // The location is formatted field-by-field rather than through
+            // SRCLOC_TO_STR, which returns a std::string and would put an
+            // allocation right back on this path.
+            advance(fmt::format_to_n(msg + n, room(), "[PANIC] {}:{}:{} -- ",
+                                     pylabhub::format_tools::filename_only(loc.file_name()),
+                                     loc.line(), loc.function_name())
+                        .size);
+            // The caller's format string writes straight into the tail of
+            // the same buffer — no intermediate string anywhere.
+            advance(fmt::format_to_n(msg + n, room(), fmt_str, std::forward<Args>(args)...).size);
+            advance(fmt::format_to_n(msg + n, room(), "\n").size);
+        }
+        catch (...)
+        {
+            n = 0;
+            advance(fmt::format_to_n(msg + n, room(),
+                                     "[PANIC] {}:{} -- FORMATTING THE PANIC MESSAGE FAILED\n",
+                                     pylabhub::format_tools::filename_only(loc.file_name()),
+                                     loc.line())
+                        .size);
+        }
+        trace_write_stderr(msg, n);
     }
-    catch (const fmt::format_error &e)
-    {
-        fmt::print(stderr,
-                   "[PANIC] {} -- FATAL FORMAT ERROR WHEN PANIC fmt_str['{}']\n"
-                   "[PANIC]  Exception: '{}'\n",
-                   SRCLOC_TO_STR(loc), fmt_str.get(), e.what());
-        std::fflush(stderr);
-    }
-    catch (...)
-    {
-        fmt::print(stderr, "[PANIC] {} -- FATAL UNKNOWN EXCEPTION DURING PANIC: fmt_str['{}']\n",
-                   SRCLOC_TO_STR(loc), fmt_str.get());
-        std::fflush(stderr);
-    }
+
+    // A panic is by definition not a clean exit, so mark the report dirty
+    // before printing rather than teaching trace_print() about special
+    // callers.  One rule, applied by whoever knows they are in trouble.
+    trace_mark_dirty();
+
+    // Order matters: message, then the trace, then the backtrace.  The
+    // trace is what the process was DOING; the backtrace is where it
+    // stopped.  Reading them the other way round means holding the stack
+    // in your head with no idea what it was in the middle of.
+    //
+    // An empty buffer emits nothing, and because trace_print() drains, a
+    // shutdown that already printed leaves this silent rather than repeating
+    // itself.
+    trace_print();
+
     print_stack_trace(true); // Go for max detail on panic, accepting the risks.
     std::abort();
 }

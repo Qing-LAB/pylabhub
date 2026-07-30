@@ -692,7 +692,11 @@ void ZapPumpThread::lifecycle_shutdown_thunk(const char * /*name*/, void * /*use
     std::lock_guard<std::mutex> lk(g_module_mu_);
     if (!g_module_pump_.has_value())
         return;
+    // The jthread destructor JOINS.  The LOGGER_INFO below only runs if that
+    // join returns, so a hung pump thread leaves no evidence it was reached.
+    pylabhub::utils::LifecycleManager::critical_report("module=ZapPumpThread op=pump_join");
     g_module_pump_.reset(); // jthread destructor joins
+    pylabhub::utils::LifecycleManager::critical_report("module=ZapPumpThread op=pump_join outcome=joined");
     LOGGER_INFO("[ZapPumpThread] event=ModuleShutdown pumper joined");
     // Allow re-registration in a future LifecycleGuard cycle.
     g_module_registered_.store(false, std::memory_order_release);

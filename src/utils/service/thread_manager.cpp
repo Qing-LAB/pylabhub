@@ -888,6 +888,26 @@ std::size_t ThreadManager::drain()
         LOGGER_ERROR("[ThreadManager:{}] UNCLEAN SHUTDOWN — {} thread(s) detached "
                      "on timeout. Process exit should NOT report success.",
                      pImpl->composed_identity, detached);
+
+        // Mirrored into the last-resort trace, not moved.  The LOGGER_ERROR
+        // is the right thing for anyone reading logs afterwards — but it is
+        // asynchronous, and a detach means threads are still running that we
+        // gave up waiting for.  If teardown then wedges or the process is
+        // killed, that message is still sitting in the logger's queue and
+        // dies there — losing the record of the accident precisely when the
+        // accident is what happened.
+        // A detach means threads we gave up waiting for are still running.
+        // That is not a clean exit, so the report must be emitted even in a
+        // release build.
+        pylabhub::debug::trace_mark_dirty();
+
+        char line[pylabhub::debug::kTraceEntryBytes];
+        const auto res =
+            fmt::format_to_n(line, sizeof(line),
+                             "module=ThreadManager owner='{}' op=drain outcome=unclean detached={}",
+                             pImpl->composed_identity, detached);
+        pylabhub::utils::LifecycleManager::critical_report(
+            std::string_view(line, res.size < sizeof(line) ? res.size : sizeof(line)));
     }
 
     return detached;

@@ -373,30 +373,31 @@ bool LifecycleManagerImpl::unloadModule(std::string_view name, std::source_locat
  *
  * Sets mod.status to Shutdown, FailedShutdown, or ShutdownTimeout.
  */
-void LifecycleManagerImpl::shutdownModuleWithTimeout(InternalGraphNode &mod,
-                                                     lifecycle_internal::LifecycleTrace &debug_info)
+void LifecycleManagerImpl::shutdownModuleWithTimeout(InternalGraphNode &mod)
 {
     const char *const type_str = mod.is_dynamic ? "dynamic" : "static";
-    debug_info += fmt::format("     <- Shutting down {} module: '{}'...", type_str, mod.name);
+    {
+        char line[lifecycle_internal::kCriticalReportLineBytes];
+        const auto res = fmt::format_to_n(line, sizeof(line), "event=ShutdownDispatch module='{}' kind={} dispatch=async deadline_ms={}",
+                                          mod.name, type_str, mod.shutdown.timeout.count());
+        lifecycle_internal::critical_report(line, res.size);
+    }
 
     auto outcome = timedShutdown(mod.shutdown.func, mod.shutdown.timeout, mod.name);
 
     if (outcome.success)
     {
         mod.status.store(ModuleStatus::Shutdown, std::memory_order_release);
-        debug_info += "done.\n";
     }
     else if (outcome.timed_out)
     {
         mod.status.store(ModuleStatus::ShutdownTimeout, std::memory_order_release);
-        debug_info +=
-            fmt::format("TIMEOUT ({}ms)! Thread detached.\n", mod.shutdown.timeout.count());
+        pylabhub::debug::trace_mark_dirty();
     }
     else
     {
         mod.status.store(ModuleStatus::FailedShutdown, std::memory_order_release);
-        debug_info += fmt::format("\n     **** ERROR: {} module '{}' threw on shutdown: {}\n",
-                                  type_str, mod.name, outcome.exception_msg);
+        pylabhub::debug::trace_mark_dirty();
     }
 }
 

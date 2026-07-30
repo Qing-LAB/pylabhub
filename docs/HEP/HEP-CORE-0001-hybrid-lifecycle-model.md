@@ -277,7 +277,7 @@ needed that ordinary logging cannot provide here:
    module's shutdown callback runs on its own thread, and that thread is
    **detached** if the module overruns its deadline. A detached worker can
    report nothing, so the outcome of a slow module was lost exactly when it
-   mattered. Workers narrate into the shared pool instead, on entry and on
+   mattered. Workers report into the shared buffer instead, on entry and on
    exit. **A module that recorded an entry with no matching exit is the
    module that hung — the asymmetry is the diagnosis.**
 
@@ -296,18 +296,18 @@ worker cannot report through any return value or output parameter — it has
 already been abandoned by the code that would have read them. It needs a
 destination that outlives it.
 
-The lifecycle therefore exposes a **narration wrapper over the debug module's
+The lifecycle therefore exposes a **single wrapper over the debug module's
 last-resort trace**, and shutdown workers call it directly:
 
 ```cpp
 mod.set_shutdown([](const char *, void *) {
-    lifecycle_narrate("event=DrainStart queue='work'");
+    LifecycleManager::critical_report("event=DrainStart queue='work'");
     drain_queue();                       // if this hangs, the line above is already recorded
 
-    lifecycle_narrate("event=JoinStart thread='worker'");
+    LifecycleManager::critical_report("event=JoinStart thread='worker'");
     worker.join();
 
-    lifecycle_narrate("event=SinksReleased");
+    LifecycleManager::critical_report("event=SinksReleased");
     sinks.clear();
 }, std::chrono::milliseconds(5000));
 ```
@@ -326,10 +326,10 @@ restated — and forgotten — at every call site.
 Resulting trace when a module hangs while joining:
 
 ```
-[trace|t9021|41822931us] event=ShutdownEnter module='Logger'
-[trace|t9021|41822944us] event=ShutdownStep step='event=DrainStart queue=...'
-[trace|t9021|41822957us] event=ShutdownStep step='event=JoinStart thread=...'
-[trace|t8877|41827958us] event=ShutdownDeadlineExceeded module='Logger' deadline_ms=5000 action=detached
+[t9021|41822931us] event=ShutdownEnter module='Logger'
+[t9021|41822944us] event=ShutdownStep step='event=DrainStart queue=...'
+[t9021|41822957us] event=ShutdownStep step='event=JoinStart thread=...'
+[t8877|41827958us] event=ShutdownDeadlineExceeded module='Logger' deadline_ms=5000 action=detached
 ```
 
 **The absent `event=SinksReleased` is the diagnosis** — it hung in `join()`, not
@@ -344,23 +344,37 @@ module is being shut down **before** invoking the callback, so a timeout
 cannot erase the fact that the module was entered. Each shutdown worker
 appends its own entry and exit lines.
 
-**One rule the lifecycle must not break:** `finalize()` does **not** clear the
-buffer on entry. An asynchronous unload can time out and detach its worker
-*before* `finalize()` is entered; clearing at that point would erase that
-record — and reset the anomaly flag — destroying exactly the evidence the
-phase exists to report.
+**Two rules the lifecycle must not break.**
 
-**Exposure.** The accumulated narrative is emitted at the end of the phase.
-A clean teardown stays quiet — it goes to the debug channel, as before. A
-teardown that misbehaved (a module overran its deadline and was detached,
-or threw) is marked as an anomaly and emitted **unconditionally**, directly
-to standard error.
+*`finalize()` does not clear the buffer on entry.* An asynchronous unload can
+time out and detach its worker *before* `finalize()` is entered; clearing at
+that point would erase exactly the evidence the phase exists to report.
 
-That distinction is load-bearing rather than cosmetic. The debug channel is
-compiled out of every non-Debug build, so before this rule a release
-process could hang during teardown and die without a single word about
-where. **An accident must be able to speak in every build, not only the
-ones where debug messages happen to be compiled in.**
+*Startup does not use the buffer at all.* This is an **exit** life line — it
+exists so a process that fails to *quit* can still say how far it got. A
+startup failure is a different situation: the logger is coming up or already
+up, and `printStatusAndAbort` reports it directly. Writing startup steps here
+would spend a fixed, scarce budget on the phase that does not need it and
+could push out the teardown record that does. `initialize()` therefore uses
+`PLH_DEBUG` only, which also removes any path by which startup could clear an
+async unload's timeout record.
+
+**Exposure.** `finalize()` calls `trace_print()` **unconditionally** at its end
+and makes no decision of its own. Whether anything is emitted is the debug
+module's rule (HEP-CORE-0048): a report marked dirty prints in every build; a
+clean one prints only where `PLH_DEBUG` is compiled in.
+
+Lifecycle's part is to **mark dirty** whenever teardown misbehaves — a module
+threw, overran its deadline and was detached, or its shutdown worker could not
+be spawned. The flag lives in the debug module, is set-only, and is cleared by
+nothing, so a subsystem that tears down cleanly afterwards cannot erase
+someone else's failure.
+
+That distinction is load-bearing rather than cosmetic. `PLH_DEBUG` is compiled
+out of every non-Debug build, so before this rule a release process could hang
+during teardown and die without a single word about where. **An accident must
+be able to speak in every build, not only the ones where debug messages happen
+to be compiled in.**
 
 **Scope — this is a last-resort buffer, NOT a log.** It exists for one
 situation: information that would otherwise be destroyed by an abnormal exit.
@@ -372,15 +386,16 @@ Two consequences follow, and both are load-bearing:
 
 - **Capacity is not a concern, because the write span is bounded.** Nothing
   appends during normal operation, so the buffer holds one teardown's worth of
-  narration, not a process lifetime's. This is why a fixed cap with
+  reporting, not a process lifetime's. This is why a fixed cap with
   truncate-on-overflow is adequate and no ring or eviction policy is needed.
+  Overflow is counted and reported, so a truncated record announces itself.
 - **Do not "just add a line" from ordinary code.** Every unrelated writer
   dilutes the one thing this buffer is for. If it accumulates general
   progress messages it stops being a last-resort record and becomes an
   unfiltered log that happens to survive a crash — at which point the signal
   it was built to preserve is buried in the noise it was never meant to carry.
 
-**The rule: narrate incrementally, never summarise.** A single accumulated
+**The rule: report incrementally, never summarise.** A single accumulated
 string is the anti-pattern this replaces. Whoever holds such a string loses
 all of it if their thread is detached at a deadline or the process is killed
 mid-teardown — the buffer dies with the frame, and what it contained was
@@ -398,7 +413,11 @@ The lifecycle exposes one call for module authors:
 
 | Symbol | Purpose |
 |---|---|
-| `lifecycle_narrate(step)` | Record one step of your own teardown, as it happens. |
+| `LifecycleManager::critical_report(step)` | Record one step of your own teardown, as it happens. |
+
+The name is deliberate. An earlier revision called this `narrate`, which
+invites exactly the casual progress-reporting the buffer must never carry —
+this is a life line, not a commentary track.
 
 Everything else — storage, drain/emit rules, the enforced envelope — belongs to
 the debug module and is normative in HEP-CORE-0048.
