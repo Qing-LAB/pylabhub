@@ -153,6 +153,40 @@ Vaults are incompatible between INTERACTIVE and SENSITIVE builds — re-keygen a
 set(PYLABHUB_SCRIPT_MAX_RECURSION_DEPTH 20 CACHE STRING
     "Maximum recursion depth for JSON/script type conversion in script engines.")
 
+# ── ZMQ reconnect posture (HEP-CORE-0023 §2.5.3) ────────────────────────────
+#
+# ONE switch for the whole retry parameter set — deliberately not a knob per
+# ZMQ option, so the parameters cannot be assembled into an incoherent mix.
+# The values live as constants in `src/include/utils/zmq_socket_policy.hpp`.
+#
+# What this DOES control: whether a connection that was NEVER established is
+# retried.  There is no protocol state at that point, so retrying is safe.
+#
+# What it does NOT control: an ESTABLISHED session being lost.  No ZMQ option
+# governs that (`ZMQ_RECONNECT_STOP_AFTER_DISCONNECT` fires on an
+# application-initiated `zmq_disconnect()`, not a peer drop).  "Disconnect is
+# terminal" for a live session is enforced above the socket, by watching
+# `ZMQ_EVENT_DISCONNECTED` on the monitor — see task #93.
+#
+# startup-tolerant: reconnect_ivl 100 ms, backoff ceiling 1 s.  Covers the
+#                   real startup ordering race (a role coming up before the
+#                   broker is listening) without touching live-session
+#                   semantics.  DEFAULT.
+# terminal:         reconnect_ivl -1 — no reconnect at all, ever.
+#
+# Independent of this switch and always applied: reconnect stops on
+# CONN_REFUSED and HANDSHAKE_FAILED.  No deployment wants a CURVE-denied peer
+# retrying a doomed handshake ten times a second forever, which is what
+# libzmq's raw default does today.
+set(PYLABHUB_ZMQ_RECONNECT_POLICY "startup-tolerant" CACHE STRING
+    "ZMQ reconnect posture: startup-tolerant (retry un-established connects) or terminal (never).")
+set_property(CACHE PYLABHUB_ZMQ_RECONNECT_POLICY PROPERTY STRINGS "startup-tolerant" "terminal")
+if(NOT PYLABHUB_ZMQ_RECONNECT_POLICY MATCHES "^(startup-tolerant|terminal)$")
+    message(FATAL_ERROR
+        "PYLABHUB_ZMQ_RECONNECT_POLICY must be 'startup-tolerant' or 'terminal', got: "
+        "'${PYLABHUB_ZMQ_RECONNECT_POLICY}'")
+endif()
+
 # Option to enable Clang-Tidy static analysis.
 option(PYLABHUB_ENABLE_CLANG_TIDY "Enable Clang-Tidy static analysis for project targets." OFF)
 

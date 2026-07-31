@@ -244,6 +244,18 @@ if(PYLABHUB_STRICT_ABI_CHECK)
     message(STATUS "PYLABHUB_STRICT_ABI_CHECK=ON — build_id check enforced in all modes")
 endif()
 
+# ZMQ reconnect posture — one switch for the whole retry parameter set.
+# See cmake/ToplevelOptions.cmake for the rationale; values live in
+# src/include/utils/zmq_socket_policy.hpp.  PUBLIC because the header is
+# consumed by every ZMQ-using subsystem, not just this library.
+if(PYLABHUB_ZMQ_RECONNECT_POLICY STREQUAL "terminal")
+    target_compile_definitions(pylabhub-utils PUBLIC PYLABHUB_ZMQ_RECONNECT_TERMINAL=1)
+    message(STATUS "PYLABHUB_ZMQ_RECONNECT_POLICY=terminal — no reconnect, ever")
+else()
+    message(STATUS "PYLABHUB_ZMQ_RECONNECT_POLICY=startup-tolerant — "
+                   "un-established connects retried (100ms, 1s ceiling)")
+endif()
+
 # Generate Python version module (consumed by python/pylabhub/__init__.py).
 configure_file(
   "${CMAKE_SOURCE_DIR}/cmake/pylabhub_version.py.in"

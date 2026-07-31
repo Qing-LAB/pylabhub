@@ -106,10 +106,38 @@ int apply_socket_policy_tcp_connect_sets_all()
             EXPECT_EQ(sock.get(zmq::sockopt::sndtimeo), 500);
             EXPECT_EQ(sock.get(zmq::sockopt::heartbeat_ivl), 5000);
             EXPECT_EQ(sock.get(zmq::sockopt::heartbeat_timeout), 30000);
+// Reconnect posture is selected as a SET by the build-time
+            // PYLABHUB_ZMQ_RECONNECT_POLICY option.  Assert behaviour MATCHES
+            // the build configuration, so a CMake/header drift fails loudly
+            // here rather than silently shipping the wrong posture — same
+            // discipline as KnownRolesStoreTest's I10 build-flag pin.
+            //
+            // NOTE what these options do and do NOT cover: they govern only a
+            // connection that was never established.  An ESTABLISHED session
+            // being lost is not reachable from any ZMQ option
+            // (RECONNECT_STOP_AFTER_DISCONNECT fires on our own
+            // zmq_disconnect(), not a peer drop) — that is task #93.
+#if defined(PYLABHUB_ZMQ_RECONNECT_TERMINAL)
             EXPECT_EQ(sock.get(zmq::sockopt::reconnect_ivl), -1)
-                << "TcpConnect MUST disable auto-reconnect "
-                   "(HEP-CORE-0023 §2.5.3 'Disconnection is terminal').";
+                << "terminal posture MUST disable auto-reconnect entirely";
             EXPECT_EQ(sock.get(zmq::sockopt::reconnect_ivl_max), 0);
+#else
+            EXPECT_EQ(sock.get(zmq::sockopt::reconnect_ivl), 100)
+                << "startup-tolerant posture retries an un-established connect";
+            EXPECT_EQ(sock.get(zmq::sockopt::reconnect_ivl_max), 1000)
+                << "backoff ceiling bounds the retry rate for a peer that never appears";
+#endif
+
+            // Unconditional in BOTH postures: never retry when the answer is
+            // already known.  Without this a CURVE-denied peer retries a
+            // doomed handshake ten times a second forever, which is libzmq's
+            // raw default and what every socket that skipped this helper got.
+#if defined(ZMQ_RECONNECT_STOP)
+            EXPECT_EQ(sock.get(zmq::sockopt::reconnect_stop),
+                      ZMQ_RECONNECT_STOP_CONN_REFUSED | ZMQ_RECONNECT_STOP_HANDSHAKE_FAILED |
+                          ZMQ_RECONNECT_STOP_AFTER_DISCONNECT)
+                << "stop-on-known-answer is not switchable and must hold in every posture";
+#endif
 
             sock.close();
         },

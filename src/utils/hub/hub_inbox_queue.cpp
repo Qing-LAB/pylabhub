@@ -16,6 +16,7 @@
 #include "utils/debug_info.hpp" // PLH_PANIC — unarmed-CURVE invariant
 #include "utils/logger.hpp"
 #include "utils/zmq_context.hpp"
+#include "utils/zmq_socket_policy.hpp"   // send_multipart_atomic (house ZMQ rules)
 #include "utils/curve_socket.hpp"              // arm_curve_server / arm_curve_client
 #include "utils/security/key_store.hpp"        // kRoleIdentityName, secure().keys()
 #include "utils/security/secure_subsystem.hpp" // secure()
@@ -385,7 +386,13 @@ bool InboxQueue::start()
     try
     {
         pImpl->socket = zmq::socket_t(pylabhub::hub::get_zmq_context(), zmq::socket_type::router);
-        pImpl->socket.set(zmq::sockopt::linger, 0);
+        // House ZMQ policy (linger, bounded sndtimeo, ZMTP heartbeat).  This
+        // header names "Inbox receiver ROUTER accepting DEALER senders" as a
+        // TcpBind user in its own docs, and the inbox never called it — so it
+        // ran on libzmq's raw defaults: no heartbeat, unbounded send block.
+        // That unbounded send is the 60s hang this arc started from.
+        pylabhub::utils::apply_socket_policy(pImpl->socket,
+                                             pylabhub::utils::ZmqSocketRole::TcpBind);
         pImpl->socket.set(zmq::sockopt::rcvhwm, pImpl->rcvhwm);
 
         // ── CURVE-server arm (HEP-CORE-0027 §3.5, HEP-CORE-0036 §9.3) ──
@@ -849,7 +856,11 @@ bool InboxClient::start()
     try
     {
         pImpl->socket = zmq::socket_t(pylabhub::hub::get_zmq_context(), zmq::socket_type::dealer);
-        pImpl->socket.set(zmq::sockopt::linger, 0);
+        // House ZMQ policy — this header names "Inbox sender DEALER connecting
+        // to a peer ROUTER" as a TcpConnect user.  MUST precede connect():
+        // reconnect options only take effect when set pre-connect.
+        pylabhub::utils::apply_socket_policy(pImpl->socket,
+                                             pylabhub::utils::ZmqSocketRole::TcpConnect);
         // ZMQ_ROUTING_ID (modern name for ZMQ_IDENTITY): the peer's ROUTER will
         // prepend this to every message it receives from us.  Note: under
         // CURVE the ROUTER admits by PUBKEY (ZAP), not by this self-asserted
@@ -979,69 +990,33 @@ uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
         pylabhub::utils::security::secure().random_bytes(meta, kInboxNonceLen);
         inbox_put_be64(meta + kInboxNonceLen, inbox_now_ms());
 
-        // `dontwait` is what makes this call bounded.  Without it libzmq's
-        // default ZMQ_SNDTIMEO of -1 retries forever whenever the DEALER has
-        // no writable peer, so a denied CURVE handshake or a departed peer
-        // parks the calling thread permanently — with no error, no timeout
-        // and no log.  That also made the documented `ack_timeout == 0`
+        // `dontwait` (inside `send_multipart_atomic`) is what makes this call
+        // bounded.  libzmq's default ZMQ_SNDTIMEO of -1 retries forever when
+        // the DEALER has no writable peer, so a denied CURVE handshake or a
+        // departed peer parked the calling thread permanently — no error, no
+        // timeout, no log.  It also made the documented `ack_timeout == 0`
         // fire-and-forget contract false, because the block happened before
         // this function ever read `ack_timeout`.
         //
-        // The three parts are sent INDIVIDUALLY rather than through
-        // `zmq::multipart_t::send`, because which part fails changes what we
-        // must do next and that helper only reports a bool:
-        //
-        //   part 0 fails — no peer at all.  libzmq wrote nothing
-        //     (`lb_t::sendpipe` takes the `_active == 0` exit and returns -1).
-        //     Just report the drop.
-        //   part 1 or 2 fails — the peer died mid-message.  libzmq rolls back
-        //     what it wrote and enters DISCARD MODE: it silently eats every
-        //     following part, REPORTING SUCCESS, until one arrives without
-        //     SNDMORE.  If we stop here, discard mode is still armed and it
-        //     eats our NEXT message whole while telling us it was sent.  So
-        //     we push the remaining parts to clear it inside this message.
-        //
-        // Pushing the remainder on a part-0 failure would be the opposite
-        // bug: nothing was written, discard mode is NOT armed, so those parts
-        // would queue up and go out as a malformed 2-part message the moment
-        // a peer appears.  Hence the `first_part_sent` guard.
-        const std::array<zmq::const_buffer, 3> parts{
-            zmq::buffer("", 0),                                   // empty delimiter
-            zmq::buffer(meta, kInboxMetaLen),                     // replay metadata
-            zmq::buffer(pImpl->sbuf_.data(), pImpl->sbuf_.size()) // payload
-        };
-        auto part_flags = [&](std::size_t i)
+        // Multipart atomicity — which part failed, and whether libzmq's
+        // discard latch must be cleared — is NOT this function's knowledge.
+        // It is a house rule about using a ZMQ socket, so it lives with the
+        // rest of them in `zmq_socket_policy.hpp` and applies to any
+        // multipart sender rather than to this one message format.
+        if (!pylabhub::utils::send_multipart_atomic(
+                pImpl->socket, {zmq::buffer("", 0),                    // empty delimiter
+                                zmq::buffer(meta, kInboxMetaLen),      // replay metadata
+                                zmq::buffer(pImpl->sbuf_.data(), pImpl->sbuf_.size())}))
         {
-            return (i + 1 < parts.size())
-                       ? (zmq::send_flags::sndmore | zmq::send_flags::dontwait)
-                       : zmq::send_flags::dontwait;
-        };
-
-        std::size_t failed_at = parts.size();
-        for (std::size_t i = 0; i < parts.size(); ++i)
-        {
-            if (!pImpl->socket.send(parts[i], part_flags(i)))
-            {
-                failed_at = i;
-                break;
-            }
-        }
-
-        if (failed_at < parts.size())
-        {
-            // Clear libzmq's discard mode, but ONLY when a later part failed.
-            for (std::size_t i = failed_at + 1; failed_at > 0 && i < parts.size(); ++i)
-                (void)pImpl->socket.send(parts[i], part_flags(i));
-
             pImpl->send_blocked_count_.fetch_add(1, std::memory_order_relaxed);
             if (!pImpl->send_blocked_)
             {
                 pImpl->send_blocked_ = true;
-                LOGGER_WARN("[hub::InboxClient] send:blocked endpoint='{}' part={} — no writable "
+                LOGGER_WARN("[hub::InboxClient] send:blocked endpoint='{}' — no writable "
                             "peer (receiver's inbox is full, or the peer is not connected / was "
                             "denied).  Message dropped; further blocked sends are counted, not "
                             "logged, until the path recovers",
-                            pImpl->endpoint, failed_at);
+                            pImpl->endpoint);
             }
             return 255;
         }

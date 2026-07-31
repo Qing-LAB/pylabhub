@@ -24,6 +24,42 @@ removals from D2 / D3 drift batches).
 > `docs/archive/transient-2026-07-18/todo-completions/`.  #235 residual: L3 parity
 > regression tests → fold into **#232**.
 
+### #92 S-8 — `ZmqQueue::start()` leaves a failed start looking Active, and the retry reports success
+
+`src/utils/hub/hub_zmq_queue.cpp:1813-2093`.  `start()` sets `running_ = true`
+*before* the work that can fail, then guards that work with only
+`catch (std::invalid_argument)` + `catch (zmq::error_t)`.  `KeyStore::pubkey`
+throws **`std::out_of_range`** for an unknown name (`key_store.cpp:347`, `:351`),
+which matches neither handler, so the cleanup (`socket.close()`,
+`mechanism_ ← Uninitialized`, `running_ ← false`) never runs.
+
+The panic guard at `:1874` does not cover this — it proves `identity_key_name_`
+is non-empty, not that the name is *in the store*.
+
+Consequence: the queue is left `running_ == true` with nothing bound or
+connected, and `start()`'s own idempotence check (`:1790`) then returns **`true`**
+on every retry.  A caller that fixes the key and retries gets a success report
+for a queue that will never carry a byte.
+
+Fix shape (needs approval before coding): make cleanup a scope guard rather than
+duplicated per-handler bodies that a future `throw` type can slip past — or only
+set `running_` on the success path.  Full write-up:
+`docs/code_review/REVIEW_SecurityTree_2026-07-30.md` § S-8.
+
+### #92 S-9 — the CURVE engagement guard's comment claims a guarantee the code cannot give
+
+`src/utils/hub/hub_zmq_queue.cpp:2041-2068`.  The comment says it asks libzmq
+"what mechanism this socket **negotiated**".  `ZMQ_MECHANISM` returns
+`options.mechanism` (`third_party/libzmq/src/options.cpp:1159`) — a local
+configuration field written by our own setsockopts, never by the handshake.  At
+line 2050 `connect()` has not even produced a TCP connection yet, so there is no
+negotiation to report.
+
+The guard is worth keeping (it does prove the CURVE setsockopts took effect), but
+it cannot detect a failed or downgraded handshake.  Fix = correct the comment; a
+real negotiated check is the socket-monitor work in **#93**
+(`ZMQ_EVENT_HANDSHAKE_SUCCEEDED` / `ZMQ_EVENT_HANDSHAKE_FAILED_*`).
+
 ### #89 — SMS expansion + vault design (retained key, script vault, config reload)
 
 **Filed 2026-07-29.**  One task because these are the same foundation: reloading

@@ -22,6 +22,7 @@
 #include "utils/security/zap_router.hpp"
 #include "utils/thread_manager.hpp"
 #include "utils/zmq_context.hpp"
+#include "utils/zmq_socket_policy.hpp" // apply_socket_policy (house ZMQ rules)
 #include "zmq_wire_helpers.hpp"
 
 #include "cppzmq/zmq.hpp"
@@ -1831,7 +1832,15 @@ bool ZmqQueue::start()
                                                               : zmq::socket_type::pub;
         }
         pImpl->socket = zmq::socket_t(pylabhub::hub::get_zmq_context(), stype);
-        pImpl->socket.set(zmq::sockopt::linger, 0);
+        // House ZMQ policy (linger, bounded sndtimeo, ZMTP heartbeat,
+        // reconnect posture).  `zmq_socket_policy.hpp` names both ZmqQueue
+        // variants as its users and ZmqQueue never called it, so it ran on
+        // libzmq's raw defaults — no heartbeat, and reconnect every 100ms
+        // forever with no stop conditions.  MUST precede bind()/connect().
+        pylabhub::utils::apply_socket_policy(pImpl->socket,
+                                             pImpl->bind_socket
+                                                 ? pylabhub::utils::ZmqSocketRole::TcpBind
+                                                 : pylabhub::utils::ZmqSocketRole::TcpConnect);
 
         // SUB sockets require an explicit subscription; empty topic
         // filter matches every message (HEP-CORE-0017 §3.3.1 — script

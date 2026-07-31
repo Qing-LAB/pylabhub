@@ -69,6 +69,125 @@ stated contract · **LOW** = correctness/clarity, no security consequence.
 | S-4 | LOW | `shm_capability_channel.cpp:119` | ✅ FIXED 2026-07-31 |
 | S-5 | MED | `attach_protocol.hpp:231` | ✅ FIXED 2026-07-31 |
 | S-6 | LOW | `secure_subsystem.hpp:272-289` | ✅ FIXED 2026-07-31 |
+| S-7 | LOW | `hub_zmq_queue.cpp:339` + `hub_inbox_queue.cpp` | ❌ OPEN |
+| S-8 | MED | `hub_zmq_queue.cpp:1813-2093` | ❌ OPEN |
+| S-9 | LOW | `hub_zmq_queue.cpp:2041-2068` | ❌ OPEN |
+
+---
+
+### S-8 ❌ MED — a missing key wedges the queue in a fake "running" state, and the retry reports success
+
+`src/utils/hub/hub_zmq_queue.cpp:1813-2093`, `ZmqQueue::start()`.
+
+`start()` sets `running_ = true` at line 1813, *before* it does any work, then
+enters a `try` block that ends with exactly two handlers:
+
+```
+catch (const std::invalid_argument &e)   // line 2071
+catch (const zmq::error_t &e)            // line 2085
+```
+
+Inside that block it reaches into the KeyStore:
+
+```cpp
+pImpl->socket.set(zmq::sockopt::curve_publickey, ks.pubkey(pImpl->identity_key_name_));
+```
+
+`KeyStore::pubkey` throws **`std::out_of_range`** when the name is not present
+(`key_store.cpp:347`, and again at `:351` when the entry exists but carries no
+public half). `std::out_of_range` derives from `std::logic_error` — *not* from
+`std::invalid_argument`. Neither handler catches it.
+
+The panic guard added at line 1874 does not cover this. It proves
+`identity_key_name_` is **non-empty**; it says nothing about whether that name
+is actually **in the store**. Those are different failures, and only the first
+one is guarded.
+
+**Failure scenario.** A queue is built with `identity_key_name_ = "role-x"` but
+the vault load that would have installed `role-x` failed earlier, or the name
+was mistyped in config. `start()` runs:
+
+1. `running_` ← `true`
+2. `ks.pubkey("role-x")` throws `std::out_of_range`
+3. the exception escapes both handlers and leaves `start()`
+
+The cleanup those handlers perform — `socket.close()`, `mechanism_ ←
+Uninitialized`, `running_ ← false` — **never runs**. The queue is left with:
+
+- `running_ == true` — it looks Active to every observer
+- `mechanism_ == Uninitialized` — never advanced to `Curve`
+- a socket constructed but never bound and never connected
+- `zap_handle_` unregistered (that block is below the throw)
+
+The caller, `apply_master_approval`, wraps the call in `catch (const
+std::exception &)` and returns `false` — so the *immediate* call is reported as
+a failure, correctly. The damage is what happens next.
+
+**The retry is the sharp edge.** `start()` opens with:
+
+```cpp
+if (pImpl->running_.load(std::memory_order_acquire))
+    return true; // already running — idempotent
+```
+
+`running_` is still `true` from the aborted attempt. So the second `start()`
+returns **`true` immediately**, having bound nothing, connected nothing, and
+negotiated nothing. A caller that retries after fixing the key gets a success
+report for a queue that will never carry a byte. The idempotence check cannot
+tell "already started" from "died halfway through starting" because both states
+are spelled `running_ == true`.
+
+**Shape of the fix** (not yet applied — needs approval): the two-handler list is
+the wrong shape for a function that flips a state flag before it can fail. Either
+set `running_` only on the success path, or make the cleanup a scope guard that
+runs on any exception rather than duplicating it across handlers that must each
+be remembered. The scope guard is the better fit — it is the same
+"make the invalid state unreachable rather than documenting the rule" move used
+for the CURVE panic and the `unrestricted` deletion, and it cannot be defeated by
+a future `throw` of a type nobody enumerated.
+
+---
+
+### S-9 ❌ LOW — the CURVE engagement guard checks what was *configured*, not what was *negotiated*
+
+`src/utils/hub/hub_zmq_queue.cpp:2041-2068`.
+
+The comment states the guard's purpose plainly:
+
+> After all CURVE setsockopts and bind/connect have completed, **ask libzmq
+> directly what mechanism this socket negotiated.**
+
+That is not what `ZMQ_MECHANISM` reports. In `third_party/libzmq/src/options.cpp:1159`:
+
+```cpp
+case ZMQ_MECHANISM:
+    if (is_int) {
+        *value = mechanism;
+        return 0;
+    }
+```
+
+`options.mechanism` is a **local configuration field**, set by
+`set_curve_key` / `ZMQ_CURVE_SERVER` when the socket was configured. It is
+never written by the handshake. Reading it back returns the value this process
+just wrote.
+
+The timing makes this unambiguous: `connect()` in libzmq is asynchronous and
+returns before any TCP connection exists, let alone a completed ZMTP/CURVE
+handshake. At line 2050 there is no peer and no negotiation to report on.
+
+The guard is still worth keeping — it does verify that the CURVE setsockopts
+took effect rather than being silently ignored, which is a real regression class.
+But it cannot detect a failed or downgraded handshake, and the comment claims it
+can. In a codebase where comments are treated as contract, that gap invites
+someone to lean on a guarantee that was never there.
+
+**Shape of the fix** (not yet applied): correct the comment to say what it
+checks — configuration, verified locally, before any peer exists. If an
+actually-negotiated check is wanted, that is the socket-monitor work already
+tracked as **#93** (`ZMQ_EVENT_HANDSHAKE_SUCCEEDED` /
+`ZMQ_EVENT_HANDSHAKE_FAILED_*` are the events that carry real handshake
+outcomes), not a getsockopt.
 
 ---
 
@@ -213,6 +332,48 @@ the shrink/SIGBUS case is not named anywhere.
 
 ---
 
+### S-7 ❌ LOW — the frame-size cap bounds input bytes, not what msgpack will allocate
+
+`src/utils/hub/hub_zmq_queue.cpp:339` (`run_recv_thread_`) and the equivalent
+call in `hub_inbox_queue.cpp::recv_one` both do:
+
+```cpp
+msgpack::unpack(static_cast<const char *>(msg.data()), msg.size());
+```
+
+with no `unpack_limit` argument.  `third_party/msgpack-c`'s defaults
+(`v1/unpack_decl.hpp:89-95`) are `0xffffffff` for **array, map, str, bin, ext
+AND depth** — effectively unlimited.
+
+**What the existing cap does and does not do.**  Both call sites correctly
+reject oversized frames BEFORE unpacking (`msg.size() >= max_frame_sz_`), so
+the input BYTES are bounded to roughly one schema frame.  But a msgpack
+container header declares its element count independently of how many bytes
+follow: five bytes encoding `array32` with count `0xFFFFFFFF` is a valid,
+tiny frame that asks the parser to allocate for four billion objects.  The
+allocation is attempted before the parser discovers the buffer is short.
+
+**Bounded by, and why LOW.**  The resulting `std::bad_alloc` is caught by the
+surrounding handler, so this is a transient allocation spike, not a crash and
+not memory corruption.  More importantly the sender must already hold an
+admitted CURVE identity — post-#90/#91 there is no unauthenticated path to
+this code at all — so it is an authenticated role attacking its own hub, which
+the trust model does not defend against.  Recorded as defence-in-depth, not as
+a live exposure.
+
+**Fix direction (not applied).**  Pass an `unpack_limit` derived from what the
+schema can legitimately produce: `array` ≤ `schema_defs_.size()` (the payload
+array is the only array in the frame), `bin` ≤ `item_sz`, and a small `depth`
+(the 5-tuple envelope nests exactly two levels).  One extra argument at two
+call sites, and it makes the parser's bounds match the format's actual shape
+instead of the library's permissive default.
+
+Both call sites go through the same `wire_detail` codec, so this is one fix
+covering the data queue and the inbox — consistent with HEP-CORE-0047 §3.0's
+"one owning entry point per surface".
+
+---
+
 ## Resolution — what shipped 2026-07-31
 
 Debug 2725/2725 (2723 + the two new S-1 tests).  Release verified separately.
@@ -275,8 +436,8 @@ drawn about those files from this document.
 | `security/known_roles.cpp` | 326 | ✅ full | No findings. Strict parsing throughout: `require_string_or_empty` rejects a present-but-wrong-type field instead of silently coercing (`nlohmann::value(k, default)` returns the default for BOTH absent and wrong-type, which had masked `"pubkey_z85": null`); `validate_entry` refuses empty uid, empty pubkey, and any length != 40. The HEP-CORE-0036 §I10 one-pubkey-per-uid invariant correctly treats same-uid replacement as rotation rather than a duplicate. Its compile-time bypass is handled properly — see the observation below. |
 | `security/attach_channel_shm.cpp` | 193 | ✅ full | No findings. Length-prefixed framing with `kMaxAttachFrameBytes` enforced on BOTH send and recv, zero-length rejected, and the `std::vector<char> body(len)` allocation happens only AFTER the cap check — so a hostile length prefix cannot drive an allocation. `recv_all_until`/`send_all` re-evaluate the deadline every iteration, continue on EINTR, and treat `recv()==0` as an explicit peer-closed-mid-frame error rather than a short read. |
 | `security/shm_attach_orchestrator.cpp` | 243 | ✅ full | No findings — the best fail-closed reasoning in the tree; see the observation below. |
-| `hub/hub_zmq_queue.cpp` | 2598 | 🚧 ~500 | No findings yet. Read: the CURVE arm, `validate_curve_factory_params`, `connect_one`, and `apply_master_approval` (the trust entry point — it consumes broker-supplied JSON and configures identity + allowlist). That function validates array shape, fan-out cardinality (HEP-0017 §3.3.0 SUB has exactly one PUB), per-entry object-ness, `pubkey_z85` length 40, and DIALING-side endpoint presence; Standby fields are only filled when currently empty, so an Active queue is not mutated. The deferred-connect logic for fan-in DIALING PUSH correctly anticipates the ZAP race (connect before the peer's allowlist is seeded → terminal DENY) — the same class of bug as the inbox hang fixed earlier today. NOT read: `start()` body (~400 lines), `stop()`, the read/write data path, `finalize_connect`, `is_configured`/`is_admission_populated`. |
-| `hub/hub_shm_queue.cpp` | 872 | 🚧 ~40 | Only the flagged legacy-comment regions. |
+| `hub/hub_zmq_queue.cpp` | 2598 | 🚧 ~800 | No findings yet. Read: the CURVE arm, `validate_curve_factory_params`, `connect_one`, and `apply_master_approval` (the trust entry point — it consumes broker-supplied JSON and configures identity + allowlist). That function validates array shape, fan-out cardinality (HEP-0017 §3.3.0 SUB has exactly one PUB), per-entry object-ness, `pubkey_z85` length 40, and DIALING-side endpoint presence; Standby fields are only filled when currently empty, so an Active queue is not mutated. The deferred-connect logic for fan-in DIALING PUSH correctly anticipates the ZAP race (connect before the peer's allowlist is seeded → terminal DENY) — the same class of bug as the inbox hang fixed earlier today. `start()` and `stop()` now read, no findings. `start()` puts the Standby gate BEFORE the `running_` exchange so a refused start can be retried, resolves the ZAP domain with explicit → instance_id → name@address fallbacks, seeds a deny-all allowlist ONLY when nothing populated one (clobbering would drop REG_ACK's `initial_allowlist` and leave an authenticated PUSH deny-all), and registers the domain BEFORE bind so an early peer connect cannot hit an unregistered domain and be denied while admission is in fact configured. `stop()` drains threads first, grace-polls detached ones for 5s, and logs honestly that a subsequent `~ZmqQueueImpl` would UAF a runaway thread rather than pretending otherwise. NOT read: the read/write data path (`read_acquire`/`write_acquire`/`write_commit`), `finalize_connect`, `create_reader`/`create_writer` topology dispatch, and the recv/send thread bodies. |
+| `hub/hub_shm_queue.cpp` | 872 | 🚧 ~40 (NEXT) | Only the flagged legacy-comment regions. |
 | `security/zap_router.cpp` | 781 | 🚧 partial | `pump_one`, domain register/unregister, `ZapPumpThread` read during the teardown work. |
 
 ---
@@ -377,7 +538,15 @@ file if the surrounding assumptions ever change.
   constraints.  A future field without one would be silently coerced.  One
   file in this codebase learned this lesson explicitly; this one has not.
 
-- **`ShmAttachOrchestrator::accept_and_serve_one` is the counter-example to
+- **The two `stop()` implementations order ZAP-unregister vs socket-close
+  oppositely.**  `ZmqQueue::stop` releases the ZAP registration FIRST, with the
+  rationale written down ("after this, no more handshakes route to `this`");
+  `InboxQueue::stop` closes the socket first and resets the handle after.  Both
+  are safe — closing the socket also stops new handshakes, and
+  `DomainRoutingTable::unregister_domain` blocks until in-flight admission
+  callbacks return — so this is a consistency note, not a defect.  Recorded
+  because only one of the two carries the reasoning, and a future reader
+  comparing them could reasonably think one is wrong.
   S-3, in the same subsystem.**  Every path where the answer is not a clear
   YES resolves to denial, and each one says so: `broker_query` throwing →
   `DeniedTransportFail`; returning `nullopt` → `DeniedTransportFail`, logged as

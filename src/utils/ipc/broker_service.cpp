@@ -17,7 +17,8 @@
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
 #include "utils/security/curve_keypair.hpp"  // HEP-CORE-0035 §2 — shared keygen
-#include "utils/curve_socket.hpp"            // arm_curve_server (shared CURVE arm)
+#include "utils/curve_socket.hpp"      // arm_curve_server (shared CURVE arm)
+#include "utils/zmq_socket_policy.hpp" // apply_socket_policy (house ZMQ rules)
 #include "utils/security/key_store.hpp"      // HEP-CORE-0040 §172 — hub identity
 #include "utils/security/peer_admission.hpp" // HEP-CORE-0035 Phase D
 #include "utils/security/zap_router.hpp"     // HEP-CORE-0035 Phase D
@@ -1004,7 +1005,17 @@ void BrokerServiceImpl::run()
     // used by ZmqQueue, InboxQueue, BrokerRequestComm, and Messenger.
     zmq::context_t &ctx = pylabhub::hub::get_zmq_context();
     zmq::socket_t router(ctx, zmq::socket_type::router);
-    router.set(zmq::sockopt::linger, 0); // policy: always LINGER=0; see §ZMQ socket policy
+    // House ZMQ policy — linger, bounded sndtimeo, ZMTP heartbeat.  This line
+    // previously set linger alone while citing "§ZMQ socket policy", so the
+    // intent was there and the call was not: the broker's ROUTER, which every
+    // role in the system connects to, had NO transport-level liveness.
+    //
+    // The broker's application-level `HEARTBEAT_NOTIFY` + `peer_dead_timeout_ms`
+    // answers a DIFFERENT question — "is this role still reporting" — and does
+    // not tear down a dead TCP connection or reclaim its per-peer pipe state.
+    // ZMTP heartbeat (5s ping / 30s timeout) does, and also produces the
+    // ZMQ_EVENT_DISCONNECTED that task #93 needs to enforce disconnect-is-terminal.
+    pylabhub::utils::apply_socket_policy(router, pylabhub::utils::ZmqSocketRole::TcpBind);
 
     // Locals live for the entire run() call — same scope as the
     // ROUTER socket.  Storing the ZAP handle as a member would let
