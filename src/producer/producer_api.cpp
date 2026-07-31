@@ -333,7 +333,8 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
     py::class_<scripting::PyInboxMsg>(m, "InboxMsg")
         .def_readonly("data", &scripting::PyInboxMsg::data)
         .def_readonly("sender_uid", &scripting::PyInboxMsg::sender_uid)
-        .def_readonly("seq", &scripting::PyInboxMsg::seq);
+        .def_readonly("seq", &scripting::PyInboxMsg::seq)
+        .def_readonly("gap", &scripting::PyInboxMsg::gap);
 
     m.def("version_info", []() -> py::str { return pylabhub::version::version_info_json(); });
 

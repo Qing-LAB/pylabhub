@@ -316,7 +316,8 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
     py::class_<scripting::PyInboxMsg>(m, "InboxMsg")
         .def_readonly("data", &scripting::PyInboxMsg::data)
         .def_readonly("sender_uid", &scripting::PyInboxMsg::sender_uid)
-        .def_readonly("seq", &scripting::PyInboxMsg::seq);
+        .def_readonly("seq", &scripting::PyInboxMsg::seq)
+        .def_readonly("gap", &scripting::PyInboxMsg::gap);
 
     py::class_<scripting::InboxHandle>(m, "InboxHandle")
         .def("acquire", &scripting::InboxHandle::acquire)

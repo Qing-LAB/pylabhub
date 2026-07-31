@@ -225,9 +225,22 @@ future format/type expansion has exactly one place to change per surface.
 | SHM AttachProtocol Frame 1/2/3 + SCM_RIGHTS capability | peer↔peer | binary frames | HEP-CORE-0044 / -0041 | `attach_protocol.cpp`, `shm_capability_channel.cpp` — the **binary peer-to-peer handshake**, distinct from the broker-coordination JSON messages `CONSUMER_ATTACH_REQ_SHM`/`_ZMQ` in §3.2 (those ARE JSON wire msg_types) |
 | `UNKNOWN_MSG_TYPE` | B→ | reply | HEP-CORE-0007 | reply to any unrecognized or retired msg_type |
 
-> **Inbox (HEP-CORE-0027).**  The point-to-point inbox family is not yet
-> enumerated here; its wire surface is tracked under tasks #191/#103.  Add its
-> rows when that plumbing lands.
+The point-to-point inbox family (HEP-CORE-0027) rides the **typed data plane**
+(§3.0), not the JSON control envelope — both directions go through
+`wire_detail`, so neither is a bespoke encoding:
+
+| Message | Dir | Cat | Primary HEP | Code anchor |
+|---|---|---|---|---|
+| Inbox message | role→role | typed data | HEP-CORE-0027 §3 | `InboxClient::send` → `[empty, replay_meta, 5-tuple]`; the `replay_meta` part (nonce + wall_ts, §3.6) sits *beside* the msgpack frame, not inside it, so the payload codec stays byte-identical to the data queue's |
+| Inbox ACK | role→role | typed data | HEP-CORE-0027 §3 | `InboxQueue::send_ack` → `[identity, empty, 5-tuple]` with its own `ack_schema_tag` and the acknowledged message's `seq` in the envelope — that echo is what lets a sender tell its own receipt from a stale one |
+
+> **Earlier revisions of this section said the inbox surface was "not yet
+> enumerated, tracked under tasks #191/#103."**  The rows above close that gap.
+> The ACK was the part that genuinely did not belong to any of the four
+> surfaces in §3.0 — it was a bare byte, an unregistered fifth micro-format —
+> and that is precisely why it had nowhere to carry a correlation field.
+> Framing it on the typed data plane fixed the correlation bug and removed the
+> bypass in one move.
 
 ## 4. Keyword & suffix glossary (referenced, not redefined)
 

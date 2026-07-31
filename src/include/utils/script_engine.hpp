@@ -133,6 +133,12 @@ struct InvokeInbox
     size_t data_size{0};
     std::string sender_uid; ///< Sender's role UID.
     uint64_t seq{0};        ///< Sender's monotonic sequence number.
+
+    /// Messages lost from this sender immediately before this one; 0 when
+    /// nothing is missing.  A full inbox drops rather than queueing without
+    /// limit (HEP-CORE-0027 §3.7) — this is how the handler finds out, and
+    /// what it does about it is the handler's decision, not the framework's.
+    uint64_t gap{0};
 };
 
 // ============================================================================

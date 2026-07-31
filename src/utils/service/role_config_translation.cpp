@@ -71,8 +71,14 @@ hub::RxQueueOptions make_rx_opts(const config::RoleConfig &config,
                                  const hub::SchemaSpec &in_fz_spec, bool has_rx_fz)
 {
     const auto &tr = config.in_transport();
-    const auto &shm = config.in_shm();
     const auto &ch = config.in_channel();
+    // No `in_shm()` binding here, deliberately — the asymmetry with
+    // `make_tx_opts` is the design, not an omission.  `RxQueueOptions` carries
+    // no `has_shm`/`shm_config`: the PRODUCER creates the block and needs the
+    // sizing, while the CONSUMER attaches to it via the SCM_RIGHTS capability
+    // fd (HEP-CORE-0041 §5.1) and sizes nothing.  The binding that used to be
+    // here fed `opts.shm_shared_secret`, retired with the legacy secret path
+    // in #275-S3.
 
     hub::RxQueueOptions opts;
     // Audit B5/G21: shm_name = in_channel for the SHM path; cleared

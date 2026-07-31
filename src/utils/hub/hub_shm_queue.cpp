@@ -566,12 +566,9 @@ Mechanism ShmQueue::mechanism() const noexcept
     // start()).  Pre-start (Standby / Configured) reports
     // `Uninitialized` — symmetric with ZmqQueue's pre-start behavior.
     //
-    // Note: this implementation reports `ShmCapability` regardless of
-    // which start-mode path was taken (capability fd via 1i-mig-2,
-    // or the legacy secret-mode path that 1i-cleanup deletes).  The
-    // legacy path is dead from production; reporting `ShmCapability`
-    // for it is harmless because no production caller exercises it.
-    // Post-1i-cleanup this distinction disappears entirely.
+    // The capability-fd path (HEP-CORE-0041 §5.1) is the only start mode;
+    // the legacy secret-mode branch was deleted by 1i-cleanup S3c (#275),
+    // so `ShmCapability` is simply what this queue is.
     return is_running() ? Mechanism::ShmCapability : Mechanism::Uninitialized;
 }
 

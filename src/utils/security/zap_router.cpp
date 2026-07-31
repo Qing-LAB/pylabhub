@@ -333,8 +333,15 @@ void ZapRouter::unregister_domain_(const std::string &domain)
                   domain);
     }
 
+    // Enter/exit pair: `unregister_domain` blocks until every in-flight
+    // admission callback on this domain returns, and `UnloadModule` re-enters
+    // the LifecycleManager.  Both can stall against a live pump thread, and
+    // only a matched pair of lines tells them apart after the fact.
+    LOGGER_INFO("ZapRouter: unregister:enter domain='{}'", domain);
     impl_->routing.unregister_domain(domain);
+    LOGGER_INFO("ZapRouter: unregister:table-removed domain='{}'", domain);
     (void)pylabhub::utils::UnloadModule(kZapModuleName);
+    LOGGER_INFO("ZapRouter: unregister:exit domain='{}'", domain);
 }
 
 std::size_t ZapRouter::registered_domain_count_for_test() const
@@ -646,7 +653,17 @@ ZapPumpThread::ZapPumpThread(std::chrono::milliseconds tick) : impl_(std::make_u
         });
 }
 
-ZapPumpThread::~ZapPumpThread() = default;
+ZapPumpThread::~ZapPumpThread()
+{
+    // The join is `std::jthread`'s, but it is spelled out here so the log can
+    // bracket it: the pump sits in a bounded `pump_one` recv, so a join that
+    // does not return means the pump is wedged rather than merely ticking.
+    LOGGER_INFO("ZapPumpThread: dtor:enter joinable={}", impl_->thread.joinable());
+    impl_->thread.request_stop();
+    if (impl_->thread.joinable())
+        impl_->thread.join();
+    LOGGER_INFO("ZapPumpThread: dtor:exit");
+}
 
 // ── ZapPumpThread lifecycle module API ─────────────────────────────────────
 //

@@ -12,6 +12,55 @@ the fix is in production code at `native_engine.cpp:289-305`).
 
 ---
 
+## Recent Completions
+
+### 2026-07-30 — Inbox delivery semantics + two admission backdoors closed
+
+Started from one hanging test (`InboxQueueTest.CurveUnknownSenderDenied`,
+SIGTERM at 60 s) and ended in the admission gate.  Detail in HEP-CORE-0027
+§3.7/§3.8 and HEP-CORE-0047 §3.9; tasks #90, #91.
+
+- **`InboxClient::send` could park a caller forever.**  libzmq's default
+  `ZMQ_SNDTIMEO` is -1, so a DEALER with no writable pipe waits indefinitely —
+  a denied CURVE handshake or a departed peer froze the calling thread with no
+  error, no timeout, no log.  Transmit is now non-blocking.
+- **Parts are sent individually.**  A mid-message failure arms libzmq's
+  discard mode, which silently eats following parts *while reporting success*;
+  abandoning the message there let it consume the NEXT one whole.  Which part
+  failed decides whether the remainder is flushed — flushing after a
+  first-part failure would emit a malformed message instead.
+- **ACKs carry the acknowledged `seq`.**  A receipt whose send had already
+  timed out was being returned as the next message's result — and since `0` is
+  the only code production emits, that meant a stale SUCCESS for work never
+  done.  The ACK rides the existing `wire_detail` codec (HEP-0047 §3.0), so
+  correlation cost nothing: `seq` was already an envelope element.
+- **`InboxItem::gap`** reports per-message loss to the receiving handler
+  (Lua/Python/native).  Framework drops; receiver decides.
+- **`inbox_overflow_policy` retired.**  Dropping on a full inbox is framework
+  behaviour, not an operator choice — and the `"block"` value had been
+  selecting `rcvhwm = 0`, which libzmq treats as NO LIMIT (`pipe.cpp:533`,
+  `_hwm > 0 &&`).  The option named for back-pressure was the one that removed
+  every bound.
+
+**Two backdoors, both unreachable-today and therefore unwatched:**
+
+- **Unarmed CURVE** — the arm was guarded on `if (!identity_key_name.empty())`,
+  so a caller who forgot to arm got a working PLAINTEXT socket.  Now PANICs.
+  It immediately caught 16 tests across two files standing up unauthenticated
+  ROUTERs, including one in `datahub_broker_workers.cpp` that reading the inbox
+  sources would never have surfaced.
+- **`PeerAllowlist::unrestricted`** — one bool that made `contains()` admit
+  every identity, documented as a supported escape hatch, protected only by a
+  comment saying production must not set it.  DELETED, so it is a compile
+  error rather than a runtime abort.  That named 5 sites in
+  `zap_router_workers.cpp` using it as an admission shortcut.
+
+**Constraint this places on #69 (federation):** "trust this peer hub" must be
+real entries in `peers` resolved from an authority.  There is no blanket-admit
+primitive left, and reintroducing one is not an option.
+
+---
+
 ## Current Status (broker-specific summary)
 
 | Track | Where it stands | Active item here |

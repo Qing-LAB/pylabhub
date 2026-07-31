@@ -80,6 +80,22 @@ struct PYLABHUB_UTILS_EXPORT InboxItem
     const void *data{nullptr}; ///< Decoded payload buffer (InboxQueue-owned; item_size() bytes).
     std::string sender_id;     ///< Pylabhub UID of the sender (from ZMQ identity frame).
     uint64_t seq{0};           ///< Monotonic sender sequence number.
+
+    /// Messages lost from THIS sender immediately before this one.
+    ///
+    /// A full inbox drops — that is the framework's behaviour and not a
+    /// configurable policy, because queueing more for a receiver that is not
+    /// draining helps nobody (HEP-CORE-0027 §3.7).  What IS the receiver's
+    /// business is knowing it happened, so the loss is reported here, per
+    /// message, and the handler decides: ignore it, re-request state, log it,
+    /// stop.  The framework does not retry, back off, or repair on the
+    /// receiver's behalf.
+    ///
+    /// 0 means "nothing missing since the previous message from this sender",
+    /// which is the normal case.  Derived from the sequence numbers, so it
+    /// counts everything lost in transit — a refused send at the far end, a
+    /// frame dropped by the replay guard, any of it.
+    uint64_t gap{0};
 };
 
 // ============================================================================
@@ -122,8 +138,22 @@ class PYLABHUB_UTILS_EXPORT InboxQueue : public pylabhub::utils::security::PeerA
      * actual_endpoint().
      * @param schema      Field list — must be non-empty; returns nullptr on error.
      * @param packing     "aligned" or "packed". Must match InboxClient packing.
-     * @param rcvhwm      ZMQ_RCVHWM: max queued incoming messages before ZMQ drops.
-     *                    Default 1000 (ZMQ built-in default). 0 = unlimited.
+     * @param rcvhwm      ZMQ_RCVHWM: max messages queued for this socket per
+     *                    connected peer.  Reaching it applies BACK-PRESSURE —
+     *                    ZMQ does not drop here; the sender's next send fails
+     *                    instead (`InboxClient::send` returns 255).  Bounds
+     *                    memory at roughly rcvhwm x peers x item_size, so
+     *                    raising it on a wide fan-in is a real memory
+     *                    decision.  Default 1000 (ZMQ built-in default).
+     *
+     *                    0 means NO LIMIT to ZMQ (`pipe_t::check_hwm` tests
+     *                    `_hwm > 0 &&`), i.e. unbounded growth until memory
+     *                    runs out.  Role config rejects it, and the retired
+     *                    `inbox_overflow_policy: "block"` used to select it
+     *                    silently — which is how a setting named for
+     *                    back-pressure came to mean "no back-pressure at
+     *                    all".  Pass 0 only in a test that is deliberately
+     *                    measuring unbounded behaviour.
      * @return            nullptr on schema or ZMQ setup error (logged internally).
      */
     [[nodiscard]] static std::unique_ptr<InboxQueue> bind_at(const std::string &endpoint,
@@ -176,6 +206,20 @@ class PYLABHUB_UTILS_EXPORT InboxQueue : public pylabhub::utils::security::PeerA
      * Uses the sender_id stored internally from the last recv_one().
      *
      * @param code  0=OK, 1=queue_overflow, 2=schema_error, 3=handler_error.
+     *
+     * These codes are the APPLICATION's vocabulary — the handler decides which
+     * one fits and passes it here; the transport never picks one.  In
+     * particular `1` refers to an application-level backlog: ZMQ's own
+     * receive queue is invisible from this side (libzmq exposes no queue
+     * depth), so transport back-pressure can never surface as this code.  It
+     * reaches the sender as a failed send instead — see
+     * `InboxClient::send_blocked_count()`.  Nothing in-tree emits `1` today.
+     *
+     * The ACK goes out as a full frame carrying the acknowledged message's
+     * sequence number, not as a bare byte, so the sender can tell this receipt
+     * from one left over by an earlier send that stopped waiting
+     * (HEP-CORE-0027 §3).  The seq is taken from the last `recv_one()`, which
+     * is why this must be called once per successful receive.
      */
     void send_ack(uint8_t code) noexcept;
 
@@ -312,11 +356,44 @@ class PYLABHUB_UTILS_EXPORT InboxClient
     /**
      * @brief Encode and send the buffer contents; optionally wait for ACK.
      *
+     * The transmit itself never blocks.  If the socket has no writable peer —
+     * the receiver's queue is at its high-water mark, or the peer is not
+     * connected / was denied at the CURVE handshake — the message is dropped
+     * and 255 is returned immediately rather than parking the caller.  This
+     * is what makes `ack_timeout` the whole bound on this call.
+     *
+     * Dropping is deliberate: a receiver that is not draining its inbox is not
+     * helped by queueing more, and the alternative (wait for room) hands the
+     * caller's liveness to the slowest peer.  What to do about it is the
+     * caller's decision, not this class's.
+     *
      * @param ack_timeout  If > 0 ms: block up to this duration for the ACK byte.
      *                     If 0 ms: fire-and-forget (returns 0 immediately).
      * @return ACK error code (0=OK, non-zero=error).  Returns 255 on send failure or ACK timeout.
      */
     uint8_t send(std::chrono::milliseconds ack_timeout = std::chrono::milliseconds{1000}) noexcept;
+
+    /**
+     * @brief Sends dropped because the socket had no writable peer.
+     *
+     * Counts every occurrence, whereas the log is edge-triggered (one line
+     * when the path blocks, one when it recovers) so a persistently blocked
+     * peer cannot flood the log.  A rising count with no new log line means
+     * the condition never cleared.
+     */
+    [[nodiscard]] uint64_t send_blocked_count() const noexcept;
+
+    /**
+     * @brief ACKs discarded because they belonged to an earlier send.
+     *
+     * Each ACK carries the sequence number of the message it acknowledges, so
+     * a receipt arriving after its own send already timed out is recognised
+     * and dropped instead of being reported as the current message's result.
+     * A rising count means `ack_timeout` is tighter than the receiver's real
+     * turnaround — the sends are succeeding, the caller is just not waiting
+     * long enough to hear about it.
+     */
+    [[nodiscard]] uint64_t ack_stale_count() const noexcept;
 
     /**
      * @brief Discard the current buffer contents without sending.  Next acquire() is fresh.

@@ -110,7 +110,6 @@ static const std::unordered_set<std::string> kAllowedKeys = {
     "inbox_schema",
     "inbox_endpoint",
     "inbox_buffer_depth",
-    "inbox_overflow_policy",
     // Startup
     "startup",
     // Monitoring
@@ -197,6 +196,18 @@ static void reject_retired_keys(const nlohmann::json &j, const char *tag)
         {"out_shm_secret", "HEP-CORE-0041 §7 substep 1h (#255)",
          "remove the field; auth is now via SCM_RIGHTS capability "
          "transport (HEP-CORE-0041 §5.1) and requires no config knob"},
+        // HEP-CORE-0027 §3.7 — `inbox_overflow_policy` retired.  Dropping on
+        // a full inbox is framework behaviour, not an operator choice:
+        // queueing more for a receiver that is not draining helps nobody, and
+        // the alternative ties the sender's liveness to its slowest peer.
+        // The retired "block" value did not even block — it mapped to
+        // RCVHWM 0, which libzmq treats as NO LIMIT, so it silently selected
+        // unbounded memory growth.  The receiver now learns of drops per
+        // message via `InboxItem::gap` and decides for itself.
+        {"inbox_overflow_policy", "HEP-CORE-0027 §3.7",
+         "remove the field; a full inbox always drops, and the loss is "
+         "reported to the receiving handler as `msg.gap`.  Use "
+         "'inbox_buffer_depth' to size the bound"},
     };
 
     for (const auto &rk : kRetiredKeys)

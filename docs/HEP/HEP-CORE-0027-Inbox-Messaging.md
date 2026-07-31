@@ -172,18 +172,46 @@ and never exposes payloads to an attacker. (Earlier drafts of this section
 wrongly stated the inbox checksum was "mandatory, no toggle" — that contradicted
 both the code and §4.2 step 8; corrected 2026-07-21.)
 
-**ACK**: Single byte sent from ROUTER to DEALER after processing:
-- `0` = OK
-- `1` = queue overflow
+**ACK**: the ROUTER's reply after processing, carried as **the same 5-tuple
+frame as the message it answers** — it rides the one typed-data codec
+(HEP-CORE-0047 §3.0), it is not a bespoke shape:
+
+```
+[magic, ack_schema_tag, seq, [ack_code:uint8], checksum]
+```
+
+- `seq` **echoes the seq of the message being acknowledged**.  This is the
+  correlation, and it costs nothing extra because `seq` is already an element
+  of the envelope every frame carries.
+- `ack_schema_tag` is derived from the ack field list exactly as every other
+  tag is, so an ACK can never be mistaken for a data frame or vice versa.
+- `checksum` is zeros: the ACK has no payload integrity of its own, and CURVE
+  already authenticates the frame.
+
+Codes are the **application's** vocabulary — the handler picks one and passes
+it to `send_ack`; the transport never chooses:
+- `0` = OK — **the only code anything in-tree currently emits**
+- `1` = queue overflow — application-level backlog.  Transport back-pressure
+  can *never* surface here; it appears at the sender as a refused send (§3.7).
 - `2` = schema error
 - `3` = handler error
+
+> **Why the ACK is framed rather than a bare byte.**  A caller whose ACK wait
+> expires leaves a receipt in flight.  With no way to tell whose receipt it is,
+> the next send reads it and returns it as *its own* result — and because `0`
+> is the only code production emits, the caller is handed a **stale SUCCESS for
+> a message the receiver never processed**.  The sender therefore discards any
+> receipt whose `seq` is not the one it just sent and keeps waiting, bounded by
+> the caller's deadline, counting the discards in `ack_stale_count` (§8).
 
 The DEALER/ROUTER envelope uses ZMQ's built-in identity routing, plus a
 replay-metadata frame (§3.6):
 - DEALER sets `ZMQ_IDENTITY` to the sender's pylabhub UID before connecting
-- DEALER sends `[empty_delimiter, replay_meta, payload]`
+- DEALER sends `[empty_delimiter, replay_meta, payload]` — the three parts are
+  submitted individually, and a refusal on the first is handled differently
+  from a refusal on a later one (§3.7 I-SEND-WHOLE)
 - ROUTER receives `[identity, empty_delimiter, replay_meta, payload]`
-- ROUTER sends ACK as `[identity, empty_delimiter, ack_byte]`
+- ROUTER sends ACK as `[identity, empty_delimiter, ack_frame]`
 
 > **The routing identity is an address, not the sender's identity.**
 > A DEALER chooses its own `ZMQ_IDENTITY`, so the frame-0 value is
@@ -197,6 +225,101 @@ replay-metadata frame (§3.6):
 > and lets a sender obtain a fresh replay window by changing the id
 > it presents.  See HEP-CORE-0035 §2, "The routing id is a reply
 > address, not a trust claim."
+
+### 3.8 CURVE is unconstructable-without (I-INBOX-CURVE-MANDATORY)
+
+**There is no unencrypted inbox, and no code path that produces one.**  Both
+`InboxQueue::start()` and `InboxClient::start()` **PANIC** when no CURVE
+identity has been armed.  Not "log and continue", not "return false" — abort.
+
+This is stated as an invariant rather than a recommendation because of how the
+hole behaved before it was closed.  The arm was guarded on
+`if (!identity_key_name.empty())`, so a caller that simply forgot to arm got a
+**working plaintext socket**: an inbox ROUTER accepting unauthenticated peers,
+with no error, no warning, and a comment beside it describing the unarmed
+branch as a supported legacy path.  Every public factory already rejected an
+empty identity, so the branch was unreachable from production — and that is
+exactly what made it dangerous.  Nothing exercised it, nothing tested it,
+nothing would have failed if a future path fell into it.  An unreachable
+security bypass is a backdoor waiting for a caller, not dead code.
+
+Consequences that are deliberate, not side effects:
+
+- **A test may not opt out.**  Constructing an inbox without CURVE is not a
+  lighter-weight test configuration; it is a configuration that must not
+  exist, so a test needing an inbox must arm one (real keypair, seeded
+  allowlist, a live ZAP pump).  When this invariant was introduced it aborted
+  16 existing tests across two files — every one of them a place a plaintext
+  ROUTER was being stood up unnoticed.  They were migrated, not exempted.
+- **Fabricating a malformed frame still requires a real identity.**  Workers
+  that hand-roll a raw DEALER to test the receiver's reject paths present a
+  genuine admitted CURVE identity; the malformed *payload* is the thing under
+  test, never the absence of authentication.
+- **PANIC, not a return code.**  Reaching `start()` unarmed means a
+  construction path bypassed factory validation — a programmer error, not a
+  runtime condition a caller could sensibly handle.  A `false` return would be
+  ignorable.
+
+### 3.7 Send-side delivery semantics (I-SEND-BOUNDED, I-SEND-WHOLE)
+
+**I-SEND-BOUNDED — sending never blocks the caller.**  `InboxClient::send`
+hands its parts to the transport without waiting for room.  When the socket
+has no peer it can write to, the message is **dropped** and the call returns
+`255` immediately.  One condition covers three situations, and the sender
+cannot tell them apart, because the transport reports all three the same way:
+
+- the receiver is not draining its inbox and has hit its high-water mark;
+- the peer is not connected, or has gone away;
+- the peer's CURVE handshake was denied.
+
+Dropping is the design, not a degradation.  A receiver that is not keeping up
+is not helped by queueing more for it, and the alternative — wait for room —
+hands the caller's liveness to the slowest peer on the channel.  What to do
+about a refused send (retry, shed, escalate, stop) is the caller's decision;
+the framework reports and does not decide.
+
+> **Why this is stated as an invariant.**  The transport's default is to wait
+> forever for room.  Under that default a denied or departed peer parked the
+> calling thread permanently — no error, no timeout, no log — and it also made
+> the documented "fire-and-forget returns immediately" contract false, because
+> the wait happened before the call ever looked at its ACK timeout.  The
+> non-blocking send is what makes the ACK timeout the whole bound on the call.
+
+**I-SEND-WHOLE — a partial message never reaches the wire.**  The three parts
+(`empty_delimiter`, `replay_meta`, `payload`) are submitted individually, and
+which one is refused decides what happens next:
+
+| Refused part | What the transport did | What the sender must do |
+|---|---|---|
+| first | wrote nothing | report the drop; nothing to clean up |
+| second or third | rolled back what it wrote, and armed a **discard mode** that silently swallows following parts *while reporting success*, until one arrives marked as the last of a message | submit the remaining parts so discard mode clears **inside this message**, then report the drop |
+
+Both halves are load-bearing.  Skipping the cleanup on a mid-message refusal
+leaves discard mode armed, and it then consumes the **next** message whole
+while reporting it as sent — a silent loss that fire-and-forget callers cannot
+detect.  Performing that cleanup after a *first*-part refusal is the mirror
+bug: nothing was written and discard mode is not armed, so the leftover parts
+would queue and later emerge as a malformed two-part message.
+
+**Back-pressure observability.**  The refusal is the only place either
+condition is visible in-process — the transport exposes no receive-queue
+depth, so a receiver **cannot** observe its own inbox filling.  Therefore:
+
+- `InboxClient::send_blocked_count()` counts **every** refused send;
+- the log is **edge-triggered** — one line when the path becomes blocked, one
+  when it recovers.  A peer that stays blocked stays silent, because a line
+  per refused send would bury the log at the exact moment an operator needs
+  to read it.  Back-pressure oscillates, so blocked/recovered pairs repeating
+  is normal and each pair is a real full → drained → full cycle.
+
+**Sequence numbers are consumed by refused sends, deliberately.**  The `seq`
+(§3) is taken when the frame is built, before the send, and is **not** reused
+if the send is refused.  A dropped message therefore leaves a hole, and the
+receiver's `recv_gap_count` (§8) is how that loss becomes visible on the far
+side.  Renumbering densely on failure would make a lossy link look pristine —
+the sender would know it had dropped traffic and the receiver never would.
+Expect `recv_gap_count` to rise on a congested channel; that is the metric
+working, not a defect.
 
 ### 3.6 Replay defense (I-REPLAY-BOUND)
 
@@ -658,6 +781,28 @@ InboxQueue exposes four diagnostic counters:
 | `ack_send_error_count` | ZMQ send errors when sending ACK response |
 | `recv_gap_count` | Sequence number gaps (per-sender tracking; indicates dropped frames) |
 | `checksum_error_count` | BLAKE2b verification failures after successful decode |
+
+InboxClient exposes two, on the sending side:
+
+| Metric | Description |
+|--------|-------------|
+| `send_blocked_count` | Sends refused because the socket had no writable peer (§3.7) |
+| `ack_stale_count` | Receipts discarded because their `seq` belonged to an earlier, timed-out send (§3) |
+
+A non-zero `ack_stale_count` is not an error — it means `ack_timeout` is
+tighter than the receiver's real turnaround, so sends are succeeding and the
+caller simply is not waiting long enough to hear so.  Either widen the timeout
+or accept the ambiguity.  The value matters because before the ACK carried a
+`seq`, every one of these was silently returned as the *following* message's
+result.
+
+Read the two together.  `send_blocked_count` rising on the sender and
+`recv_gap_count` rising on the receiver are the **same** event seen from both
+ends: back-pressure or a lost peer caused a drop, and the sequence hole is how
+the receiver learns of it (§3.7).  A gap count that climbs with no matching
+`send_blocked_count` on any sender means something else lost the frame — a
+schema or checksum rejection, or a replay-guard drop — so check the other
+counters before suspecting the link.
 
 These are available via:
 - `InboxQueue::inbox_metrics()` → `InboxMetricsSnapshot` (C++ struct)

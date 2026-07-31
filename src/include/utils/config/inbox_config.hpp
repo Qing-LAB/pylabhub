@@ -41,8 +41,12 @@ struct InboxConfig
     nlohmann::json schema_json{}; ///< Schema (JSON object or named string ref). Null = no inbox.
     std::string endpoint{
         kDefaultInboxEndpoint}; ///< ROUTER bind endpoint. See endpoint security model above.
-    size_t buffer_depth{hub::kZmqDefaultBufferDepth}; ///< ZMQ RCVHWM.
-    std::string overflow_policy{"drop"};              ///< "drop" or "block".
+    /// ZMQ RCVHWM — a BOUND, not a policy.  A full inbox always drops
+    /// (HEP-CORE-0027 §3.7); this only decides how much is held before that
+    /// happens.  Must be > 0: zero would mean "no limit" to ZMQ, i.e.
+    /// unbounded growth, which is the one behaviour the inbox must never
+    /// have.
+    size_t buffer_depth{hub::kZmqDefaultBufferDepth};
 
     // ── Resolved from schema (populated at schema resolution time) ──────
     std::string schema_fields_json{}; ///< JSON-serialized ZmqSchemaField array.
@@ -77,14 +81,10 @@ inline InboxConfig parse_inbox_config(const nlohmann::json &j, const char *tag)
         ic.endpoint = j["inbox_endpoint"].get<std::string>();
 
     ic.buffer_depth = j.value("inbox_buffer_depth", hub::kZmqDefaultBufferDepth);
-    ic.overflow_policy = j.value("inbox_overflow_policy", std::string{"drop"});
 
     if (ic.buffer_depth == 0)
         throw std::runtime_error(std::string(tag) + ": 'inbox_buffer_depth' must be > 0");
 
-    if (ic.overflow_policy != "drop" && ic.overflow_policy != "block")
-        throw std::runtime_error(std::string(tag) + ": invalid 'inbox_overflow_policy': '" +
-                                 ic.overflow_policy + "' (expected 'drop' or 'block')");
 
     if (ic.has_inbox())
     {

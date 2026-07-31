@@ -113,32 +113,33 @@ struct PYLABHUB_UTILS_EXPORT PeerIdentity
 /// not maintain history.  Snapshot semantics make recovery from a
 /// missed update trivial (the next snapshot corrects state).
 ///
-/// `unrestricted` is the explicit escape hatch for test fixtures and the
-/// transitional `--allow-anonymous-data` operator flag (see design doc
-/// §8 P-Default).  When true, `contains()` returns true for any
-/// identity regardless of `peers`.  Production code paths MUST NOT set
-/// `unrestricted = true`; an auditor scanning for this field can find
-/// every place that bypasses the gate.
+/// **There is no admit-everything mode.**  This struct once carried an
+/// `unrestricted` flag that made `contains()` return true for every identity,
+/// documented as an escape hatch for test fixtures and a transitional
+/// `--allow-anonymous-data` operator flag.  Neither ever existed in `src/`;
+/// what protected the system was a comment saying "production MUST NOT set
+/// this", enforced by nobody.  The field is DELETED rather than refused at
+/// runtime, so `al.unrestricted = true` is now a compile error — a bypass
+/// that must never exist should be unable to reach a binary at all, not
+/// merely abort once something executes it.  Trust is expressed ONLY as
+/// entries in `peers`, resolved from an authority (HEP-CORE-0035 §2); a
+/// federation trust mode (§4.2.2, task #69) must do the same.
 struct PYLABHUB_UTILS_EXPORT PeerAllowlist
 {
     std::set<PeerIdentity> peers;
-    bool unrestricted{false};
 
-    /// True iff `p` is admitted by this allowlist.  Encapsulates the
-    /// `unrestricted`-escape logic so concrete `PeerAdmission`
-    /// implementers don't have to reimplement it.
+    /// True iff `p` is admitted by this allowlist.  Membership is the whole
+    /// rule — there is no flag that skips it.
     [[nodiscard]] bool contains(const PeerIdentity &p) const noexcept
     {
-        if (unrestricted)
-            return true;
         return peers.find(p) != peers.end();
     }
 
     /// Convenience: true iff the allowlist would reject every possible
-    /// identity (i.e., empty + not unrestricted).  Useful for "gate
+    /// identity (i.e., it is empty).  Useful for "gate
     /// is fully closed" diagnostics; production code typically uses
     /// `contains()` directly.
-    [[nodiscard]] bool is_deny_all() const noexcept { return !unrestricted && peers.empty(); }
+    [[nodiscard]] bool is_deny_all() const noexcept { return peers.empty(); }
 };
 
 /// Pure abstract interface — the gate.

@@ -1552,7 +1552,7 @@ InvokeResult LuaEngine::invoke_process(InvokeRx rx, InvokeTx tx, std::vector<Inc
 
 // ============================================================================
 // invoke_on_inbox — on_inbox(msg, api) -> bool
-// msg = {data=cdata, sender_uid=string, seq=number}
+// msg = {data=cdata, sender_uid=string, seq=number, gap=number}
 // ============================================================================
 
 InvokeResult LuaEngine::invoke_on_inbox(InvokeInbox msg)
@@ -1585,7 +1585,7 @@ InvokeResult LuaEngine::invoke_on_inbox(InvokeInbox msg)
         return on_pcall_error_("on_inbox [InboxFrame not registered]");
     }
 
-    // Arg 1: msg table {data=cdata, sender_uid=string, seq=number}.
+    // Arg 1: msg table {data=cdata, sender_uid=string, seq=number, gap=number}.
     lua_createtable(L, 0, 3);
 
     if (msg.data != nullptr && msg.data_size > 0 &&
@@ -1602,6 +1602,11 @@ InvokeResult LuaEngine::invoke_on_inbox(InvokeInbox msg)
 
     lua_pushinteger(L, static_cast<lua_Integer>(msg.seq));
     lua_setfield(L, -2, "seq");
+
+    // Messages lost from this sender just before this one; 0 normally.
+    // The handler decides what to do about it (HEP-CORE-0027 §3.7).
+    lua_pushinteger(L, static_cast<lua_Integer>(msg.gap));
+    lua_setfield(L, -2, "gap");
 
     // Arg 2: api ref.
     lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);

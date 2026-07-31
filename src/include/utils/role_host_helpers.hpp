@@ -152,7 +152,7 @@ struct InboxSetupResult
  * independent communication path with its own schema.
  *
  * @param inbox_spec       Resolved inbox schema (must have has_schema=true).
- * @param inbox_cfg        Inbox config (endpoint, buffer_depth, overflow_policy).
+ * @param inbox_cfg        Inbox config (endpoint, buffer_depth).
  * @param checksum_policy  Role-level checksum policy.
  * @param tag              Log tag (e.g. "prod", "cons", "proc").
  * @param uid              Role uid — used to build the inbox CURVE ZAP
@@ -167,8 +167,13 @@ inline std::optional<InboxSetupResult> setup_inbox_facility(const hub::SchemaSpe
 {
     auto zmq_fields = hub::schema_spec_to_zmq_fields(inbox_spec);
 
-    const int rcvhwm =
-        (inbox_cfg.overflow_policy == "block") ? 0 : static_cast<int>(inbox_cfg.buffer_depth);
+    // Always the configured bound.  This used to read
+    // `(overflow_policy == "block") ? 0 : buffer_depth`, and RCVHWM 0 means
+    // NO LIMIT to ZMQ (`pipe.cpp: _hwm > 0 && ...`) — so the option named
+    // "block" was the one that removed every bound and let the inbox grow
+    // until memory ran out.  The knob is retired (HEP-CORE-0027 §3.7);
+    // `buffer_depth` is validated > 0 at config load.
+    const int rcvhwm = static_cast<int>(inbox_cfg.buffer_depth);
 
     auto queue = hub::InboxQueue::bind_at(inbox_cfg.endpoint, std::move(zmq_fields),
                                           inbox_spec.packing, rcvhwm);

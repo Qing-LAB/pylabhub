@@ -93,7 +93,7 @@ TEST(PeerIdentityTest, IsSetKey_DeduplicatesByValue)
     EXPECT_EQ(s.size(), 2u);
 }
 
-// ── PeerAllowlist — set semantics + contains() + unrestricted escape ────────
+// ── PeerAllowlist — set semantics + contains() ──────────────────────────────
 
 /// contains() on empty allowlist returns false for every identity.
 /// "Default-deny" semantic at the data-structure layer.
@@ -120,46 +120,22 @@ TEST(PeerAllowlistTest, Contains_MatchesInsertedIdentities)
     EXPECT_FALSE(al.is_deny_all());
 }
 
-/// unrestricted=true is the explicit escape: contains() returns true
-/// for every identity.  The data-structure documents this audit point
-/// clearly so grep "unrestricted" finds every bypass site.
-TEST(PeerAllowlistTest, Unrestricted_AdmitsEverything)
-{
-    PeerAllowlist al;
-    al.unrestricted = true;
-    EXPECT_TRUE(al.contains({"curve", "anyone"}));
-    EXPECT_TRUE(al.contains({"shm", "anyone"}));
-    EXPECT_TRUE(al.contains({})); // even an empty identity
-    EXPECT_FALSE(al.is_deny_all());
-}
+// The two tests that used to live here asserted that `unrestricted = true`
+// admitted every identity — they pinned a bypass as though it were a feature,
+// which is how a backdoor survives review.  The field is now DELETED, so the
+// check is the compiler: `al.unrestricted = true` no longer builds.  There is
+// deliberately no runtime test in its place; a thing that cannot be expressed
+// cannot be exercised, and an EXPECT_DEATH here would be the antipattern named
+// in README_testing.md §"Antipatterns" (death-test forks inherit
+// half-initialized state).
 
-/// unrestricted=true overrides the explicit peer set.  Catches a
-/// regression that AND'd the two conditions ("must be in unrestricted
-/// AND in peers"), which would silently make the escape a no-op when
-/// peers is empty.
-TEST(PeerAllowlistTest, Unrestricted_TrumpsPeersSet)
-{
-    PeerAllowlist al;
-    al.unrestricted = true;
-    // peers is empty
-    EXPECT_TRUE(al.contains({"curve", "anyone"}));
-
-    // Also true when peers has entries that don't match.
-    al.peers.insert({"curve", "alice"});
-    EXPECT_TRUE(al.contains({"curve", "stranger"}));
-}
-
-/// is_deny_all distinguishes "empty allowlist" from "unrestricted with
-/// no specific peers".  Operationally these are very different: the
-/// first denies everyone; the second admits everyone.
-TEST(PeerAllowlistTest, IsDenyAll_DistinguishesEmptyFromUnrestricted)
+/// is_deny_all is now exactly "has no peers" — there is no second way to be
+/// non-deny-all.  Previously it also had to account for the unrestricted
+/// escape, which is why it existed as a helper at all.
+TEST(PeerAllowlistTest, IsDenyAll_IsEmptiness)
 {
     PeerAllowlist empty;
     EXPECT_TRUE(empty.is_deny_all());
-
-    PeerAllowlist unrestricted;
-    unrestricted.unrestricted = true;
-    EXPECT_FALSE(unrestricted.is_deny_all());
 
     PeerAllowlist populated;
     populated.peers.insert({"curve", "alice"});
@@ -229,7 +205,6 @@ TEST(PeerAdmissionContractTest, SetAllowlist_SnapshotEquals)
     auto got = a.peer_allowlist_snapshot();
     ASSERT_TRUE(got.has_value());
     EXPECT_EQ(got->peers, want.peers);
-    EXPECT_EQ(got->unrestricted, want.unrestricted);
 }
 
 /// is_peer_allowed reflects the installed allowlist.

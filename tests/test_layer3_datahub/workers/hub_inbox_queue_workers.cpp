@@ -52,9 +52,11 @@
 #include <gtest/gtest.h>
 #include <zmq.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <string>
@@ -106,6 +108,53 @@ inline std::pair<std::string, std::string> make_keypair()
     return {std::string(pub.data(), 40), std::string(sec.data(), 40)};
 }
 
+/// CURVE identities for one inbox pair.  There is no unarmed inbox: both
+/// `InboxQueue::start()` and `InboxClient::start()` PANIC if no identity was
+/// armed (HEP-CORE-0027 §3.5, HEP-CORE-0035 §2).  So this is not a testing
+/// convenience — it is the only legal way to construct these objects, and
+/// every worker below uses it.
+struct InboxCurve
+{
+    std::string recv_pub; ///< pass to the client as curve_serverkey
+    std::string send_pub; ///< seed into the queue's allowlist
+    std::string send_sec; ///< only needed by workers that arm a RAW DEALER
+};
+
+/// Arm the receiving ROUTER.  MUST be called BEFORE `q.start()`.
+/// @param domain  distinct ZAP domain; give each worker its own so a stale
+///                registration from another test cannot satisfy this one.
+inline InboxCurve arm_inbox_queue(InboxQueue &q, const char *domain)
+{
+    namespace sec = pylabhub::utils::security;
+    InboxCurve k;
+    const auto [rp, rs] = make_keypair();
+    const auto [sp, ss] = make_keypair();
+    k.recv_pub = rp;
+    k.send_pub = sp;
+    k.send_sec = ss;
+    sec::secure().keys().add_identity_from_z85("inbox_recv_id", rp, rs);
+    sec::secure().keys().add_identity_from_z85("inbox_send_id", sp, ss);
+    q.set_curve_server_identity("inbox_recv_id", domain);
+    return k;
+}
+
+/// Admit the sender and arm the dialing DEALER.  Call AFTER `q.start()`
+/// (the queue binds deny-all) and BEFORE `c.start()`.  A `ZapPumpThread` must
+/// be alive in the worker for the handshake to be serviced.
+inline void admit_sender(InboxQueue &q, const InboxCurve &k)
+{
+    namespace sec = pylabhub::utils::security;
+    sec::PeerAllowlist allow;
+    allow.peers.insert(sec::PeerIdentity{"curve", k.send_pub});
+    q.set_peer_allowlist(allow);
+}
+
+inline void admit_and_arm_client(InboxQueue &q, InboxClient &c, const InboxCurve &k)
+{
+    admit_sender(q, k);
+    c.set_curve_client_identity("inbox_send_id", k.recv_pub);
+}
+
 } // namespace
 
 // ─── Test #1: BindAndConnect_Basic ──────────────────────────────────────────
@@ -120,7 +169,10 @@ int bind_and_connect_basic()
 
             auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
             ASSERT_NE(q, nullptr);
+            // No unarmed inbox exists — start() PANICs without an identity.
+            const auto inbox_keys = arm_inbox_queue(*q, "test.inbox");
             ASSERT_TRUE(q->start());
+            pylabhub::utils::security::ZapPumpThread inbox_pump;
 
             const std::string ep = q->actual_endpoint();
             EXPECT_FALSE(ep.empty());
@@ -128,6 +180,7 @@ int bind_and_connect_basic()
 
             auto c = InboxClient::connect_to(ep, "prod.test.uid00000001", uint32_schema());
             ASSERT_NE(c, nullptr);
+            admit_and_arm_client(*q, *c, inbox_keys);
             ASSERT_TRUE(c->start());
 
             void *buf = c->acquire();
@@ -178,7 +231,10 @@ int recv_one_timeout_returns_null()
 
             auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
             ASSERT_NE(q, nullptr);
+            // No unarmed inbox exists — start() PANICs without an identity.
+            const auto inbox_keys = arm_inbox_queue(*q, "test.inbox");
             ASSERT_TRUE(q->start());
+            pylabhub::utils::security::ZapPumpThread inbox_pump;
 
             const auto *item = q->recv_one(ms{50});
             EXPECT_EQ(item, nullptr);
@@ -203,11 +259,15 @@ int multiple_messages()
 
             auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
             ASSERT_NE(q, nullptr);
+            // No unarmed inbox exists — start() PANICs without an identity.
+            const auto inbox_keys = arm_inbox_queue(*q, "test.inbox");
             ASSERT_TRUE(q->start());
+            pylabhub::utils::security::ZapPumpThread inbox_pump;
 
             auto c = InboxClient::connect_to(q->actual_endpoint(), "prod.multi.uid00000001",
                                              uint32_schema());
             ASSERT_NE(c, nullptr);
+            admit_and_arm_client(*q, *c, inbox_keys);
             ASSERT_TRUE(c->start());
 
             const uint32_t kValues[3] = {0x11111111, 0x22222222, 0x33333333};
@@ -263,7 +323,10 @@ int double_stop_no_throw()
 
             auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
             ASSERT_NE(q, nullptr);
+            // No unarmed inbox exists — start() PANICs without an identity.
+            const auto inbox_keys = arm_inbox_queue(*q, "test.inbox");
             ASSERT_TRUE(q->start());
+            pylabhub::utils::security::ZapPumpThread inbox_pump;
 
             EXPECT_NO_THROW(q->stop());
             EXPECT_NO_THROW(q->stop()); // second stop is a no-op
@@ -294,10 +357,14 @@ int sender_uid_is_preserved()
 
             auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
             ASSERT_NE(q, nullptr);
+            // No unarmed inbox exists — start() PANICs without an identity.
+            const auto inbox_keys = arm_inbox_queue(*q, "test.inbox");
             ASSERT_TRUE(q->start());
+            pylabhub::utils::security::ZapPumpThread inbox_pump;
 
             auto c = InboxClient::connect_to(q->actual_endpoint(), kSenderId, uint32_schema());
             ASSERT_NE(c, nullptr);
+            admit_and_arm_client(*q, *c, inbox_keys);
             ASSERT_TRUE(c->start());
 
             void *buf = c->acquire();
@@ -347,7 +414,10 @@ int bad_magic_drops()
 
             auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
             ASSERT_NE(q, nullptr);
+            // No unarmed inbox exists — start() PANICs without an identity.
+            const auto inbox_keys = arm_inbox_queue(*q, "test.inbox");
             ASSERT_TRUE(q->start());
+            pylabhub::utils::security::ZapPumpThread inbox_pump;
 
             // Raw ZMQ context + DEALER to fabricate a malformed frame.
             // Not a mock — same ZMQ library, non-production wire shape.
@@ -358,7 +428,15 @@ int bad_magic_drops()
             ASSERT_NE(sock, nullptr);
 
             const std::string id = "BAD-MAGIC-SENDER";
+            admit_sender(*q, inbox_keys);
             zmq_setsockopt(sock, ZMQ_IDENTITY, id.c_str(), id.size());
+            // The receiver is CURVE-only.  This worker fabricates a bad
+            // PAYLOAD; it is not testing an unauthenticated peer, so it
+            // presents a genuine admitted identity and lets the frame itself
+            // be the malformed thing.
+            zmq_setsockopt(sock, ZMQ_CURVE_PUBLICKEY, inbox_keys.send_pub.c_str(), 40);
+            zmq_setsockopt(sock, ZMQ_CURVE_SECRETKEY, inbox_keys.send_sec.c_str(), 40);
+            zmq_setsockopt(sock, ZMQ_CURVE_SERVERKEY, inbox_keys.recv_pub.c_str(), 40);
             int linger = 0;
             zmq_setsockopt(sock, ZMQ_LINGER, &linger, sizeof(linger));
 
@@ -401,7 +479,10 @@ int replay_and_skew_dropped()
 
             auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
             ASSERT_NE(q, nullptr);
+            // No unarmed inbox exists — start() PANICs without an identity.
+            const auto inbox_keys = arm_inbox_queue(*q, "test.inbox");
             ASSERT_TRUE(q->start());
+            pylabhub::utils::security::ZapPumpThread inbox_pump;
 
             // Raw DEALER lets us control the replay-metadata frame directly
             // (the production InboxClient always stamps a FRESH nonce, so a
@@ -412,7 +493,15 @@ int replay_and_skew_dropped()
             void *sock = zmq_socket(ctx, ZMQ_DEALER);
             ASSERT_NE(sock, nullptr);
             const std::string id = "REPLAY-SENDER";
+            admit_sender(*q, inbox_keys);
             zmq_setsockopt(sock, ZMQ_IDENTITY, id.c_str(), id.size());
+            // The receiver is CURVE-only.  This worker fabricates a bad
+            // PAYLOAD; it is not testing an unauthenticated peer, so it
+            // presents a genuine admitted identity and lets the frame itself
+            // be the malformed thing.
+            zmq_setsockopt(sock, ZMQ_CURVE_PUBLICKEY, inbox_keys.send_pub.c_str(), 40);
+            zmq_setsockopt(sock, ZMQ_CURVE_SECRETKEY, inbox_keys.send_sec.c_str(), 40);
+            zmq_setsockopt(sock, ZMQ_CURVE_SERVERKEY, inbox_keys.recv_pub.c_str(), 40);
             int linger = 0;
             zmq_setsockopt(sock, ZMQ_LINGER, &linger, sizeof(linger));
             ASSERT_EQ(zmq_connect(sock, q->actual_endpoint().c_str()), 0);
@@ -477,11 +566,15 @@ int ack_code_3_handler_error()
 
             auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
             ASSERT_NE(q, nullptr);
+            // No unarmed inbox exists — start() PANICs without an identity.
+            const auto inbox_keys = arm_inbox_queue(*q, "test.inbox");
             ASSERT_TRUE(q->start());
+            pylabhub::utils::security::ZapPumpThread inbox_pump;
 
             auto c = InboxClient::connect_to(q->actual_endpoint(), "prod.ackerr.uid00000001",
                                              uint32_schema());
             ASSERT_NE(c, nullptr);
+            admit_and_arm_client(*q, *c, inbox_keys);
             ASSERT_TRUE(c->start());
 
             void *buf = c->acquire();
@@ -616,11 +709,15 @@ int schema_mismatch_different_type_drops_frame()
 
             auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
             ASSERT_NE(q, nullptr);
+            // No unarmed inbox exists — start() PANICs without an identity.
+            const auto inbox_keys = arm_inbox_queue(*q, "test.inbox");
             ASSERT_TRUE(q->start());
+            pylabhub::utils::security::ZapPumpThread inbox_pump;
 
             std::vector<ZmqSchemaField> float64_schema = {{"float64", 1, 0}};
             auto c = InboxClient::connect_to(q->actual_endpoint(), "MISMATCH-01", float64_schema);
             ASSERT_NE(c, nullptr);
+            admit_and_arm_client(*q, *c, inbox_keys);
             ASSERT_TRUE(c->start());
 
             void *buf = c->acquire();
@@ -670,11 +767,15 @@ int schema_mismatch_different_size_drops_frame()
 
             auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
             ASSERT_NE(q, nullptr);
+            // No unarmed inbox exists — start() PANICs without an identity.
+            const auto inbox_keys = arm_inbox_queue(*q, "test.inbox");
             ASSERT_TRUE(q->start());
+            pylabhub::utils::security::ZapPumpThread inbox_pump;
 
             std::vector<ZmqSchemaField> uint64_schema = {{"uint64", 1, 0}};
             auto c = InboxClient::connect_to(q->actual_endpoint(), "MISMATCH-02", uint64_schema);
             ASSERT_NE(c, nullptr);
+            admit_and_arm_client(*q, *c, inbox_keys);
             ASSERT_TRUE(c->start());
 
             void *buf = c->acquire();
@@ -721,11 +822,14 @@ int checksum_enforced_roundtrip()
             auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
             ASSERT_NE(q, nullptr);
             q->set_checksum_policy(ChecksumPolicy::Enforced);
+            const auto inbox_keys = arm_inbox_queue(*q, "test.inbox");
             ASSERT_TRUE(q->start());
+            pylabhub::utils::security::ZapPumpThread inbox_pump;
 
             auto c = InboxClient::connect_to(q->actual_endpoint(), "CKSUM-ENF", uint32_schema());
             ASSERT_NE(c, nullptr);
             c->set_checksum_policy(ChecksumPolicy::Enforced);
+            admit_and_arm_client(*q, *c, inbox_keys);
             ASSERT_TRUE(c->start());
 
             void *buf = c->acquire();
@@ -777,11 +881,14 @@ int checksum_manual_no_stamp_receiver_rejects()
             auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
             ASSERT_NE(q, nullptr);
             q->set_checksum_policy(ChecksumPolicy::Enforced); // verifies
+            const auto inbox_keys = arm_inbox_queue(*q, "test.inbox");
             ASSERT_TRUE(q->start());
+            pylabhub::utils::security::ZapPumpThread inbox_pump;
 
             auto c = InboxClient::connect_to(q->actual_endpoint(), "CKSUM-MAN", uint32_schema());
             ASSERT_NE(c, nullptr);
             c->set_checksum_policy(ChecksumPolicy::Manual); // no auto-stamp
+            admit_and_arm_client(*q, *c, inbox_keys);
             ASSERT_TRUE(c->start());
 
             void *buf = c->acquire();
@@ -828,11 +935,14 @@ int checksum_none_roundtrip()
             auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
             ASSERT_NE(q, nullptr);
             q->set_checksum_policy(ChecksumPolicy::None);
+            const auto inbox_keys = arm_inbox_queue(*q, "test.inbox");
             ASSERT_TRUE(q->start());
+            pylabhub::utils::security::ZapPumpThread inbox_pump;
 
             auto c = InboxClient::connect_to(q->actual_endpoint(), "CKSUM-NONE", uint32_schema());
             ASSERT_NE(c, nullptr);
             c->set_checksum_policy(ChecksumPolicy::None);
+            admit_and_arm_client(*q, *c, inbox_keys);
             ASSERT_TRUE(c->start());
 
             void *buf = c->acquire();
@@ -981,6 +1091,11 @@ int inbox_curve_unknown_denied()
                                       return item != nullptr;
                                   });
             std::this_thread::sleep_for(ms{30});
+            // Historically this call hung forever: the denied handshake tore
+            // down the DEALER's only pipe, and libzmq's default SNDTIMEO of -1
+            // parked the caller.  `InboxClient::send` now transmits with
+            // `dontwait`, so a peer with no writable pipe fails fast.
+            // BackPressureIsBoundedAndEdgeLogged pins that directly.
             const uint8_t ack = c->send(ms{500});
 
             // The ZAP gate denies bob's CURVE handshake, so NO message reaches
@@ -993,6 +1108,221 @@ int inbox_curve_unknown_denied()
             q->stop();
         },
         "hub_inbox_queue::inbox_curve_unknown_denied", PLH_INBOX_MODS);
+}
+
+// ─── Test: back-pressure is bounded, and its log is edge-triggered ──────────
+
+int inbox_backpressure_bounded_and_edge_logged()
+{
+    return run_gtest_worker(
+        []
+        {
+            LogCaptureFixture log_cap;
+            log_cap.Install();
+            // MustFire: the whole point is that the blocked path announces
+            // itself exactly once.  A permissive ExpectLogWarn would pass even
+            // if production stopped emitting it.
+            log_cap.ExpectLogWarnMustFire("send:blocked");
+
+            /// The captured blocked/recovered markers, in emission order.
+            /// Edge-triggering is a claim about the SEQUENCE of lines, not
+            /// about how many there are: back-pressure oscillates (the pipe
+            /// partially drains between sends), so any fixed count would pin
+            /// timing rather than design.  What the latch guarantees is that
+            /// the two never repeat — every 'blocked' is separated from the
+            /// next by a 'recovered'.
+            auto edge_markers = [&]
+            {
+                pylabhub::utils::Logger::instance().flush();
+                std::ifstream f(log_cap.log_path());
+                std::string line;
+                std::vector<char> seq;
+                while (std::getline(f, line))
+                {
+                    if (line.find("send:blocked") != std::string::npos)
+                        seq.push_back('B');
+                    else if (line.find("send:recovered") != std::string::npos)
+                        seq.push_back('R');
+                }
+                return seq;
+            };
+            auto count_of = [](const std::vector<char> &seq, char c)
+            { return std::count(seq.begin(), seq.end(), c); };
+
+            // rcvhwm=1: a receiver that never calls recv_one() reaches its
+            // high-water mark almost at once.  This is the production
+            // slow-consumer shape (a role busy in a handler while messages
+            // arrive), just with the threshold turned down so the test does
+            // not have to push a thousand messages to reach it.
+            auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema(), "aligned", 1);
+            ASSERT_NE(q, nullptr);
+            // No unarmed inbox exists — start() PANICs without an identity.
+            const auto inbox_keys = arm_inbox_queue(*q, "test.inbox");
+            ASSERT_TRUE(q->start());
+            pylabhub::utils::security::ZapPumpThread inbox_pump;
+
+            auto c =
+                InboxClient::connect_to(q->actual_endpoint(), "flooder.uid00000001", uint32_schema());
+            ASSERT_NE(c, nullptr);
+            admit_and_arm_client(*q, *c, inbox_keys);
+            ASSERT_TRUE(c->start());
+
+            uint32_t seq = 0;
+            auto fire = [&]
+            {
+                void *buf = c->acquire();
+                if (buf == nullptr)
+                    return static_cast<uint8_t>(255);
+                std::memcpy(buf, &seq, sizeof(seq));
+                ++seq;
+                return c->send(ms{0}); // fire-and-forget: bounded by the transmit alone
+            };
+
+            // ── The anti-hang pin ────────────────────────────────────────────
+            // Before the dontwait fix this loop never terminated: at the
+            // high-water mark libzmq's default SNDTIMEO of -1 parked the
+            // caller forever.  A test that hangs here IS the regression
+            // signal — the worker is killed and the exit code surfaces it.
+            // The iteration cap only bounds the opposite failure (a send that
+            // never reports back-pressure at all).
+            constexpr uint32_t kMaxSends = 200000;
+            uint8_t rc = 0;
+            while (seq < kMaxSends)
+            {
+                rc = fire();
+                if (rc == 255)
+                    break;
+            }
+            ASSERT_EQ(rc, 255u) << "a receiver stuck at its high-water mark must make send() "
+                                   "fail, not block the caller";
+            ASSERT_LT(seq, kMaxSends) << "send() never reported back-pressure";
+            EXPECT_GT(c->send_blocked_count(), 0u);
+            EXPECT_EQ(edge_markers().size(), 1u) << "the blocked edge announces itself once";
+
+            // ── Keep pushing, then let the receiver catch up ─────────────────
+            // Back-pressure oscillates: the outbound pipe partially drains
+            // between sends, so refusals and successes interleave.  Each
+            // full -> normal -> full cycle is a genuine event and SHOULD be
+            // logged.  Draining the receiver at the end guarantees at least
+            // one recovery edge regardless of how the middle went.
+            const uint64_t blocked_before = c->send_blocked_count();
+            int refused = 0;
+            for (int i = 0; i < 2000; ++i)
+                if (fire() == 255u)
+                    ++refused;
+            EXPECT_EQ(c->send_blocked_count(), blocked_before + static_cast<uint64_t>(refused))
+                << "the counter records EVERY refusal, unlike the log";
+
+            for (int i = 0; i < 8192; ++i)
+            {
+                const InboxItem *item = q->recv_one(ms{20});
+                if (item == nullptr)
+                    break;
+                q->send_ack(0);
+            }
+            ASSERT_TRUE(pylabhub::tests::helper::poll_until([&] { return fire() != 255u; },
+                                                            std::chrono::seconds{10}))
+                << "once the receiver drains, sending must become possible again";
+
+            // ── The anti-flood pin ───────────────────────────────────────────
+            // The latch's guarantee is about ORDER, not count: blocked and
+            // recovered strictly alternate, starting with blocked.  A repeat
+            // of either would mean the latch failed and a stuck peer could
+            // emit one line per send — thousands here.
+            const auto seqm = edge_markers();
+            ASSERT_FALSE(seqm.empty());
+            EXPECT_EQ(seqm.front(), 'B') << "the first edge must be the block, not a recovery";
+            for (std::size_t i = 1; i < seqm.size(); ++i)
+                EXPECT_NE(seqm[i], seqm[i - 1])
+                    << "edge " << i << " repeats '" << seqm[i]
+                    << "' — the latch re-fired without the opposite transition, so a peer that "
+                       "stays blocked would flood the log";
+            EXPECT_GE(count_of(seqm, 'R'), 1) << "the drain must produce a recovery edge";
+            EXPECT_LE(static_cast<uint64_t>(count_of(seqm, 'B')), c->send_blocked_count())
+                << "there cannot be more block lines than block events";
+
+            c->stop();
+            q->stop();
+        },
+        "hub_inbox_queue::inbox_backpressure_bounded_and_edge_logged", PLH_INBOX_MODS);
+}
+
+// ─── Test: a late ACK is never reported as the next message's result ────────
+
+int inbox_stale_ack_not_attributed_to_next_send()
+{
+    return run_gtest_worker(
+        []
+        {
+            LogCaptureFixture log_cap;
+            log_cap.Install();
+            log_cap.ExpectLogWarnMustFire("ACK timeout");
+
+            auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
+            ASSERT_NE(q, nullptr);
+            // No unarmed inbox exists — start() PANICs without an identity.
+            const auto inbox_keys = arm_inbox_queue(*q, "test.inbox");
+            ASSERT_TRUE(q->start());
+            pylabhub::utils::security::ZapPumpThread inbox_pump;
+
+            auto c =
+                InboxClient::connect_to(q->actual_endpoint(), "slowpoke.uid00000001",
+                                        uint32_schema());
+            ASSERT_NE(c, nullptr);
+            admit_and_arm_client(*q, *c, inbox_keys);
+            ASSERT_TRUE(c->start());
+
+            auto put = [&](uint32_t v)
+            {
+                void *buf = c->acquire();
+                ASSERT_NE(buf, nullptr);
+                std::memcpy(buf, &v, sizeof(v));
+            };
+
+            // ── Message 1: the receiver is busy, so the caller gives up ──────
+            // This is the ordinary slow-handler case, not a contrived one: the
+            // message arrives, but the caller's ACK budget expires before the
+            // handler gets to it.
+            put(0x1111);
+            EXPECT_EQ(c->send(ms{80}), 255u) << "no ACK within the budget must read as failure";
+
+            // The receiver now catches up and acknowledges message 1 — LATE.
+            // Its receipt is in flight toward a caller that has stopped
+            // waiting for it.
+            const InboxItem *first = q->recv_one(ms{1000});
+            ASSERT_NE(first, nullptr);
+            q->send_ack(0); // code 0 == success, the ONLY code production emits
+
+            // ── Message 2: distinguishable answer ────────────────────────────
+            // The receiver answers message 2 with code 3.  If the stale
+            // receipt for message 1 were attributed to this send, the caller
+            // would see 0 — a stale SUCCESS for work that had not happened.
+            // Seeing 3 proves the receipt was matched to its own message.
+            put(0x2222);
+            auto responder = std::async(std::launch::async,
+                                        [&]
+                                        {
+                                            const InboxItem *second = q->recv_one(ms{2000});
+                                            if (second == nullptr)
+                                                return false;
+                                            q->send_ack(3);
+                                            return true;
+                                        });
+            const uint8_t rc = c->send(ms{2000});
+            ASSERT_TRUE(responder.get()) << "receiver never saw message 2";
+
+            EXPECT_EQ(rc, 3u) << "the caller must be given ITS OWN message's ACK code; a 0 here "
+                                 "is message 1's stale receipt reported as message 2's result";
+            EXPECT_EQ(c->ack_stale_count(), 1u)
+                << "exactly one late receipt should have been recognised and discarded";
+
+            c->stop();
+            q->stop();
+
+            log_cap.AssertNoUnexpectedLogWarnError();
+            log_cap.Uninstall();
+        },
+        "hub_inbox_queue::inbox_stale_ack_not_attributed_to_next_send", PLH_INBOX_MODS);
 }
 
 } // namespace hub_inbox_queue
@@ -1057,6 +1387,10 @@ struct HubInboxQueueRegistrar
                     return inbox_curve_authorized_delivers();
                 if (sc == "inbox_curve_unknown_denied")
                     return inbox_curve_unknown_denied();
+                if (sc == "inbox_backpressure_bounded_and_edge_logged")
+                    return inbox_backpressure_bounded_and_edge_logged();
+                if (sc == "inbox_stale_ack_not_attributed_to_next_send")
+                    return inbox_stale_ack_not_attributed_to_next_send();
                 return -1;
             });
     }

@@ -1464,7 +1464,8 @@ InvokeResult PythonEngine::invoke_process(InvokeRx rx, InvokeTx tx,
 
 // ============================================================================
 // invoke_on_inbox — on_inbox(msg, api) -> bool
-// msg.data = typed payload, msg.sender_uid = sender UID, msg.seq = sequence
+// msg.data = typed payload, msg.sender_uid = sender UID, msg.seq = sequence,
+// msg.gap = messages lost from this sender just before this one
 // ============================================================================
 
 InvokeResult PythonEngine::invoke_on_inbox(InvokeInbox msg)
@@ -1507,6 +1508,7 @@ InvokeResult PythonEngine::invoke_on_inbox(InvokeInbox msg)
         }
         msg_obj.sender_uid = msg.sender_uid;
         msg_obj.seq = msg.seq;
+        msg_obj.gap = msg.gap;
 
         py::object ret = py_on_inbox_(py::cast(msg_obj), api_obj_);
         result = parse_return_value_(ret, "on_inbox");

@@ -259,10 +259,12 @@ int unknown_domain_denies(const char * /*tmpdir*/)
 
             // Register a DIFFERENT domain so the module is loaded but
             // our pull socket's domain is unknown to the router.
+            // Deliberately empty: this admission guards a DIFFERENT domain and
+            // is never consulted by the pull socket under test.  Leaving it
+            // deny-all makes that explicit — if it ever were consulted, the
+            // test would fail rather than silently pass on a blanket admit.
             InMemoryAdmission unrelated;
-            PeerAllowlist al;
-            al.unrestricted = true;
-            (void)unrelated.set_peer_allowlist(std::move(al));
+            (void)unrelated.set_peer_allowlist(PeerAllowlist{});
             auto handle = ZapRouter::instance().register_domain("test.zap.other.domain", unrelated);
 
             ZapPumpThread pump;
@@ -288,17 +290,23 @@ int claim_check_covers_every_verdict(const char * /*tmpdir*/)
             const std::string domain = "test.zap.claim.check";
             auto pull = bind_pull_server(server_pub, server_sec, domain);
 
-            InMemoryAdmission admission;
-            PeerAllowlist al;
-            al.unrestricted = true; // every client completes; the CLAIM is what is under test
-            (void)admission.set_peer_allowlist(std::move(al));
-            auto handle = ZapRouter::instance().register_domain(domain, admission);
-            ZapPumpThread pump;
-
             const auto [alice_pub, alice_sec] = make_keypair();
             const auto [bob_pub, bob_sec] = make_keypair();
             const auto [peer_pub, peer_sec] = make_keypair();
             const auto [stranger_pub, stranger_sec] = make_keypair();
+
+            // Every client must COMPLETE the handshake — the CLAIM made after
+            // it is what this test examines.  Admitting them means naming all
+            // four keys; there is no blanket "let everyone in" any more, and
+            // spelling them out is what makes it obvious that admission and
+            // claim-checking are two separate gates.
+            InMemoryAdmission admission;
+            PeerAllowlist al;
+            for (const auto &k : {alice_pub, bob_pub, peer_pub, stranger_pub})
+                al.peers.insert(PeerIdentity{pylabhub::utils::security::kCurveMechanism, k});
+            (void)admission.set_peer_allowlist(std::move(al));
+            auto handle = ZapRouter::instance().register_domain(domain, admission);
+            ZapPumpThread pump;
 
             const std::string alice_uid = "prod.alice.uid00000001";
             const std::string bob_uid = "prod.bob.uid00000002";
@@ -382,16 +390,20 @@ int authority_answers_questions_about_attested_keys(const char * /*tmpdir*/)
             const std::string domain = "test.zap.authority.questions";
             auto pull = bind_pull_server(server_pub, server_sec, domain);
 
-            InMemoryAdmission admission;
-            PeerAllowlist al;
-            al.unrestricted = true;
-            (void)admission.set_peer_allowlist(std::move(al));
-            auto handle = ZapRouter::instance().register_domain(domain, admission);
-            ZapPumpThread pump;
-
             const auto [role_pub, role_sec] = make_keypair();
             const auto [peer_pub, peer_sec] = make_keypair();
             const auto [stranger_pub, stranger_sec] = make_keypair();
+
+            // All three must reach the authority to be asked about — including
+            // the stranger, whose whole point is that the authority answers
+            // "no" about a key that DID authenticate.
+            InMemoryAdmission admission;
+            PeerAllowlist al;
+            for (const auto &k : {role_pub, peer_pub, stranger_pub})
+                al.peers.insert(PeerIdentity{pylabhub::utils::security::kCurveMechanism, k});
+            (void)admission.set_peer_allowlist(std::move(al));
+            auto handle = ZapRouter::instance().register_domain(domain, admission);
+            ZapPumpThread pump;
 
             const auto role_att = attest_via_handshake(pull, server_pub, role_pub, role_sec);
             const auto peer_att = attest_via_handshake(pull, server_pub, peer_pub, peer_sec);
@@ -406,8 +418,8 @@ int authority_answers_questions_about_attested_keys(const char * /*tmpdir*/)
                 EXPECT_FALSE(empty.local_role_uid(*role_att).has_value());
                 EXPECT_FALSE(empty.is_federation_peer(*role_att));
                 EXPECT_TRUE(empty.local_role_roster().empty());
-                EXPECT_FALSE(empty.zap_allowlist().unrestricted)
-                    << "an empty authority must be deny-all, never unrestricted";
+                EXPECT_TRUE(empty.zap_allowlist().is_deny_all())
+                    << "an empty authority must admit nobody";
             }
 
             const std::string role_uid = "prod.alice.uid00000001";
@@ -575,7 +587,7 @@ int attestation_requires_enforced_domain(const char * /*tmpdir*/)
                 auto pull = bind_pull_server(server_pub, server_sec, domain);
                 InMemoryAdmission admission;
                 PeerAllowlist al;
-                al.unrestricted = true;
+                al.peers.insert(PeerIdentity{pylabhub::utils::security::kCurveMechanism, client_pub});
                 (void)admission.set_peer_allowlist(std::move(al));
                 auto handle = ZapRouter::instance().register_domain(domain, admission);
                 ZapPumpThread pump;

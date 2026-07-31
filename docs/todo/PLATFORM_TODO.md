@@ -8,6 +8,84 @@ specific detail for open items only.
 
 ## Current Focus
 
+### Compiler warnings are an index of refactor residue (2026-07-30)
+
+A CLEAN `stage_all` emits **48 warning lines** — incremental builds
+recompile too little to show them, which is how these went unnoticed.
+Capture with a full rebuild, not an incremental one:
+`cmake --build build --target stage_all --clean-first -j2 > log 2>&1`.
+
+Provenance check (`git blame -w --ignore-rev <clang-format-v21 commit
+86e4ec5c>` — that reformat touched 484 files and masks true blame):
+every production site traces to a refactor/migration/cleanup commit,
+not to fresh code.  Treat the warning list as a free mechanical index
+of where refactors left stubs behind — this is the dead-code sweep
+`feedback_name_collisions_and_dead_code` asks for, already done by the
+compiler.  Feeds task #87.
+
+**Genuine residue — fix these:**
+
+- [ ] **`src/utils/hub/hub_zmq_queue.cpp:702` — `validate_curve_factory_params`
+  ignores `server_pubkey_z85` AND `bind_side`.**  Highest value of the
+  set.  Origin `fd118787` "#158 C2-cleanup: delete ZmqAuthOptions
+  struct + `*_with_auth` factories + **validator helper**" — the body
+  that read both parameters was deleted, the wide signature survived.
+  The docstring still claims it validates "the CURVE auth parameters";
+  it validates one of three.  `bind_side` exists so the check can
+  differ (bind needs no server key, connect REQUIRES one) and that
+  branch was never written; caller at `:1029` already passes
+  `/*server_pubkey_z85=*/{}`.  Same shape as the #68 dead-validator
+  family.  Decide: implement the missing checks, or delete the
+  parameters — do not leave a validator that names what it ignores.
+- [ ] `src/consumer/consumer_role_host.cpp:114` — unused `tr`.  Origin
+  `206fcf56` (RoleConfig migration).  Benign: transport IS read, at
+  `:321` via `config_.in_transport()` directly.  Delete the binding.
+- [ ] `src/utils/service/role_config_translation.cpp:74` — unused `shm`.
+  Origin `59c75f87` (M9 step 1 free-function extraction).
+- [ ] `tests/test_layer2_service/workers/jsonconfig_workers.cpp:126` —
+  `json_mods()` defined but unused.  Origin `65e8327c` (Pattern 3
+  conversion) — same migration family as #52/#54/#56.
+- [ ] `tests/test_layer4_plh_hub/test_plh_hub_role_zmq_e2e.cpp:1398` —
+  `dump_all` set but not used.  Origin `f9e11c18`; a debugging aid.
+- [ ] `tests/test_layer2_service/test_hub_zmq_queue.cpp:3005` — unused `r`.
+- [ ] `src/utils/service/vault_crypto.cpp:40` —
+  `set_owner_only_permissions` unused on POSIX.  NOT a permissions
+  hole: it is called at `:105` inside the Windows branch, and the
+  POSIX path uses `open(O_CREAT|O_EXCL|O_NOFOLLOW, S_IRUSR|S_IWUSR)`
+  plus a belt-and-braces `fchmod(0600)`.  Guard the definition with
+  the same `#if` so it stops warning.
+- [ ] `src/utils/security/shm_capability_channel.cpp:972` — multi-line
+  comment (`-Wcomment`), a stray trailing backslash.
+- [ ] `src/scripting/lua_engine.cpp:164`, `src/scripting/python_engine.cpp:140`
+  — unused parameter `core`.  Shared signature across both engines, so
+  unname or `[[maybe_unused]]` on BOTH (multi-engine parity), never one
+  side only.
+- [ ] **`tests/test_layer3_pattern4/test_pattern4_zmq_endpoint_registry.cpp:374`
+  — `-Wdangling-else`.**  Worth reading properly: an ambiguous `else`
+  binding is a logic hazard, not a style nit.
+
+**Verified benign — do NOT "fix" these:**
+
+- `src/scripting/json_py_helpers.hpp:97`,`:104` — `-Wredundant-move`.
+  Genuinely redundant, but only because the target is C++20
+  (`src/scripting/CMakeLists.txt:42`): P1825R0 dropped the same-type
+  requirement, so `return d;` implicit-moves a `py::dict` local into a
+  `py::object` return.  Under C++17 the `std::move` was LOAD-BEARING
+  (derived→base got no implicit move) — so if the standard is ever
+  lowered, restore them.  No memory implication either way: `std::move`
+  is a cast, and the worst case in any direction is one wasted refcount
+  round-trip.  Reported 10x via 5 include paths.
+- 13 x `-Wunused-result` on `[[nodiscard]]` in
+  `test_known_roles.cpp`, `test_curve_keypair.cpp`,
+  `test_wire_adapter_roundtrip.cpp`, `test_wire_envelope.cpp`,
+  `key_store_workers.cpp` — ALL inside `EXPECT_THROW(...)`, where the
+  value is discarded because the call throws.  The tests are correct.
+- `tests/test_framework/broker_test_harness.cpp:303` — missing
+  initializer for `channel_topology`.  It is a `std::string`, optional
+  on the wire; empty == "topology not declared", a legitimate REG shape.
+- `third_party/libzmq/src/session_base.cpp:458` — not ours (NO-GO list).
+- 3 x `make: jobserver unavailable` — build-system noise.
+
 ### Platform support claims vs CI validation (2026-03-15)
 
 - [ ] **CI is Linux-only** but `pyproject.toml` classifiers advertise

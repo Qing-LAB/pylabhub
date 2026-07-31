@@ -13,6 +13,7 @@
  *   DEALER receives ACK:    ["", ack_byte]  (ZMQ strips identity; app drains empty frame)
  */
 #include "utils/hub_inbox_queue.hpp"
+#include "utils/debug_info.hpp" // PLH_PANIC — unarmed-CURVE invariant
 #include "utils/logger.hpp"
 #include "utils/zmq_context.hpp"
 #include "utils/curve_socket.hpp"              // arm_curve_server (shared CURVE arm)
@@ -25,6 +26,7 @@
 #include "cppzmq/zmq.hpp"
 #include "cppzmq/zmq_addon.hpp" // zmq::multipart_t
 
+#include <array>
 #include <atomic>
 #include <cassert>
 #include <cerrno>
@@ -91,9 +93,9 @@ struct InboxQueueImpl
     std::unordered_map<std::string, uint64_t> sender_expected_seq_;
 
     // ── CURVE-server auth (HEP-CORE-0027 §3.5, HEP-CORE-0036 §9.3) ────────
-    // Set by set_curve_server_identity() before start().  Empty
-    // identity_key_name_ == legacy unencrypted inbox (no CURVE arm — the
-    // ZMQ NULL mechanism; production hard-refuses this, see role_api_base).
+    // Set by set_curve_server_identity() BEFORE start().  There is no
+    // unencrypted inbox: `start()` PANICs if this is still empty, so an
+    // unarmed InboxQueue cannot exist past construction.
     std::string identity_key_name_; ///< KeyStore key (kRoleIdentityName).
     std::string zap_domain_;        ///< Distinct inbox ZAP domain ("<uid>:inbox").
 
@@ -137,9 +139,30 @@ struct InboxClientImpl
     ChecksumPolicy checksum_policy_{ChecksumPolicy::Enforced};
     int last_acktimeo{-2}; ///< Cached ZMQ_RCVTIMEO for ACK receives. -2 = not yet set.
 
+    // ── Back-pressure edge latch ──────────────────────────────────────────
+    // A DEALER with no writable pipe reports EAGAIN, and that one errno
+    // covers both "the receiver's inbox is full" and "there is no peer"
+    // (libzmq `lb_t::sendpipe`: `if (_active == 0) { errno = EAGAIN; }`).
+    // libzmq exposes no receive-queue depth, so the sender's EAGAIN is the
+    // ONLY place either condition is observable in-process.
+    //
+    // The latch makes the log edge-triggered: one line when the send path
+    // becomes blocked, one when it recovers.  A peer that stays blocked
+    // stays silent — a per-send line would bury the log at exactly the
+    // moment the operator needs to read it.
+    bool send_blocked_{false};
+    std::atomic<uint64_t> send_blocked_count_{0};
+
+    /// Receipts discarded because their `seq` belonged to an earlier send
+    /// whose ACK wait had already expired.  A non-zero value means the ACK
+    /// timeout is tuned tighter than the receiver's actual turnaround —
+    /// before the ACK carried a seq, each of these was silently returned as
+    /// the CURRENT message's result.
+    std::atomic<uint64_t> ack_stale_count_{0};
+
     // ── CURVE-client auth (HEP-CORE-0027 §3.5, HEP-CORE-0036 §9.3) ────────
-    // Set by set_curve_client_identity() before start().  Empty
-    // identity_key_name_ == legacy unencrypted (no CURVE arm).
+    // Set by set_curve_client_identity() BEFORE start().  `start()` PANICs if
+    // this is still empty — there is no plaintext sender.
     std::string identity_key_name_; ///< KeyStore key (kRoleIdentityName).
     std::string server_pubkey_z85_; ///< Receiver identity pubkey (curve_serverkey).
 };
@@ -243,6 +266,41 @@ static std::array<uint8_t, 8> compute_inbox_schema_tag(const std::vector<ZmqSche
     return tag;
 }
 
+
+// ── ACK frame (HEP-CORE-0027 §3.7, HEP-CORE-0047 §3.0) ──────────────────────
+// The ACK rides the SAME typed-data codec as the message it acknowledges —
+// `wire_detail` is the only msgpack coder in the tree and nothing bypasses it.
+// Correlation costs nothing extra: `seq` is already element [2] of the 5-tuple
+// envelope, so the receiver echoes the seq it processed and the sender can tell
+// its own receipt from a stale one left over from an earlier, timed-out send.
+// The payload is a single field: the ack code.
+namespace
+{
+const std::vector<ZmqSchemaField> &inbox_ack_fields()
+{
+    static const std::vector<ZmqSchemaField> f{{"uint8", 1, 0}};
+    return f;
+}
+const std::vector<wire_detail::WireFieldDesc> &inbox_ack_defs()
+{
+    static const std::vector<wire_detail::WireFieldDesc> d =
+        wire_detail::compute_field_layout(inbox_ack_fields(), "aligned").first;
+    return d;
+}
+
+/// Schema tag identifying an ACK frame.  Derived from the ack field list the
+/// same way every other tag is, so an ACK can never be mistaken for a data
+/// frame (or vice versa) — the receiver of either checks the tag before
+/// trusting the payload.  Computed once, on first use, after SecureSubsystem
+/// is up (both call sites run only after `start()`).
+const std::array<uint8_t, 8> &inbox_ack_tag()
+{
+    static const std::array<uint8_t, 8> t =
+        compute_inbox_schema_tag(inbox_ack_fields(), "aligned");
+    return t;
+}
+} // namespace
+
 static bool validate_inbox_packing(const std::string &packing, const std::string &endpoint)
 {
     if (packing != "aligned" && packing != "packed")
@@ -333,7 +391,23 @@ bool InboxQueue::start()
         // the ZapRouter can gate the first handshake.  Until
         // set_peer_allowlist seeds the hub roster, `allowlist_` is
         // nullptr → is_peer_allowed denies all (secure default).
-        if (!pImpl->identity_key_name_.empty())
+        // CURVE is not optional and there is no unarmed shape to fall back
+        // to.  This used to be `if (!identity_key_name_.empty())`, which
+        // silently built a PLAINTEXT ROUTER when the caller forgot to arm —
+        // an inbox listening with no authentication, reading as sanctioned
+        // because the branch looked deliberate.  Unreachable in production
+        // (`role_host_helpers.hpp` arms unconditionally) is not a guarantee;
+        // it is a backdoor nobody is watching.
+        if (pImpl->identity_key_name_.empty())
+        {
+            PLH_PANIC("InboxQueue::start: no CURVE identity armed for "
+                      "endpoint='{}'.  set_curve_server_identity() MUST be "
+                      "called before start() — an inbox ROUTER without CURVE "
+                      "would accept unauthenticated peers, and there is no "
+                      "plaintext inbox in this system (HEP-CORE-0027 §3.5, "
+                      "HEP-CORE-0035 §2).",
+                      pImpl->endpoint);
+        }
         {
             namespace sec = pylabhub::utils::security;
             // Shared CURVE-server arm (use-not-export) — same helper the broker
@@ -383,13 +457,22 @@ void InboxQueue::stop()
     if (!pImpl->running_.exchange(false, std::memory_order_acq_rel))
         return;
 
+    // Enter/exit pairs around each blocking step: this teardown runs while
+    // the ZAP pump thread is still live, so a stall here is only diagnosable
+    // if the log says which step was entered and never left.
+    LOGGER_INFO("[hub::InboxQueue] stop:enter endpoint='{}' zap_domain='{}'", pImpl->endpoint,
+                pImpl->zap_domain_);
+
     // Close the socket; shared context is owned by the ZMQContext lifecycle module.
     pImpl->socket.close();
+    LOGGER_INFO("[hub::InboxQueue] stop:socket-closed endpoint='{}'", pImpl->endpoint);
 
     // Unregister from the ZapRouter (RAII handle destructor); the domain
     // becomes free for a future re-bind.  After this the pump thread no
     // longer holds a reference to this InboxQueue's is_peer_allowed.
     pImpl->zap_handle_.reset();
+    LOGGER_INFO("[hub::InboxQueue] stop:exit endpoint='{}' zap_domain='{}'", pImpl->endpoint,
+                pImpl->zap_domain_);
 }
 
 bool InboxQueue::is_running() const noexcept
@@ -518,21 +601,33 @@ const InboxItem *InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
             return nullptr;
         }
 
-        // Per-sender sequence gap tracking.
+        // Per-sender sequence gap tracking.  The same subtraction feeds two
+        // consumers: the process-wide counter (an operator metric) and the
+        // per-message `gap` the receiving handler sees.  The handler needs it
+        // per message because "23 lost overall" cannot tell it WHICH state
+        // it is now missing; "3 lost right before this one" can.
         {
+            uint64_t gap = 0;
             auto it = pImpl->sender_expected_seq_.find(sender_id);
             if (it != pImpl->sender_expected_seq_.end())
             {
                 if (env.seq > it->second)
-                    pImpl->recv_gap_count_.fetch_add(env.seq - it->second,
-                                                     std::memory_order_relaxed);
+                {
+                    gap = env.seq - it->second;
+                    pImpl->recv_gap_count_.fetch_add(gap, std::memory_order_relaxed);
+                }
                 it->second = env.seq + 1;
             }
             else
             {
+                // First message from this sender — there is no previous
+                // sequence to measure against, so nothing is known to be
+                // missing.  Reporting `env.seq` here would brand every
+                // late-joining sender as lossy.
                 pImpl->sender_expected_seq_.emplace(sender_id, env.seq + 1);
             }
             pImpl->current_item_.seq = env.seq;
+            pImpl->current_item_.gap = gap;
         }
 
         // Decode payload fields.
@@ -582,14 +677,25 @@ void InboxQueue::send_ack(uint8_t code) noexcept
 
     try
     {
+        // Echo the seq of the message being acknowledged.  That is the whole
+        // point of framing the ACK: without it the sender cannot tell this
+        // receipt from one left over by an earlier send whose ACK wait timed
+        // out, and would report a stale code — including a stale SUCCESS —
+        // for a message the receiver never processed (§3.7).
+        msgpack::sbuffer sbuf;
+        msgpack::packer<msgpack::sbuffer> pk(sbuf);
+        const uint8_t ack_checksum[32]{}; // ACK carries no payload integrity of its own
+        wire_detail::pack_frame(pk, inbox_ack_tag(), pImpl->current_item_.seq, inbox_ack_defs(),
+                                &code, ack_checksum);
+
         zmq::multipart_t ack;
-        ack.addstr(id);                  // routing identity
-        ack.addstr("");                  // empty delimiter
-        ack.addmem(&code, sizeof(code)); // 1-byte ack code
+        ack.addstr(id);                       // routing identity
+        ack.addstr("");                       // empty delimiter
+        ack.addmem(sbuf.data(), sbuf.size()); // framed ACK (5-tuple, seq-correlated)
         if (!ack.send(pImpl->socket))
             ++pImpl->ack_send_error_count_;
     }
-    catch (const zmq::error_t &)
+    catch (const std::exception &)
     {
         ++pImpl->ack_send_error_count_;
     }
@@ -750,7 +856,15 @@ bool InboxClient::start()
         // Present the sender's identity keypair and pin the receiver's
         // identity pubkey (from ROLE_INFO_ACK) as curve_serverkey.  Mirror
         // of ZmqQueue's dialing-side pattern.
-        if (!pImpl->identity_key_name_.empty())
+        // Same invariant as the ROUTER side: an unarmed DEALER would send the
+        // payload in the clear to a peer it never authenticated.
+        if (pImpl->identity_key_name_.empty())
+        {
+            PLH_PANIC("InboxClient::start: no CURVE identity armed for "
+                      "endpoint='{}'.  set_curve_client_identity() MUST be "
+                      "called before start() (HEP-CORE-0027 §3.5).",
+                      pImpl->endpoint);
+        }
         {
             namespace sec = pylabhub::utils::security;
             auto &ks = sec::secure().keys();
@@ -788,8 +902,10 @@ void InboxClient::stop()
     if (!pImpl->running_.exchange(false, std::memory_order_acq_rel))
         return;
 
+    LOGGER_INFO("[hub::InboxClient] stop:enter endpoint='{}'", pImpl->endpoint);
     // Close socket; shared context stays up — owned by ZMQContext module.
     pImpl->socket.close();
+    LOGGER_INFO("[hub::InboxClient] stop:exit endpoint='{}'", pImpl->endpoint);
 }
 
 bool InboxClient::is_running() const noexcept
@@ -800,6 +916,16 @@ bool InboxClient::is_running() const noexcept
 size_t InboxClient::item_size() const noexcept
 {
     return pImpl ? pImpl->item_sz : 0;
+}
+
+uint64_t InboxClient::send_blocked_count() const noexcept
+{
+    return pImpl ? pImpl->send_blocked_count_.load(std::memory_order_relaxed) : 0;
+}
+
+uint64_t InboxClient::ack_stale_count() const noexcept
+{
+    return pImpl ? pImpl->ack_stale_count_.load(std::memory_order_relaxed) : 0;
 }
 
 // ============================================================================
@@ -832,9 +958,16 @@ uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
                                                             pImpl->item_sz);
     }
 
-    wire_detail::pack_frame(pk, pImpl->schema_tag_,
-                            pImpl->send_seq_.fetch_add(1, std::memory_order_relaxed),
-                            pImpl->schema_defs_, pImpl->write_buf_.data(), checksum);
+    // The sequence number is consumed here, BEFORE the send, and is NOT
+    // rolled back if the send is refused below.  That is deliberate: a
+    // dropped message leaves a hole, and the receiver's per-sender gap
+    // tracking (`recv_gap_count`) is how that loss becomes visible on the
+    // far side.  Renumbering densely on failure would make a lossy link
+    // look pristine — the sender would know it dropped traffic and the
+    // receiver never would.
+    const uint64_t sent_seq = pImpl->send_seq_.fetch_add(1, std::memory_order_relaxed);
+    wire_detail::pack_frame(pk, pImpl->schema_tag_, sent_seq, pImpl->schema_defs_,
+                            pImpl->write_buf_.data(), checksum);
 
     // DEALER sends [empty, payload]; ROUTER sees [identity, empty, payload].
     // multipart_t::send is atomic — every frame goes out or none.
@@ -847,14 +980,78 @@ uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
         pylabhub::utils::security::secure().random_bytes(meta, kInboxNonceLen);
         inbox_put_be64(meta + kInboxNonceLen, inbox_now_ms());
 
-        zmq::multipart_t out;
-        out.addstr("");                                       // empty delimiter
-        out.addmem(meta, kInboxMetaLen);                      // replay metadata
-        out.addmem(pImpl->sbuf_.data(), pImpl->sbuf_.size()); // payload
-        if (!out.send(pImpl->socket))
+        // `dontwait` is what makes this call bounded.  Without it libzmq's
+        // default ZMQ_SNDTIMEO of -1 retries forever whenever the DEALER has
+        // no writable peer, so a denied CURVE handshake or a departed peer
+        // parks the calling thread permanently — with no error, no timeout
+        // and no log.  That also made the documented `ack_timeout == 0`
+        // fire-and-forget contract false, because the block happened before
+        // this function ever read `ack_timeout`.
+        //
+        // The three parts are sent INDIVIDUALLY rather than through
+        // `zmq::multipart_t::send`, because which part fails changes what we
+        // must do next and that helper only reports a bool:
+        //
+        //   part 0 fails — no peer at all.  libzmq wrote nothing
+        //     (`lb_t::sendpipe` takes the `_active == 0` exit and returns -1).
+        //     Just report the drop.
+        //   part 1 or 2 fails — the peer died mid-message.  libzmq rolls back
+        //     what it wrote and enters DISCARD MODE: it silently eats every
+        //     following part, REPORTING SUCCESS, until one arrives without
+        //     SNDMORE.  If we stop here, discard mode is still armed and it
+        //     eats our NEXT message whole while telling us it was sent.  So
+        //     we push the remaining parts to clear it inside this message.
+        //
+        // Pushing the remainder on a part-0 failure would be the opposite
+        // bug: nothing was written, discard mode is NOT armed, so those parts
+        // would queue up and go out as a malformed 2-part message the moment
+        // a peer appears.  Hence the `first_part_sent` guard.
+        const std::array<zmq::const_buffer, 3> parts{
+            zmq::buffer("", 0),                                   // empty delimiter
+            zmq::buffer(meta, kInboxMetaLen),                     // replay metadata
+            zmq::buffer(pImpl->sbuf_.data(), pImpl->sbuf_.size()) // payload
+        };
+        auto part_flags = [&](std::size_t i)
         {
-            LOGGER_WARN("[hub::InboxClient] send to '{}' returned false (HWM?)", pImpl->endpoint);
+            return (i + 1 < parts.size())
+                       ? (zmq::send_flags::sndmore | zmq::send_flags::dontwait)
+                       : zmq::send_flags::dontwait;
+        };
+
+        std::size_t failed_at = parts.size();
+        for (std::size_t i = 0; i < parts.size(); ++i)
+        {
+            if (!pImpl->socket.send(parts[i], part_flags(i)))
+            {
+                failed_at = i;
+                break;
+            }
+        }
+
+        if (failed_at < parts.size())
+        {
+            // Clear libzmq's discard mode, but ONLY when a later part failed.
+            for (std::size_t i = failed_at + 1; failed_at > 0 && i < parts.size(); ++i)
+                (void)pImpl->socket.send(parts[i], part_flags(i));
+
+            pImpl->send_blocked_count_.fetch_add(1, std::memory_order_relaxed);
+            if (!pImpl->send_blocked_)
+            {
+                pImpl->send_blocked_ = true;
+                LOGGER_WARN("[hub::InboxClient] send:blocked endpoint='{}' part={} — no writable "
+                            "peer (receiver's inbox is full, or the peer is not connected / was "
+                            "denied).  Message dropped; further blocked sends are counted, not "
+                            "logged, until the path recovers",
+                            pImpl->endpoint, failed_at);
+            }
             return 255;
+        }
+        if (pImpl->send_blocked_)
+        {
+            pImpl->send_blocked_ = false;
+            LOGGER_INFO("[hub::InboxClient] send:recovered endpoint='{}' blocked_total={}",
+                        pImpl->endpoint,
+                        pImpl->send_blocked_count_.load(std::memory_order_relaxed));
         }
     }
     catch (const zmq::error_t &e)
@@ -867,35 +1064,86 @@ uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
     if (ack_timeout.count() <= 0)
         return 0;
 
-    // ROUTER reply: [identity, "", ack_byte]; DEALER strips the identity and
-    // sees ["", ack_byte]. Receive as one multipart — atomicity guaranteed.
-    const int ack_ms = static_cast<int>(ack_timeout.count());
-    if (ack_ms != pImpl->last_acktimeo)
+    // ROUTER reply: [identity, "", ack_frame]; DEALER strips the identity and
+    // sees ["", ack_frame].  The ACK is a full 5-tuple frame whose envelope
+    // `seq` echoes the message it acknowledges.
+    //
+    // Why the loop: a previous send whose ACK wait expired may still have its
+    // receipt in flight.  Without correlation that receipt would be read here
+    // and returned as THIS message's result — reporting a stale code, and
+    // since the only code production ever sends is 0, reporting stale SUCCESS
+    // for a message the receiver never processed.  So a receipt whose seq is
+    // not ours is discarded and we keep waiting, bounded by the caller's
+    // deadline rather than by a per-receive timeout.
+    const auto deadline = std::chrono::steady_clock::now() + ack_timeout;
+    for (;;)
     {
-        pImpl->socket.set(zmq::sockopt::rcvtimeo, ack_ms);
-        pImpl->last_acktimeo = ack_ms;
-    }
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline)
+        {
+            LOGGER_WARN("[hub::InboxClient] ACK timeout from '{}' (seq={})", pImpl->endpoint,
+                        sent_seq);
+            return 255;
+        }
+        const auto remaining =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+        // Never 0: that would turn the receive non-blocking and spin the loop.
+        const int wait_ms = static_cast<int>(remaining > 0 ? remaining : 1);
+        if (wait_ms != pImpl->last_acktimeo)
+        {
+            pImpl->socket.set(zmq::sockopt::rcvtimeo, wait_ms);
+            pImpl->last_acktimeo = wait_ms;
+        }
 
-    try
-    {
-        zmq::multipart_t reply;
-        if (!reply.recv(pImpl->socket))
+        try
         {
-            LOGGER_WARN("[hub::InboxClient] ACK timeout from '{}'", pImpl->endpoint);
+            zmq::multipart_t reply;
+            if (!reply.recv(pImpl->socket))
+            {
+                LOGGER_WARN("[hub::InboxClient] ACK timeout from '{}' (seq={})", pImpl->endpoint,
+                            sent_seq);
+                return 255;
+            }
+            if (reply.size() != 2)
+            {
+                LOGGER_WARN("[hub::InboxClient] malformed ACK from '{}' (frames={})",
+                            pImpl->endpoint, reply.size());
+                return 255;
+            }
+
+            msgpack::object_handle oh = msgpack::unpack(
+                static_cast<const char *>(reply[1].data()), reply[1].size());
+            const auto env = wire_detail::unpack_envelope(oh.get());
+            if (!env.valid || env.payload_size != inbox_ack_defs().size() ||
+                std::memcmp(env.recv_tag, inbox_ack_tag().data(), 8) != 0)
+            {
+                LOGGER_WARN("[hub::InboxClient] malformed ACK frame from '{}'", pImpl->endpoint);
+                return 255;
+            }
+
+            if (env.seq != sent_seq)
+            {
+                // A receipt for an earlier message, arriving after its wait
+                // expired.  Drop it and keep waiting for ours.
+                pImpl->ack_stale_count_.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+
+            uint8_t code = 255;
+            if (!wire_detail::unpack_payload(*env.payload, inbox_ack_defs(), &code))
+            {
+                LOGGER_WARN("[hub::InboxClient] undecodable ACK payload from '{}'",
+                            pImpl->endpoint);
+                return 255;
+            }
+            return code;
+        }
+        catch (const std::exception &e)
+        {
+            LOGGER_WARN("[hub::InboxClient] ACK recv error from '{}': {}", pImpl->endpoint,
+                        e.what());
             return 255;
         }
-        if (reply.size() != 2 || reply[1].size() != 1)
-        {
-            LOGGER_WARN("[hub::InboxClient] malformed ACK from '{}' (frames={})", pImpl->endpoint,
-                        reply.size());
-            return 255;
-        }
-        return *static_cast<const uint8_t *>(reply[1].data());
-    }
-    catch (const zmq::error_t &e)
-    {
-        LOGGER_WARN("[hub::InboxClient] ACK recv error from '{}': {}", pImpl->endpoint, e.what());
-        return 255;
     }
 }
 

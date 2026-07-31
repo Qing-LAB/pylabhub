@@ -4343,7 +4343,7 @@ void RoleAPIBase::drain_inbox_sync()
         if (has_handler)
         {
             eng->invoke_on_inbox(
-                InvokeInbox{item->data, iq->item_size(), item->sender_id, item->seq});
+                InvokeInbox{item->data, iq->item_size(), item->sender_id, item->seq, item->gap});
         }
 
         iq->send_ack(0);

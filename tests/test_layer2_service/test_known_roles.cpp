@@ -192,7 +192,7 @@ TEST(KnownRolesStoreTest, List_PreservesInsertionOrder)
 // `PubkeyOriginIndex` (HEP-CORE-0035 §4.2), which owns the projection
 // and additionally covers federation peers.  Both contracts this file
 // used to assert — every stored key is projected, and the result is
-// never `unrestricted` — are pinned in `test_pubkey_origin.cpp`
+// admit only configured keys — are pinned in `test_pubkey_origin.cpp`
 // (`AllowlistProjectsEveryKeyOfBothKinds`, `EmptyIndexResolvesNothing
 // AndDeniesAll`).  This store keeps only its operator-facing roster
 // duties, which is what the rest of this file covers.

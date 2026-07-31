@@ -361,6 +361,8 @@ struct PyInboxMsg
     py::object data{py::none()};
     std::string sender_uid;
     uint64_t seq{0};
+    /// Messages lost from this sender immediately before this one; 0 normally.
+    uint64_t gap{0};
 };
 
 // ── InboxHandle — Python-facing wrapper for hub::InboxClient ─────────────────

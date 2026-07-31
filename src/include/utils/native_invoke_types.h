@@ -55,6 +55,12 @@ typedef struct
     size_t data_size;
     const char *sender_uid; /**< Sender's role UID. */
     uint64_t seq;           /**< Sender's monotonic sequence number. */
+    /** Messages lost from this sender immediately before this one; 0 when
+     *  nothing is missing.  A full inbox drops rather than growing without
+     *  limit (HEP-CORE-0027 3.7); this is how the plugin learns of it, and
+     *  the response is the plugin's decision.  APPENDED field - plugins
+     *  built against the older struct are unaffected. */
+    uint64_t gap;
 } plh_inbox_msg_t;
 
 /* ============================================================================

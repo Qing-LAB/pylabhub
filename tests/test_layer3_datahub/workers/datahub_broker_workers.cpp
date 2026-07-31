@@ -1814,7 +1814,40 @@ int broker_sch_inbox_discovery_roundtrip()
                 {"uint64", 1, 0}, {"int32", 4, 0}, {"int16", 1, 0}, {"uint32", 1, 0}};
             auto q = hub::InboxQueue::bind_at("tcp://127.0.0.1:0", recv_schema, "packed");
             ASSERT_NE(q, nullptr);
+            // The queue exists here only to own a real bound endpoint for the
+            // receiver to advertise — no inbox traffic crosses it in this
+            // worker.  It still has to be CURVE-armed, because `start()`
+            // PANICs otherwise: there is no unarmed InboxQueue in this system
+            // (HEP-CORE-0027 §3.5).  Deny-all is the right allowlist here;
+            // nothing should be able to connect.
+            // NOTE: no ZapPumpThread here.  The broker stood up by
+            // `setup_broker_test` below already pumps ZAP for this process, and
+            // a second pumper PANICs on the single-pumper invariant
+            // (HEP-CORE-0036 §7.4).  The handshakes below ride that pump.
+            std::string inbox_recv_pub;
+            std::string inbox_send_pub;
+            {
+                std::array<char, 41> rpub{}, rsec{}, spub{}, ssec{};
+                ASSERT_EQ(::zmq_curve_keypair(rpub.data(), rsec.data()), 0);
+                ASSERT_EQ(::zmq_curve_keypair(spub.data(), ssec.data()), 0);
+                inbox_recv_pub.assign(rpub.data(), 40);
+                inbox_send_pub.assign(spub.data(), 40);
+                auto &ks = pylabhub::utils::security::secure().keys();
+                ks.add_identity_from_z85("sch_inbox_recv_id", inbox_recv_pub,
+                                         std::string(rsec.data(), 40));
+                ks.add_identity_from_z85("sch_inbox_send_id", inbox_send_pub,
+                                         std::string(ssec.data(), 40));
+                q->set_curve_server_identity("sch_inbox_recv_id", recv_uid + ":inbox");
+            }
             ASSERT_TRUE(q->start());
+            {
+                // Admit the sender: the inbox binds deny-all, so without this
+                // the discovered-schema delivery below would be denied at ZAP.
+                pylabhub::utils::security::PeerAllowlist inbox_allow;
+                inbox_allow.peers.insert(
+                    pylabhub::utils::security::PeerIdentity{"curve", inbox_send_pub});
+                ASSERT_TRUE(q->set_peer_allowlist(inbox_allow));
+            }
             const std::string inbox_ep = q->actual_endpoint();
             ASSERT_FALSE(inbox_ep.empty());
 
@@ -1875,6 +1908,7 @@ int broker_sch_inbox_discovery_roundtrip()
             auto c = hub::InboxClient::connect_to(inbox_ep, send_uid, discovered_fields,
                                                   discovered_spec.packing);
             ASSERT_NE(c, nullptr);
+            c->set_curve_client_identity("sch_inbox_send_id", inbox_recv_pub);
             ASSERT_TRUE(c->start());
 
             // Sender and receiver computed the same item size from the same

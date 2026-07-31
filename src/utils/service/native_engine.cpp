@@ -2376,7 +2376,7 @@ InvokeResult NativeEngine::invoke_on_inbox(InvokeInbox msg)
         }
         return InvokeResult::Error;
     }
-    plh_inbox_msg_t c_msg{msg.data, msg.data_size, msg.sender_uid.c_str(), msg.seq};
+    plh_inbox_msg_t c_msg{msg.data, msg.data_size, msg.sender_uid.c_str(), msg.seq, msg.gap};
     return fn_on_inbox_(&c_msg) ? InvokeResult::Commit : InvokeResult::Discard;
 }
 

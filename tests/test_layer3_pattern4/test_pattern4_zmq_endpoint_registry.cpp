@@ -371,9 +371,15 @@ TEST_F(Pattern4ZmqEndpointRegistryTest, EndpointChangeForbiddenWhenConsumerAdmit
     // The rejected change must NOT have mutated the record — discovery still
     // shows the original resolved endpoint.
     auto disc = discover(cons, channel);
-    if (disc.has_value())
-        EXPECT_EQ(disc->value("zmq_node_endpoint", std::string{}), ep_a)
-            << "rejected change must not mutate the stored endpoint; body=" << disc->dump();
+    // ASSERT, not `if (disc.has_value())`.  Guarding the check on discovery
+    // succeeding meant a failed discovery SKIPPED the assertion and the test
+    // still passed — it would have reported success in exactly the case where
+    // it learned nothing about whether the record was mutated.
+    ASSERT_TRUE(disc.has_value())
+        << "discovery must answer; without it this test verifies nothing about "
+           "whether the rejected update mutated the stored endpoint";
+    EXPECT_EQ(disc->value("zmq_node_endpoint", std::string{}), ep_a)
+        << "rejected change must not mutate the stored endpoint; body=" << disc->dump();
 
     broker.signal_quit();
 }

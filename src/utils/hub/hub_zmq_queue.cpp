@@ -12,6 +12,7 @@
  */
 #include "utils/hub_zmq_queue.hpp"
 #include "utils/context_metrics.hpp"
+#include "utils/debug_info.hpp" // PLH_PANIC — unarmed-CURVE invariant
 #include "utils/logger.hpp"
 #include "utils/loop_timing_policy.hpp" // kBrokerReadinessPollInterval (finalize_connect)
 
@@ -698,8 +699,18 @@ constexpr std::size_t kCurveKeyZ85Chars = 40;
 /// failure inside `start()` against a stale errno from an unrelated
 /// prior call.  Used by both `pull_from` (PULL/connect)
 /// and `push_to` (PUSH/bind).
+/// `server_pubkey_z85` and `bind_side` are ACCEPTED AND DELIBERATELY NOT
+/// CHECKED here.  They are not leftovers: an empty serverkey is a legal
+/// factory-time state (HEP-CORE-0036 §6.7 Standby), and the connect-side
+/// requirement is enforced later by `is_configured()`, which `start()` gates
+/// on.  Validating them here would refuse the Standby construction the design
+/// depends on.  They stay in the signature so every call site states the two
+/// facts that decide whether the check applies, and so this reasoning sits at
+/// the call site rather than only in the body.  See the block comment at the
+/// end of this function.
 std::string validate_curve_factory_params(std::string_view identity_key_name,
-                                          std::string_view server_pubkey_z85, bool bind_side)
+                                          [[maybe_unused]] std::string_view server_pubkey_z85,
+                                          [[maybe_unused]] bool bind_side)
 {
     // C1 (#157, HEP-CORE-0035 §2) + C4 (#160): CURVE is unconditional
     // on every role↔hub data path; the post-C4 public factories have
@@ -1839,14 +1850,27 @@ bool ZmqQueue::start()
             pImpl->socket.set(zmq::sockopt::sndhwm, pImpl->sndhwm);
 
         // ── PeerAdmission (HEP-CORE-0036 §7) — CURVE + ZAP wiring (HEP-CORE-0036 §6) ────
-        // Empty identity_key_name_ == legacy unauth path (reachable
-        // only via plaintext `pull_from`/`push_to` factories which
-        // never populate it).  HEP-CORE-0040 §172: keys are sourced
+        // HEP-CORE-0040 §172: keys are sourced
         // from `secure().keys()` by name — secret bytes flow from
         // LockedKey region directly into libzmq's internal CURVE
         // state inside `with_seckey` callback scope; no std::string
         // copy holds the seckey at queue scope.
-        if (!pImpl->identity_key_name_.empty())
+        // No unarmed shape exists.  The former `if (!empty())` guard was
+        // defended by a comment claiming the branch was "reachable only via
+        // plaintext pull_from/push_to factories" — but those public factories
+        // were DELETED in #160 (C4) (see hub_zmq_queue.hpp), and every public
+        // entry point now rejects an empty identity name.  The branch was
+        // therefore already unreachable, which is precisely what made it
+        // dangerous: nothing failed if a future path fell into it.
+        if (pImpl->identity_key_name_.empty())
+        {
+            PLH_PANIC("ZmqQueue::start: no CURVE identity armed for "
+                      "endpoint='{}'.  CURVE is unconditional on every "
+                      "role<->hub data path (HEP-CORE-0035 §2); a queue "
+                      "reaching start() unarmed means a construction path "
+                      "bypassed factory validation.",
+                      pImpl->endpoint);
+        }
         {
             namespace sec = pylabhub::utils::security;
             auto &ks = sec::secure().keys();
@@ -1973,11 +1997,12 @@ bool ZmqQueue::start()
             // affected.
             std::lock_guard<std::mutex> peers_lock(pImpl->producer_peers_mu_);
 
-            const bool curve_wired = !pImpl->identity_key_name_.empty();
-
+            // `curve_wired` used to gate this; start() now guarantees the
+            // queue is armed, so the only question left is whether THIS peer's
+            // pubkey is known yet (Standby peers arrive via REG_ACK).
             auto connect_one = [&](const std::string &pubkey_z85, const std::string &ep)
             {
-                if (curve_wired && !pubkey_z85.empty())
+                if (!pubkey_z85.empty())
                 {
                     pImpl->socket.set(zmq::sockopt::curve_serverkey, pubkey_z85);
                 }

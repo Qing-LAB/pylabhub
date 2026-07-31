@@ -16,7 +16,7 @@
  *     resolvable-either-way key would make every gate above it depend
  *     on config ordering;
  *   - the ZAP allowlist projection is derived from the index and is
- *     never unrestricted;
+ *     never empty when roles exist;
  *   - the inbox roster exposes local roles ONLY — handing a federation
  *     peer's key to the role-to-role plane would authorize the wrong
  *     plane (HEP-CORE-0027 §3.5).
@@ -133,7 +133,7 @@ TEST(PeerAuthority, AllowlistProjectsEveryKeyOfBothKinds)
     EXPECT_TRUE(al.contains(sec::PeerIdentity{sec::kCurveMechanism, key('b')}));
     EXPECT_TRUE(al.contains(sec::PeerIdentity{sec::kCurveMechanism, key('c')}));
     EXPECT_FALSE(al.contains(sec::PeerIdentity{sec::kCurveMechanism, key('z')}));
-    EXPECT_FALSE(al.unrestricted);
+    EXPECT_FALSE(al.is_deny_all());
 }
 
 TEST(PeerAuthority, InboxRosterExcludesFederationPeers)

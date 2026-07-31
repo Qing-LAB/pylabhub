@@ -142,3 +142,25 @@ TEST_F(InboxQueueTest, CurveUnknownSenderDenied)
     auto w = SpawnWorker("hub_inbox_queue.inbox_curve_unknown_denied");
     ExpectWorkerOk(w);
 }
+
+// A receiver stuck at its high-water mark must make send() FAIL, not block the
+// caller: libzmq reports a socket with no writable peer as EAGAIN, and its
+// default SNDTIMEO of -1 turns that into an unbounded wait.  The same EAGAIN
+// covers a peer that was denied or went away, which is how this surfaced —
+// as a 60s hang in CurveUnknownSenderDenied.  Also pins the log as
+// edge-triggered, so a peer that stays blocked cannot flood the log.
+TEST_F(InboxQueueTest, BackPressureIsBoundedAndEdgeLogged)
+{
+    auto w = SpawnWorker("hub_inbox_queue.inbox_backpressure_bounded_and_edge_logged");
+    ExpectWorkerOk(w);
+}
+
+// Each ACK carries the seq of the message it acknowledges (HEP-CORE-0027 §3.7).
+// Without that, a receipt whose send already timed out is read as the NEXT
+// message's result — and since 0 is the only code production emits, the caller
+// is handed a stale SUCCESS for work the receiver never did.
+TEST_F(InboxQueueTest, StaleAckIsNotAttributedToTheNextSend)
+{
+    auto w = SpawnWorker("hub_inbox_queue.inbox_stale_ack_not_attributed_to_next_send");
+    ExpectWorkerOk(w);
+}
