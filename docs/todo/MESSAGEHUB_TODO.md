@@ -731,6 +731,42 @@ the test strategy); (6) the federation input to #95's SCHEMA_REQ /
 METRICS_REQ keep-vs-delete survey.  Design anchors: HEP-0022, HEP-0037,
 HEP-0035 federation-trust, HEP-0033 §12.3, HEP-0047 §3.0.
 
+**(7) Added 2026-07-30 — a shape not to carry forward.  NOT a live hole.**
+Federation is unfinished scaffolding: no federation app, no federation
+config surface, contract never settled.  Nothing an operator can
+configure today reaches this code.  Recorded so the design does not
+inherit it, not as something to go fix.
+`broker_service.cpp` (federation outbound DEALER): a peer configured
+without a pubkey is wired PLAIN and connected anyway.  Setting none of
+the CURVE options leaves libzmq on the NULL mechanism, so the socket
+does not fail closed — it connects and sends in the clear.  The stated
+rationale is diagnostics-over-silence: the remote ROUTER rejects the
+unauthenticated handshake, so the operator sees `HANDSHAKE_FAILED_*`
+rather than a silent no-op.
+
+Why it is a gap and not a trade-off: that delegates a security property
+to a machine we do not control.  It holds only while the far end
+enforces.  A permissive or older peer means both ends talk plaintext
+indefinitely with nothing failing; a wrong endpoint (typo, recycled
+address, hostile listener) means we connect and begin sending to
+whoever answered, with no key to check them against.
+
+`FederationPeer::pubkey_z85` and `FederationPeerEntry::pubkey` both
+DOCUMENT the empty value as "no CURVE", and nothing validates it at
+config load — so it reads as a supported mode.  That is the same shape
+as the two backdoors closed in #90/#91: unreachable in practice,
+documented as legitimate, therefore unwatched by everyone.
+
+Left in place deliberately, per this section's own no-piecemeal-patches
+ruling — and hardening it would be its own mistake, since bolting a
+hard failure onto scaffolding whose contract does not exist bakes in an
+assumption the design has not made.  A full annotation sits at the code
+site.  When the design lands: a peer with an endpoint and no key cannot
+federate under any circumstances, so refusing it at config load beats
+connecting and hoping a monitor is watched; and "trusted peer hub" must
+resolve to real entries in `peers` from an authority, because the
+blanket-admit primitive is gone (#91) and is not coming back.
+
 ### Native engine inbox API parity gap (filed 2026-07-17; RE-SCOPED 2026-07-18)
 
 **CORRECTION (2026-07-18, verified against code):** the RECEIVE side is

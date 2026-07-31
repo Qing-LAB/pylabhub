@@ -1132,14 +1132,51 @@ void BrokerServiceImpl::run()
             ps->socket.set(zmq::sockopt::linger,
                            0); // policy: always LINGER=0; see §ZMQ socket policy
 
-            // HEP-CORE-0035 §2 — CURVE is unconditional on every wire.
-            // A federation peer configured without a pubkey cannot
-            // be reached (the remote broker's ROUTER will reject the
-            // unauthenticated handshake); the DEALER is wired plain
-            // and connect() proceeds so the diagnostic path
-            // (`HANDSHAKE_FAILED_*` on the monitor) surfaces the
-            // misconfiguration.  Federation peer pubkey enforcement
-            // is finalized in #105 (HEP-CORE-0037).
+            // ⚠ NOTE FOR THE FEDERATION DESIGN (task #69) — not a live hole.
+            //
+            // Federation is UNFINISHED SCAFFOLDING: there is no federation
+            // app, no federation config surface, and the hub↔hub contract was
+            // never settled.  Nothing an operator can configure today reaches
+            // this code, so this is a design note, not an exposure to go fix.
+            //
+            // What is here: a peer configured without a pubkey is wired PLAIN
+            // and connected anyway.  Setting none of the CURVE options leaves libzmq on the
+            // NULL mechanism (`options.cpp` selects the mechanism from
+            // whichever curve keys were set), so this socket does not fail
+            // closed — it connects and sends in the clear.
+            //
+            // The original rationale: the remote broker's ROUTER requires
+            // CURVE, will reject the unauthenticated handshake, and the
+            // operator sees `HANDSHAKE_FAILED_*` on the monitor instead of a
+            // silent no-op.  Diagnostics over silence is a fair instinct.
+            //
+            // Why it is still a gap: that argument delegates a security
+            // property to a machine we do not control.  It holds only while
+            // the far end enforces.  Two ways it does not:
+            //   - the peer is older or permissive → both ends talk plaintext
+            //     indefinitely, nothing fails, nothing warns;
+            //   - the endpoint is wrong (typo, recycled address, hostile
+            //     listener) → we connect and begin sending, and having no key
+            //     to check against, we cannot tell it is the wrong party.
+            //
+            // Note also that `FederationPeer::pubkey_z85` and
+            // `FederationPeerEntry::pubkey` both DOCUMENT the empty value as
+            // "no CURVE", and nothing validates it at config load — so this
+            // reads as a supported mode rather than a hole.  That is the same
+            // shape as the two backdoors closed in #90/#91: unreachable in
+            // practice, documented as legitimate, therefore unwatched.
+            //
+            // NOT fixed here, and deliberately not "hardened" either: adding
+            // a hard failure to scaffolding whose contract does not exist yet
+            // just bakes in an assumption the design has not made.  The point
+            // of this comment is to stop the shape being carried forward when
+            // federation IS designed — a peer with an endpoint and no key
+            // cannot federate under any circumstances, so refusing it at
+            // config load beats connecting and hoping a monitor is watched.
+            // Whatever the design settles on, "trusted peer hub" has to
+            // resolve to real entries in `peers` from an authority: the
+            // blanket-admit primitive is gone (#91) and is not coming back.
+            // See task #69 / HEP-CORE-0037.
             if (!peer_cfg.pubkey_z85.empty())
             {
                 // HEP-CORE-0040 §172: same use-not-export pattern as
