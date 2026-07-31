@@ -1,9 +1,7 @@
 # REVIEW — Security tree (shm / zmq / curve), completion pass
 
-**Status:** 🚧 IN PROGRESS — `src/utils/security/` complete; S-1..S-10 all ✅ FIXED.
-Remaining scope: `hub_shm_queue.cpp` (829 of 869 lines unread) and ~200 lines of
-`hub_zmq_queue.cpp` (`write_commit`, `create_reader`/`create_writer` dispatch,
-the recv/send thread bodies).
+**Status:** ✅ **READ COMPLETE** — every file in scope has been read.
+S-1..S-10 ✅ FIXED; S-11 ❌ OPEN (LOW, robustness, fix not yet approved).
 **Date:** 2026-07-30. **Task:** #92.
 **Scope:** the ~14,500 lines under `src/utils/security/`, `src/utils/hub/`,
 `src/include/utils/security/`.
@@ -75,6 +73,87 @@ stated contract · **LOW** = correctness/clarity, no security consequence.
 | S-8 | MED | `hub_zmq_queue.cpp:1813-2093` | ✅ FIXED 2026-07-31 |
 | S-9 | LOW | `hub_zmq_queue.cpp:2041-2068` | ✅ FIXED 2026-07-31 |
 | S-10 | MED | `key_file_acl.cpp` + `vault_crypto.cpp` + `hub_vault.cpp` | ✅ FIXED 2026-07-31 |
+| S-11 | LOW | `hub_zmq_queue.cpp:472-498` | ❌ OPEN |
+
+---
+
+### S-11 ❌ LOW — the send thread's retry loop ignores the shutdown signal it was handed
+
+`src/utils/hub/hub_zmq_queue.cpp:472-498`, `ZmqQueueImpl::run_send_thread_`.
+
+The thread body has two nested loops with **different** exit conditions:
+
+```cpp
+while (!ctx.shutdown_requested())          // outer — honours the ThreadManager signal
+{
+    ...
+    while (socket)                          // inner — EAGAIN retry
+    {
+        auto sr = socket.send(..., dontwait);
+        if (sr.has_value()) break;
+        if (send_stop_.load(...)) { ++send_drop_count_; break; }   // only this flag
+        ++send_retry_count_;
+        std::this_thread::sleep_for(send_retry_interval_ms_);
+        continue;                           // unbounded
+    }
+}
+```
+
+The inner loop checks `send_stop_` but **not** `ctx.shutdown_requested()`, and has
+no retry ceiling. `run_recv_thread_` checks both (`:307`), so this is an
+asymmetry between the two thread bodies rather than a house convention.
+
+**Why it does not hang today, and why that is the weak part.** Every teardown
+path reaches `ZmqQueue::stop()`, which sets `send_stop_` *before* calling
+`thread_mgr_->drain()` — and `~ZmqQueue` calls `stop()`. So the flag the inner
+loop does check is always set first. Correctness therefore rests on `stop()`'s
+internal ordering rather than on the loop honouring the signal it is passed.
+Reorder those two statements in `stop()`, or reach a drain by any route that
+does not go through `stop()`, and a producer retrying against a blocked peer
+never observes shutdown.
+
+That is precisely the state `stop()`'s own diagnostic anticipates:
+
+> "if this fires, the thread body is stuck in a libzmq op that ignored the stop
+> flag."
+
+**Not filed higher than LOW** because no live path reaches it: I could not
+construct one where `drain()` runs without `send_stop_` already set. It is a
+latent robustness gap, recorded so the next person changing `stop()`'s ordering
+knows what depends on it.
+
+**Fix direction (not applied — needs approval).** Have the inner loop test the
+same pair the outer one does, and give the retry a ceiling so a permanently
+blocked peer surfaces as a drop with a diagnostic rather than as a thread that
+looks busy forever.
+
+---
+
+### Observation — `ShmQueue` already has the state model S-8 wanted
+
+Not a finding; recorded because it is the convergence target for the other two
+queue classes.
+
+`ShmQueue` has **no `running_` flag at all**:
+
+```cpp
+bool ShmQueue::is_running() const noexcept
+{
+    return pImpl && (pImpl->dbc.get() != nullptr || pImpl->dbp.get() != nullptr);
+}
+```
+
+State is *derived from the resource* — a DataBlock is attached, or it is not.
+There is no separate boolean that can be left stale, so the S-8 failure is not
+merely fixed here, it is **unrepresentable**: a half-started `ShmQueue` cannot
+claim to be Active, because claiming to be Active requires actually holding the
+thing.
+
+`ZmqQueue`, `InboxQueue` and `InboxClient` each carry
+`std::atomic<bool> running_` and are guarded by scope guards (S-8). The guards
+are correct, but they defend a representation that still spells "Active" and
+"died halfway through starting" with the same bit. `ShmQueue` shows the shape
+that removes the question.
 
 ---
 
@@ -608,8 +687,8 @@ drawn about those files from this document.
 | `security/known_roles.cpp` | 326 | ✅ full | No findings. Strict parsing throughout: `require_string_or_empty` rejects a present-but-wrong-type field instead of silently coercing (`nlohmann::value(k, default)` returns the default for BOTH absent and wrong-type, which had masked `"pubkey_z85": null`); `validate_entry` refuses empty uid, empty pubkey, and any length != 40. The HEP-CORE-0036 §I10 one-pubkey-per-uid invariant correctly treats same-uid replacement as rotation rather than a duplicate. Its compile-time bypass is handled properly — see the observation below. |
 | `security/attach_channel_shm.cpp` | 193 | ✅ full | No findings. Length-prefixed framing with `kMaxAttachFrameBytes` enforced on BOTH send and recv, zero-length rejected, and the `std::vector<char> body(len)` allocation happens only AFTER the cap check — so a hostile length prefix cannot drive an allocation. `recv_all_until`/`send_all` re-evaluate the deadline every iteration, continue on EINTR, and treat `recv()==0` as an explicit peer-closed-mid-frame error rather than a short read. |
 | `security/shm_attach_orchestrator.cpp` | 243 | ✅ full | No findings — the best fail-closed reasoning in the tree; see the observation below. |
-| `hub/hub_zmq_queue.cpp` | 2632 | 🚧 ~2400 | S-8 + S-9 found. Read: the CURVE arm, `validate_curve_factory_params`, `connect_one`, and `apply_master_approval` (the trust entry point — it consumes broker-supplied JSON and configures identity + allowlist). That function validates array shape, fan-out cardinality (HEP-0017 §3.3.0 SUB has exactly one PUB), per-entry object-ness, `pubkey_z85` length 40, and DIALING-side endpoint presence; Standby fields are only filled when currently empty, so an Active queue is not mutated. The deferred-connect logic for fan-in DIALING PUSH correctly anticipates the ZAP race (connect before the peer's allowlist is seeded → terminal DENY) — the same class of bug as the inbox hang fixed earlier today. `start()` and `stop()` now read, no findings. `start()` puts the Standby gate BEFORE the `running_` exchange so a refused start can be retried, resolves the ZAP domain with explicit → instance_id → name@address fallbacks, seeds a deny-all allowlist ONLY when nothing populated one (clobbering would drop REG_ACK's `initial_allowlist` and leave an authenticated PUSH deny-all), and registers the domain BEFORE bind so an early peer connect cannot hit an unregistered domain and be denied while admission is in fact configured. `stop()` drains threads first, grace-polls detached ones for 5s, and logs honestly that a subsequent `~ZmqQueueImpl` would UAF a runaway thread rather than pretending otherwise. `finalize_connect` read — polls the readiness oracle with an explicit deadline and a cancellation hook, and treats `PermanentError` as fatal rather than retrying forever. `read_acquire`/`read_release`/`write_acquire` read — the ring copy is into a pre-allocated buffer (no per-item heap churn), and both overflow policies count a failed cycle into `data_drop_count_` rather than dropping silently. NOT read: `write_commit`, `create_reader`/`create_writer` topology dispatch, and the recv/send thread bodies (~200 lines). |
-| `hub/hub_shm_queue.cpp` | 869 | 🚧 ~40 (NEXT) | Only the flagged legacy-comment regions. |
+| `hub/hub_zmq_queue.cpp` | 2680 | ✅ full | S-7 + S-8 + S-9 + S-11 found. Read: the CURVE arm, `validate_curve_factory_params`, `connect_one`, and `apply_master_approval` (the trust entry point — it consumes broker-supplied JSON and configures identity + allowlist). That function validates array shape, fan-out cardinality (HEP-0017 §3.3.0 SUB has exactly one PUB), per-entry object-ness, `pubkey_z85` length 40, and DIALING-side endpoint presence; Standby fields are only filled when currently empty, so an Active queue is not mutated. The deferred-connect logic for fan-in DIALING PUSH correctly anticipates the ZAP race (connect before the peer's allowlist is seeded → terminal DENY) — the same class of bug as the inbox hang fixed earlier today. `start()` and `stop()` now read, no findings. `start()` puts the Standby gate BEFORE the `running_` exchange so a refused start can be retried, resolves the ZAP domain with explicit → instance_id → name@address fallbacks, seeds a deny-all allowlist ONLY when nothing populated one (clobbering would drop REG_ACK's `initial_allowlist` and leave an authenticated PUSH deny-all), and registers the domain BEFORE bind so an early peer connect cannot hit an unregistered domain and be denied while admission is in fact configured. `stop()` drains threads first, grace-polls detached ones for 5s, and logs honestly that a subsequent `~ZmqQueueImpl` would UAF a runaway thread rather than pretending otherwise. `finalize_connect` read — polls the readiness oracle with an explicit deadline and a cancellation hook, and treats `PermanentError` as fatal rather than retrying forever. `read_acquire`/`read_release`/`write_acquire` read — the ring copy is into a pre-allocated buffer (no per-item heap churn), and both overflow policies count a failed cycle into `data_drop_count_` rather than dropping silently. Recv thread read — checks both stop conditions, bounds the frame before decode, tracks ring overflow rather than dropping silently. Send thread read — S-11. Topology dispatch read: the fan-out SUB branch refuses an empty serverkey at the factory instead of deferring to `start()`, and its ordering `assert` is belt-and-braces over `start()`'s unconditional CURVE panic (the assert compiles out under NDEBUG; the panic does not). |
+| `hub/hub_shm_queue.cpp` | 869 | ✅ full | **No findings.** State is derived from the DataBlock pointer rather than a separate flag (see observation) — structurally immune to the S-8 class. Handles are real RAII (`~SlotWriteHandle` calls `release_write_handle`; the class doc sanctions destruction as a release path), so the early-return paths in `read_acquire`/`write_acquire` hold a slot until the next acquire but never leak it. `stop()` releases outstanding handles before tearing down the DataBlock, and clears the borrowed capability fd without closing it — correct, the L1 transport owns it. Both topology factories refuse fan-in with a reason citing the physical constraint rather than a bare error. |
 | `security/zap_router.cpp` | 781 | 🚧 partial | `pump_one`, domain register/unregister, `ZapPumpThread` read during the teardown work. |
 
 ---

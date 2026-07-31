@@ -24,6 +24,33 @@ removals from D2 / D3 drift batches).
 > `docs/archive/transient-2026-07-18/todo-completions/`.  #235 residual: L3 parity
 > regression tests → fold into **#232**.
 
+### #92 S-11 ❌ OPEN — send thread's EAGAIN retry ignores `ctx.shutdown_requested()`
+
+`src/utils/hub/hub_zmq_queue.cpp:472-498`.  `run_send_thread_`'s outer loop
+honours `ctx.shutdown_requested()`; the inner EAGAIN retry loop checks only
+`send_stop_`, and has no retry ceiling.  `run_recv_thread_` (`:307`) checks
+both, so this is an asymmetry between the two bodies, not a convention.
+
+No live hang: every teardown reaches `ZmqQueue::stop()`, which sets
+`send_stop_` *before* `drain()`, and `~ZmqQueue` calls `stop()`.  But that
+makes correctness depend on `stop()`'s statement ordering rather than on the
+loop honouring the signal it is given — exactly the state `stop()`'s own
+"stuck in a libzmq op that ignored the stop flag" diagnostic anticipates.
+
+Fix (needs approval): test the same pair the outer loop does, and cap the
+retries so a permanently blocked peer surfaces as a drop with a diagnostic
+instead of a thread that looks busy forever.
+
+### #92 — review READ COMPLETE 2026-07-31
+
+Every file in scope read.  `hub_shm_queue.cpp` (869 lines): **no findings**.
+Worth carrying forward — it has no `running_` flag at all; `is_running()` is
+derived from whether a DataBlock is attached, which makes the S-8 failure
+*unrepresentable* rather than merely fixed.  The three ZMQ-side queue classes
+each carry `std::atomic<bool> running_` guarded by scope guards; `ShmQueue`
+shows the shape that removes the question.  Candidate convergence target if the
+activation-state work in band 4 goes ahead.
+
 ### #92 S-10 ✅ FIXED 2026-07-31 — one implementation for HEP-0035 §4.6.1's protected-file write
 
 `key_file_acl.cpp` + `vault_crypto.cpp` + `hub_vault.cpp`.  §4.6.1 gave the
