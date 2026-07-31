@@ -24,7 +24,30 @@ removals from D2 / D3 drift batches).
 > `docs/archive/transient-2026-07-18/todo-completions/`.  #235 residual: L3 parity
 > regression tests → fold into **#232**.
 
-### #92 S-8 — `ZmqQueue::start()` leaves a failed start looking Active, and the retry reports success
+### #92 S-10 ✅ FIXED 2026-07-31 — one implementation for HEP-0035 §4.6.1's protected-file write
+
+`key_file_acl.cpp` + `vault_crypto.cpp` + `hub_vault.cpp`.  §4.6.1 gave the
+write recipe as a sentence; three call sites each typed it out and drifted.
+Only one called `fsync`, so the **vault** — the file whose loss costs an
+identity keypair — was the least durable of the three.  And
+`write_secure_file`'s Windows branch was `std::ofstream(trunc)`, so the
+refuse-to-overwrite guarantee its POSIX branch enforced with `O_EXCL`, and
+advertised in its own error text, did not exist on Windows.
+
+Collapsed into `security::write_keyfile(path, contents, role, policy)` —
+placed in the module that already owns `KeyFileRole` and the canonical modes,
+so "what mode should this be" and "how do I write it" cannot drift apart.
+`role` supplies the mode; `policy` picks Refuse (vault) vs atomic Replace
+(`hub.pubkey`, `known_roles.json`).  `publish_public_key` gains atomic
+replace — the old unlink-then-create left a window with no `hub.pubkey`.
+`set_owner_only_permissions` (path-based `chmod`, the S-2 shape) became dead
+and was deleted.  ~185 lines net removed.  HEP-0035 §4.6.1 updated to name the
+single implementation.
+
+Residual: Windows `Refuse` is an existence check, not atomic — needs
+`CreateFileW(CREATE_NEW)`, folded into **#120**.
+
+### #92 S-8 ✅ FIXED 2026-07-31 — `ZmqQueue::start()` aborted the process on a missing key
 
 `src/utils/hub/hub_zmq_queue.cpp:1813-2093`.  `start()` sets `running_ = true`
 *before* the work that can fail, then guards that work with only
@@ -41,12 +64,42 @@ connected, and `start()`'s own idempotence check (`:1790`) then returns **`true`
 on every retry.  A caller that fixes the key and retries gets a success report
 for a queue that will never carry a byte.
 
-Fix shape (needs approval before coding): make cleanup a scope guard rather than
-duplicated per-handler bodies that a future `throw` type can slip past — or only
-set `running_` on the success path.  Full write-up:
+**Worse than recorded, found while fixing:** `finalize_connect` is
+`noexcept override` (`hub_zmq_queue.hpp:534`) and tail-calls `start()`
+(`:1638`) — the HEP-CORE-0036 §6.6.3 deferred-connect path every fan-in
+producer takes.  So the escaping exception crossed a `noexcept` boundary and
+called `std::terminate`.
+
+**Then corrected by the regression test.**  This entry first claimed a
+mistyped key name in config would abort the process, and raised severity to
+HIGH on that basis.  It will not: `validate_curve_factory_params` calls
+`ks.has(name)` (`hub_zmq_queue.cpp:742`), so the factory returns nullptr and
+the queue is never built.  The first version of the test asserted the queue
+would construct, and failed — which is how the wrong premise surfaced.  The
+reachable window is construct → `KeyStore::remove` → `start()`, which is real
+(`remove` is public) but narrow.  **Severity is MED, not HIGH.**
+
+Fixed with both halves: `pylabhub::basics::make_scope_guard` owns the unwind
+(collapsing three duplicated cleanup blocks into one that no unenumerated
+`throw` can skip), plus a terminal `catch (const std::exception &)` +
+`catch (...)` so `start()` is non-throwing in fact, not by convention.
+Debug 2725/2725, Release 2722/2722.  Full write-up:
 `docs/code_review/REVIEW_SecurityTree_2026-07-30.md` § S-8.
 
-### #92 S-9 — the CURVE engagement guard's comment claims a guarantee the code cannot give
+Pinned by `ZmqQueueAuthTest.FailedStart_LeavesQueueStandby_AndRetryStillFails`
+(L2, Pattern 3).  The load-bearing assertion is the SECOND `start()`: before
+the fix `running_` stayed set, so the idempotence check reported success for a
+queue that had never bound.  The parent declares the expected ERROR substring
+**twice**, which additionally pins that the retry re-attempts the arm rather
+than short-circuiting.
+
+Guard shape propagated to `InboxQueue::start()` and `InboxClient::start()`
+(2026-07-31).  Neither carried the crash — both already had
+`catch (const std::exception &)` — but both hand-duplicated cleanup across two
+handlers with no `catch (...)`, which is the shape that produced S-8.  All
+three `start()` functions now read the same.
+
+### #92 S-9 ✅ FIXED 2026-07-31 — the CURVE engagement guard's comment claimed a guarantee the code cannot give
 
 `src/utils/hub/hub_zmq_queue.cpp:2041-2068`.  The comment says it asks libzmq
 "what mechanism this socket **negotiated**".  `ZMQ_MECHANISM` returns
@@ -55,9 +108,11 @@ configuration field written by our own setsockopts, never by the handshake.  At
 line 2050 `connect()` has not even produced a TCP connection yet, so there is no
 negotiation to report.
 
-The guard is worth keeping (it does prove the CURVE setsockopts took effect), but
-it cannot detect a failed or downgraded handshake.  Fix = correct the comment; a
-real negotiated check is the socket-monitor work in **#93**
+The guard is kept — it does prove the CURVE setsockopts took effect, a real
+regression class — but the comment now says it checks *configuration*, cites
+`options.cpp:1159`, notes `connect()` is asynchronous so nothing is negotiated
+yet, and states that it cannot detect a failed or downgraded handshake.  A real
+negotiated check is the socket-monitor work in **#93**
 (`ZMQ_EVENT_HANDSHAKE_SUCCEEDED` / `ZMQ_EVENT_HANDSHAKE_FAILED_*`).
 
 ### #89 — SMS expansion + vault design (retained key, script vault, config reload)

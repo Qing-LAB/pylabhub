@@ -215,8 +215,68 @@ resolve_keyfile_path(const std::string &keyfile, const std::filesystem::path &ba
 keyfile_inside_base_dir(const std::string &keyfile, const std::filesystem::path &base_dir,
                         std::string *out_canonicalize_error = nullptr) noexcept;
 
+/// What `write_keyfile` does when @p path already exists.
+enum class ExistingFilePolicy : int
+{
+    /// Fail rather than replace.  For payloads where clobbering is
+    /// itself the accident to prevent — a vault holds the only copy of
+    /// an identity keypair, so overwriting one is unrecoverable.
+    Refuse,
+
+    /// Atomically replace via a sibling temp + `rename(2)`.  For files
+    /// a CLI operation legitimately republishes (`hub.pubkey` on
+    /// re-keygen, `known_roles.json` on edit).  Readers see either the
+    /// old content or the new one, never a partial write and never a
+    /// window with no file at all.
+    Replace,
+};
+
+/// Write @p contents to @p path at the canonical mode for @p role,
+/// following HEP-CORE-0035 §4.6.1: `open(O_CREAT|O_EXCL, mode)` then an
+/// explicit `fchmod` — never trusting the process `umask`, and never
+/// `chmod`-ing a path (which would follow a planted symlink and
+/// re-mode someone else's file).
+///
+/// **This is the one place that recipe is written.**  It used to be
+/// prose in the HEP, typed out by hand in three places that then
+/// drifted: only `atomic_write_owner_only_file` called `fsync`, so the
+/// *vault* — the most important file in the system — was the least
+/// durable of the three; and `write_secure_file`'s Windows branch used
+/// `std::ofstream(trunc)`, so its POSIX "refuses to overwrite"
+/// guarantee silently did not exist there.  A recipe that must be
+/// retyped is a recipe that diverges.
+///
+/// @param role  Supplies the mode: `VaultFile` 0600, `PublicKeyFile`
+///   0644, `VaultDir` 0700.  `ConfigFile` /
+///   `ConfigFileReferencingVault` have no canonical mode (the operator
+///   owns those) and throw `std::invalid_argument` — writing one
+///   through this function would be asserting an authority we do not
+///   have.
+/// @param policy See `ExistingFilePolicy`.
+///
+/// Throws `std::runtime_error` on any I/O failure, with the path and
+/// errno detail.  Never leaves a partial file: `Refuse` unlinks on
+/// failure, `Replace` fails before the rename so @p path keeps its
+/// previous content.
+///
+/// Windows caveat, stated rather than hidden: `Refuse` is enforced by
+/// an existence check before the write, not atomically as POSIX
+/// `O_EXCL` is.  A racing creator between the check and the write is
+/// not detected.  This is still strictly stronger than the previous
+/// behaviour, which truncated without checking at all.  Closing the
+/// gap needs `CreateFileW(CREATE_NEW)` and belongs with the Windows
+/// hardening in #120.
+PYLABHUB_UTILS_EXPORT void write_keyfile(const std::filesystem::path &path,
+                                         std::string_view contents, KeyFileRole role,
+                                         ExistingFilePolicy policy);
+
 /// Atomically write @p contents to @p path, ending with a regular
 /// file at mode 0600 owned by the calling euid.
+///
+/// Thin forwarder to `write_keyfile(path, contents, <0600>,
+/// ExistingFilePolicy::Replace)`.  Kept because `known_roles.json` is
+/// an owner-only *data* file rather than any `KeyFileRole` — naming it
+/// `VaultFile` to reach the same 0600 would be a lie in the call.
 ///
 /// Pattern (POSIX):
 ///   1. Build `tmp_path = <path>.tmp` and unlink any pre-existing

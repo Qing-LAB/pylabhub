@@ -95,6 +95,27 @@ TEST_F(ZmqQueueAuthTest, Swap_BlocksOldPeer_PinsData)
     ExpectWorkerOk(w);
 }
 
+// S-8 (review 2026-07-31): a start() that fails because its identity key
+// is absent from the KeyStore must leave the queue in Standby — and the
+// RETRY must still fail.  The retry is the assertion that matters: before
+// the fix `running_` was left set, so start()'s idempotence check reported
+// success for a queue that had never bound.
+TEST_F(ZmqQueueAuthTest, FailedStart_LeavesQueueStandby_AndRetryStillFails)
+{
+    auto w = SpawnWorker("zmq_queue_auth.auth_failed_start_does_not_leave_queue_active",
+                         {unique_dir("auth_failed_start_does_not_leave_queue_active")});
+
+    // TWO entries, deliberately.  `expect_worker_ok` pairs expected error
+    // substrings against ERROR lines as a multiset — each entry consumes
+    // exactly one line — so declaring two asserts that BOTH start() calls
+    // ran the arm and failed.  That is a second pin on the regression: if
+    // the retry ever short-circuits on a stale `running_` again, only one
+    // ERROR line appears and the unmatched entry fails the test.
+    const std::string kAbsentKeyErr =
+        "KeyStore::pubkey: name not present: 's8-key-removed-after-build'";
+    ExpectWorkerOk(w, /*required_substrings=*/{}, {kAbsentKeyErr, kAbsentKeyErr});
+}
+
 TEST_F(ZmqQueueAuthTest, SetPeerAllowlist_OnPullSide_ReturnsFalse)
 {
     auto w = SpawnWorker("zmq_queue_auth.auth_set_peer_allowlist_on_pull_side_returns_false",

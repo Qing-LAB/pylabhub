@@ -111,8 +111,8 @@ TEST_F(PlhHubCliTest, KeygenEmitsNote_WhenPreExistingPubkeyRemoved)
     write_minimal_config(cfg_path, dir, overrides);
 
     // Pre-plant a sentinel hub.pubkey BEFORE --keygen runs.  The
-    // binary's publish_public_key path will encounter an existing
-    // path and unlink it, triggering the stderr note.
+    // binary's publish_public_key path will find an existing file and
+    // emit the stderr note before atomically replacing it.
     const fs::path pubkey_path = dir / "hub.pubkey";
     {
         std::ofstream sentinel(pubkey_path);
@@ -124,10 +124,13 @@ TEST_F(PlhHubCliTest, KeygenEmitsNote_WhenPreExistingPubkeyRemoved)
     WorkerProcess p(plh_hub_binary(), "--config", {cfg_path.string(), "--keygen"});
     EXPECT_EQ(p.wait_for_exit(), 0) << "stderr:\n" << p.get_stderr();
 
-    // The note text from hub_vault.cpp publish_public_key.  Pin
-    // both the literal "pre-existing hub.pubkey" + the
-    // "was removed before publish" phrase so a partial-rewording
-    // refactor is caught.
+    // The note text from hub_vault.cpp publish_public_key.  These
+    // assertions pin the OPERATOR SIGNAL — "something was already
+    // here, and it is being replaced" — not the mechanism that does
+    // the replacing.  That distinction is load-bearing: when the
+    // publish moved from unlink-then-create to atomic rename the note
+    // was accidentally dropped, and these assertions are what caught
+    // it.  Reword the mechanism freely; do not drop the signal.
     EXPECT_NE(p.get_stderr().find("pre-existing hub.pubkey"), std::string::npos)
         << "stderr should contain the B2 observability note; got:\n"
         << p.get_stderr();

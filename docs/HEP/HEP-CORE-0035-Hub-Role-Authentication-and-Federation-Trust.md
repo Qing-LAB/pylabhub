@@ -762,9 +762,41 @@ user-writable directory.  Mode 0700 + euid-owner match apply to
 the vault directory wherever it lives.  Mode discipline is
 independent of placement.
 
-Implementation: use `open(O_CREAT | O_EXCL, 0600)` followed by an
-explicit `fchmod(fd, 0600)` at write time.  Do NOT rely on the
-process `umask`.
+Implementation: use `open(O_CREAT | O_EXCL, <mode>)` followed by an
+explicit `fchmod(fd, <mode>)` at write time, then `fsync` before
+close.  Do NOT rely on the process `umask`.  Never `chmod` a path —
+a symlink planted at that path would have the mode applied to its
+target, tightening someone else's file while leaving this one
+unprotected.  Operate on a descriptor obtained with `O_NOFOLLOW`.
+
+**This recipe has exactly one implementation:
+`security::write_keyfile(path, contents, role, policy)`.  Protected
+files are written through it; nothing re-implements it.**
+
+The mode comes from `KeyFileRole` — the enum form of the table above
+— so a caller states *what kind of file* it is writing and cannot
+choose a mode that contradicts this section.  `policy` selects
+between refusing to overwrite (vault payloads: a vault holds the
+only copy of an identity keypair, so clobbering one is
+unrecoverable) and atomic replace via `rename(2)` (files a CLI
+operation legitimately republishes, such as `hub.pubkey` on
+re-keygen).
+
+The single-implementation rule is not tidiness.  While this
+paragraph was prose alone, three call sites each typed it out, and
+they drifted: only one called `fsync`, so the **vault** — the file
+whose loss costs an identity keypair — was the least durable of the
+three; and one Windows branch used a truncating `ofstream`, so the
+refuse-to-overwrite guarantee its POSIX branch enforced with
+`O_EXCL` did not exist on that platform at all.  Neither divergence
+was intended by anyone; both were the ordinary result of a rule that
+had to be retyped to be obeyed.
+
+Windows: `Refuse` is enforced by an existence check before the
+write rather than atomically, so a racing creator between check and
+write is not detected.  This is a stated limitation, not an
+oversight; closing it needs `CreateFileW(CREATE_NEW)` and is tracked
+with the rest of the Windows hardening under task #120.
 
 ### 4.6.2 Startup verification (every `plh_hub` / `plh_role` invocation)
 

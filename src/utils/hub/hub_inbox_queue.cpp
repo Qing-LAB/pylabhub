@@ -15,6 +15,7 @@
 #include "utils/hub_inbox_queue.hpp"
 #include "utils/debug_info.hpp" // PLH_PANIC — unarmed-CURVE invariant
 #include "utils/logger.hpp"
+#include "utils/scope_guard.hpp" // make_scope_guard — start() failure unwind
 #include "utils/zmq_context.hpp"
 #include "utils/zmq_socket_policy.hpp"   // send_multipart_atomic (house ZMQ rules)
 #include "utils/curve_socket.hpp"              // arm_curve_server / arm_curve_client
@@ -383,6 +384,20 @@ bool InboxQueue::start()
     if (pImpl->running_.exchange(true, std::memory_order_acq_rel))
         return true; // lost race
 
+    // `running_` is true from here, so every exit that is not a completed
+    // start must put it back.  One guard owns that, rather than each
+    // `catch` handler repeating it — see ZmqQueue::start for the failure
+    // this shape prevents (a throw of a type nobody enumerated skipping
+    // the cleanup, leaving the queue Active-looking with nothing bound,
+    // after which the idempotence check reports success on every retry).
+    auto start_guard = pylabhub::basics::make_scope_guard(
+        [impl = pImpl.get()]() noexcept
+        {
+            impl->zap_handle_.reset();
+            impl->socket.close();
+            impl->running_.store(false, std::memory_order_release);
+        });
+
     try
     {
         pImpl->socket = zmq::socket_t(pylabhub::hub::get_zmq_context(), zmq::socket_type::router);
@@ -441,24 +456,28 @@ bool InboxQueue::start()
         pImpl->socket.bind(pImpl->endpoint);
         pImpl->actual_ep = pImpl->socket.get(zmq::sockopt::last_endpoint);
     }
+    // Each handler below returns false and lets `start_guard` unwind on the
+    // way out; they differ only in the diagnostic they can offer.
     catch (const zmq::error_t &e)
     {
-        pImpl->zap_handle_.reset();
-        pImpl->socket.close();
-        pImpl->running_.store(false);
         LOGGER_ERROR("[hub::InboxQueue] socket setup failed for '{}': {}", pImpl->endpoint,
                      e.what());
         return false;
     }
     catch (const std::exception &e)
     {
-        pImpl->zap_handle_.reset();
-        pImpl->socket.close();
-        pImpl->running_.store(false);
         LOGGER_ERROR("[hub::InboxQueue] CURVE arm failed for '{}': {}", pImpl->endpoint, e.what());
         return false;
     }
+    catch (...)
+    {
+        LOGGER_ERROR("[hub::InboxQueue] start failed for '{}': unknown exception",
+                     pImpl->endpoint);
+        return false;
+    }
 
+    // Bound, armed and registered — the one path that keeps `running_`.
+    start_guard.dismiss();
     return true;
 }
 
@@ -596,10 +615,10 @@ const InboxItem *InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
 
     try
     {
-        msgpack::object_handle oh =
-            msgpack::unpack(static_cast<const char *>(payload.data()), payload.size());
+        auto frame = wire_detail::decode_frame(payload.data(), payload.size(),
+                                               pImpl->schema_defs_.size());
 
-        auto env = wire_detail::unpack_envelope(oh.get());
+        const auto &env = frame.env;
         if (!env.valid || env.payload_size != pImpl->schema_defs_.size())
         {
             ++pImpl->recv_frame_error_count_;
@@ -853,6 +872,16 @@ bool InboxClient::start()
     if (pImpl->running_.exchange(true, std::memory_order_acq_rel))
         return true; // lost race
 
+    // Same contract as InboxQueue::start and ZmqQueue::start: one guard
+    // owns the unwind so no exit path can leave `running_` set on a queue
+    // that never connected.
+    auto start_guard = pylabhub::basics::make_scope_guard(
+        [impl = pImpl.get()]() noexcept
+        {
+            impl->socket.close();
+            impl->running_.store(false, std::memory_order_release);
+        });
+
     try
     {
         pImpl->socket = zmq::socket_t(pylabhub::hub::get_zmq_context(), zmq::socket_type::dealer);
@@ -888,20 +917,24 @@ bool InboxClient::start()
     }
     catch (const zmq::error_t &e)
     {
-        pImpl->socket.close();
-        pImpl->running_.store(false);
         LOGGER_ERROR("[hub::InboxClient] socket setup failed for '{}': {}", pImpl->endpoint,
                      e.what());
         return false;
     }
     catch (const std::exception &e)
     {
-        pImpl->socket.close();
-        pImpl->running_.store(false);
         LOGGER_ERROR("[hub::InboxClient] CURVE arm failed for '{}': {}", pImpl->endpoint, e.what());
         return false;
     }
+    catch (...)
+    {
+        LOGGER_ERROR("[hub::InboxClient] start failed for '{}': unknown exception",
+                     pImpl->endpoint);
+        return false;
+    }
 
+    // Connected and armed — the one path that keeps `running_`.
+    start_guard.dismiss();
     return true;
 }
 
@@ -1085,9 +1118,9 @@ uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
                 return 255;
             }
 
-            msgpack::object_handle oh = msgpack::unpack(
-                static_cast<const char *>(reply[1].data()), reply[1].size());
-            const auto env = wire_detail::unpack_envelope(oh.get());
+            const auto frame = wire_detail::decode_frame(reply[1].data(), reply[1].size(),
+                                                         inbox_ack_defs().size());
+            const auto &env = frame.env;
             if (!env.valid || env.payload_size != inbox_ack_defs().size() ||
                 std::memcmp(env.recv_tag, inbox_ack_tag().data(), 8) != 0)
             {

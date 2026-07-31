@@ -1147,6 +1147,72 @@ int auth_null_mech_client_handshake_fails(const char * /*tmpdir*/)
 
 // ── Dispatcher + registrar ─────────────────────────────────────────────────
 
+// ── S-8 regression: a failed start must not leave the queue Active ─────────
+//
+// `start()` sets `running_ = true` BEFORE the work that can fail.  Its
+// original handler list was `std::invalid_argument` + `zmq::error_t`, and
+// `KeyStore::pubkey` throws `std::out_of_range` for a name that is not in
+// the store — neither of those.  The cleanup was skipped and the queue was
+// left `running_ == true` with nothing bound.
+//
+// Reaching that throw needs the key to go missing AFTER construction:
+// `validate_curve_factory_params` calls `ks.has(name)`, so a queue can
+// never be BUILT naming an absent key (the factory returns nullptr).  The
+// window is construct → `KeyStore::remove` → `start()`, and `remove` is
+// public API.  Narrow, but the consequence is not: `finalize_connect` is
+// `noexcept` and tail-calls `start()`, so an escaping throw crosses a
+// `noexcept` boundary into `std::terminate`.
+//
+// The assertion that distinguishes fixed from unfixed is the SECOND
+// `start()`.  `start()` opens with `if (running_) return true; // already
+// running`, so before the fix the retry reported SUCCESS for a queue that
+// had never bound.  A test checking only the first call would pass either
+// way.
+//
+// Design source: HEP-CORE-0036 §6.7 — a queue is Active only once its
+// socket is bound/connected.  "Half-started" is not a state the API may
+// report as Active.
+int auth_failed_start_does_not_leave_queue_active(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            constexpr const char *kKeyName = "s8-key-removed-after-build";
+            const auto [pub, sec_key] = make_keypair();
+            pylabhub::utils::security::secure().keys().add_identity_from_z85(kKeyName, pub,
+                                                                            sec_key);
+
+            auto q = ZmqQueue::push_to("tcp://127.0.0.1:0", make_uint32_schema(), "aligned",
+                                       /*identity_key_name=*/kKeyName,
+                                       /*zap_domain=*/"test.zmq.s8.removed.key",
+                                       /*bind=*/true);
+            ASSERT_NE(q, nullptr) << "factory must accept a key that IS present";
+
+            // The key goes away before start() runs.  `KeyStore::pubkey`
+            // will now throw std::out_of_range from inside start().
+            pylabhub::utils::security::secure().keys().remove(kKeyName);
+
+            EXPECT_FALSE(q->start()) << "start() must fail — and must not let the "
+                                        "std::out_of_range escape, since finalize_connect() "
+                                        "is noexcept and tail-calls start()";
+            EXPECT_FALSE(q->is_running()) << "a failed start must leave the queue in Standby, "
+                                             "not Active-looking";
+            EXPECT_EQ(q->mechanism(), pylabhub::hub::Mechanism::Uninitialized)
+                << "no CURVE mechanism may be reported for a queue that never armed";
+
+            EXPECT_FALSE(q->start()) << "S-8: the retry must still fail.  Before the fix "
+                                        "`running_` was left set, so start()'s idempotence "
+                                        "check returned true here — reporting success for a "
+                                        "queue that had never bound";
+            EXPECT_FALSE(q->is_running());
+        },
+        "zmq_queue_auth::auth_failed_start_does_not_leave_queue_active",
+        Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(),
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule(),
+        pylabhub::hub::GetZMQContextModule());
+}
+
 int dispatch_zmq_queue_auth(int argc, char **argv)
 {
     if (argc < 2)
@@ -1193,6 +1259,8 @@ int dispatch_zmq_queue_auth(int argc, char **argv)
         return auth_misconfig_factory_returns_nullptr(tmpdir);
     if (scenario == "auth_null_mech_client_handshake_fails")
         return auth_null_mech_client_handshake_fails(tmpdir);
+    if (scenario == "auth_failed_start_does_not_leave_queue_active")
+        return auth_failed_start_does_not_leave_queue_active(tmpdir);
     std::fprintf(stderr, "zmq_queue_auth: unknown scenario '%s'\n", scenario.c_str());
     return 1;
 }

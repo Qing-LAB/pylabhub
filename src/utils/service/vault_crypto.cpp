@@ -5,6 +5,7 @@
 #include "vault_crypto.hpp"
 #include "plh_platform.hpp"
 #include "utils/security/secure_subsystem.hpp"
+#include "utils/security/key_file_acl.hpp" // write_keyfile — HEP-0035 §4.6.1 recipe
 
 #include <cerrno>
 #include <cstdint>
@@ -34,150 +35,23 @@ namespace pylabhub::utils::detail
 namespace
 {
 
-/// Set file to owner-only access (equivalent to chmod 0600).
-/// On POSIX this uses std::filesystem::permissions; on Windows it sets a DACL
-/// granting GENERIC_ALL only to the current user.
-void set_owner_only_permissions(const fs::path &path)
-{
-#if defined(PYLABHUB_PLATFORM_WIN64)
-    // Build SDDL: Owner=current user, DACL=only owner has full access.
-    // "D:P(A;;GA;;;OW)" = DACL Protected, Allow Generic All to Owner.
-    // We use the SID of the current process token for precision.
-    HANDLE token = nullptr;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
-        return;
-
-    DWORD len = 0;
-    GetTokenInformation(token, TokenUser, nullptr, 0, &len);
-    std::vector<uint8_t> buf(len);
-    if (!GetTokenInformation(token, TokenUser, buf.data(), len, &len))
-    {
-        CloseHandle(token);
-        return;
-    }
-    CloseHandle(token);
-
-    auto *user = reinterpret_cast<TOKEN_USER *>(buf.data());
-    PSID sid = user->User.Sid;
-
-    EXPLICIT_ACCESS_W ea{};
-    ea.grfAccessPermissions = GENERIC_ALL;
-    ea.grfAccessMode = SET_ACCESS;
-    ea.grfInheritance = NO_INHERITANCE;
-    ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
-    ea.Trustee.ptstrName = reinterpret_cast<LPWSTR>(sid);
-
-    PACL acl = nullptr;
-    if (SetEntriesInAclW(1, &ea, nullptr, &acl) == ERROR_SUCCESS)
-    {
-        SetNamedSecurityInfoW(const_cast<wchar_t *>(path.wstring().c_str()), SE_FILE_OBJECT,
-                              DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                              nullptr, nullptr, acl, nullptr);
-        LocalFree(acl);
-    }
-#else
-    fs::permissions(path, fs::perms::owner_read | fs::perms::owner_write,
-                    fs::perm_options::replace);
-#endif
-}
-
 void write_secure_file(const fs::path &path, const std::vector<uint8_t> &data)
 {
-#if defined(PYLABHUB_PLATFORM_WIN64)
-    // Windows: retain the existing pattern (ofstream + DACL set via
-    // SetNamedSecurityInfoW).  O_NOFOLLOW + atomic mode-at-create are
-    // POSIX-specific contracts; on Windows the threat model defers to
-    // OS-level ACLs managed by an operator-installed service account.
-    {
-        std::ofstream ofs(path, std::ios::binary | std::ios::trunc);
-        if (!ofs)
-        {
-            throw std::runtime_error("vault: cannot write: " + path.string());
-        }
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-        ofs.write(reinterpret_cast<const char *>(data.data()),
-                  static_cast<std::streamsize>(data.size()));
-        if (!ofs)
-        {
-            throw std::runtime_error("vault: write failed: " + path.string());
-        }
-    } // flush + close before chmod
-    set_owner_only_permissions(path);
-#else
-    // POSIX atomic-secure write (HEP-CORE-0035 §4.6.1).  Single open(2)
-    // call carries the three security contracts as kernel-enforced
-    // atomic guards:
-    //   O_CREAT  — create iff absent.
-    //   O_EXCL   — fail with EEXIST if a file is already at path (the
-    //              no-overwrite contract; closes the TOCTOU window the
-    //              prior fs::exists() check left open).
-    //   O_NOFOLLOW — refuse to traverse a symlink at the final path
-    //              component (closes the symlink-redirect attack
-    //              where the parent dir is briefly writable and the
-    //              attacker plants a symlink to a target they read).
-    //   O_CLOEXEC — don't leak the fd across exec(2).
-    //   mode=0600 — owner-only at create time (subject to umask;
-    //              followed by an explicit fchmod below to neutralize
-    //              any pathological umask that would mask owner bits).
-    const int fd = ::open(path.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC,
-                          S_IRUSR | S_IWUSR);
-    if (fd < 0)
-    {
-        const int err = errno;
-        if (err == EEXIST)
-            throw std::runtime_error("vault: file already exists at '" + path.string() +
-                                     "' — refusing to overwrite (atomic O_EXCL guard, "
-                                     "HEP-CORE-0035 §4.6.1)");
-        if (err == ELOOP)
-            throw std::runtime_error("vault: '" + path.string() +
-                                     "' is a symbolic link — "
-                                     "refusing to follow (atomic O_NOFOLLOW guard, "
-                                     "HEP-CORE-0035 §4.6.1)");
-        throw std::runtime_error("vault: cannot create '" + path.string() +
-                                 "': " + std::strerror(err));
-    }
-    // Belt-and-braces: enforce mode 0600 regardless of umask.  Under
-    // a normal umask (0022, 0077) the open above already produces
-    // 0600; a pathological umask (e.g. 0177) would mask out OWNER_WRITE
-    // and the subsequent write(2) would EBADF.  fchmod normalizes.
-    if (::fchmod(fd, S_IRUSR | S_IWUSR) != 0)
-    {
-        const int err = errno;
-        ::close(fd);
-        ::unlink(path.c_str());
-        throw std::runtime_error("vault: fchmod 0600 failed for '" + path.string() +
-                                 "': " + std::strerror(err));
-    }
-    // Single write(2) — short-write loop is unnecessary for our
-    // payload sizes (<4KB typical, <64KB max) but we still guard.
-    const auto *buf = data.data();
-    std::size_t remaining = data.size();
-    while (remaining > 0)
-    {
-        const ssize_t n = ::write(fd, buf, remaining);
-        if (n < 0)
-        {
-            if (errno == EINTR)
-                continue;
-            const int err = errno;
-            ::close(fd);
-            ::unlink(path.c_str());
-            throw std::runtime_error("vault: write failed for '" + path.string() +
-                                     "': " + std::strerror(err));
-        }
-        buf += n;
-        remaining -= static_cast<std::size_t>(n);
-    }
-    if (::close(fd) != 0)
-    {
-        const int err = errno;
-        // File is on disk with the data we wrote; do NOT unlink on
-        // close failure — that could destroy a successful write whose
-        // failure was a benign EINTR-during-close (rare but legal).
-        throw std::runtime_error("vault: close failed for '" + path.string() +
-                                 "': " + std::strerror(err));
-    }
-#endif
+    // HEP-CORE-0035 §4.6.1's write recipe lives in exactly one place now
+    // (`security::write_keyfile`).  This function used to spell it out
+    // by hand, and the hand-written copy had drifted in two ways: it
+    // never called `fsync`, so the vault — the file whose loss costs an
+    // identity keypair — was the least durable of the three writers in
+    // the tree; and its Windows branch was `std::ofstream(trunc)`, which
+    // silently overwrote, so the "refuses to overwrite" guarantee the
+    // POSIX branch enforced with O_EXCL did not exist there at all.
+    //
+    // `Refuse` preserves the property this function has always promised
+    // on POSIX: a vault is never silently clobbered.
+    namespace sec = pylabhub::utils::security;
+    sec::write_keyfile(path,
+                       std::string_view(reinterpret_cast<const char *>(data.data()), data.size()),
+                       sec::KeyFileRole::VaultFile, sec::ExistingFilePolicy::Refuse);
 }
 
 std::vector<uint8_t> read_file(const fs::path &path)

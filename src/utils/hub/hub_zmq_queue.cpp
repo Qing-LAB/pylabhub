@@ -15,6 +15,7 @@
 #include "utils/debug_info.hpp" // PLH_PANIC — unarmed-CURVE invariant
 #include "utils/logger.hpp"
 #include "utils/loop_timing_policy.hpp" // kBrokerReadinessPollInterval (finalize_connect)
+#include "utils/scope_guard.hpp"        // make_scope_guard — start() failure unwind
 
 #include <nlohmann/json.hpp>
 #include "portable_atomic_shared_ptr.hpp"
@@ -336,10 +337,10 @@ struct ZmqQueueImpl
 
             try
             {
-                msgpack::object_handle oh =
-                    msgpack::unpack(static_cast<const char *>(msg.data()), msg.size());
+                auto frame =
+                    wire_detail::decode_frame(msg.data(), msg.size(), schema_defs_.size());
 
-                auto env = wire_detail::unpack_envelope(oh.get());
+                const auto &env = frame.env;
                 if (!env.valid || env.payload_size != schema_defs_.size())
                 {
                     ++recv_frame_error_count_;
@@ -1813,6 +1814,27 @@ bool ZmqQueue::start()
     if (pImpl->running_.exchange(true, std::memory_order_acq_rel))
         return true; // lost race — another thread started it
 
+    // `running_` is true from here on, so every exit path that is not a
+    // completed start has to put it back.  That obligation belongs to one
+    // scope guard rather than to each `catch` handler.
+    //
+    // It used to be written out per-handler, and the handler list was
+    // `std::invalid_argument` + `zmq::error_t`.  `KeyStore::pubkey` throws
+    // `std::out_of_range` for a name that is not in the store — neither of
+    // those — so a queue naming a key the vault never loaded skipped the
+    // cleanup entirely and was left `running_ == true` with nothing bound.
+    // The idempotence check at the top of this function then returned
+    // `true` on every retry, reporting success for a queue that could
+    // never carry a byte.  A guard cannot be defeated by a throw whose
+    // type nobody thought to enumerate.
+    auto start_guard = pylabhub::basics::make_scope_guard(
+        [impl = pImpl.get()]() noexcept
+        {
+            impl->socket.close();
+            impl->mechanism_.store(Mechanism::Uninitialized, std::memory_order_release);
+            impl->running_.store(false, std::memory_order_release);
+        });
+
     try
     {
         // Socket-type selection: mode × pattern (HEP-CORE-0017 §3.3.0).
@@ -2039,8 +2061,21 @@ bool ZmqQueue::start()
         }
 
         // ── CURVE engagement guard (HEP-CORE-0035 §2 + #161 C5) ─────────
-        // After all CURVE setsockopts and bind/connect have completed,
-        // ask libzmq directly what mechanism this socket negotiated.
+        // Ask libzmq which mechanism this socket is CONFIGURED for.
+        //
+        // `ZMQ_MECHANISM` returns `options.mechanism` (libzmq
+        // `options.cpp:1159`) — a local field written by our own
+        // `curve_publickey` / `curve_secretkey` / `curve_server`
+        // setsockopts.  It is never written by the handshake, and
+        // `connect()` is asynchronous, so at this point there is no peer
+        // and nothing has been negotiated.  This check therefore proves
+        // the CURVE setsockopts took effect rather than being silently
+        // ignored — a real regression class, and the one the C-chain
+        // cares about — but it CANNOT detect a failed or downgraded
+        // handshake.  Observing an actual negotiated mechanism needs the
+        // socket monitor (`ZMQ_EVENT_HANDSHAKE_SUCCEEDED` /
+        // `ZMQ_EVENT_HANDSHAKE_FAILED_*`), which is task #93.
+        //
         // The whole C-chain exists to make CURVE unconditional on
         // every role↔hub data path; if libzmq reports anything other
         // than CURVE we have a wiring regression — fail the start
@@ -2068,27 +2103,40 @@ bool ZmqQueue::start()
         }
         pImpl->mechanism_.store(Mechanism::Curve, std::memory_order_release);
     }
+    // Every handler below returns false and lets `start_guard` close the
+    // socket and put the queue back in Standby on the way out.  They differ
+    // only in the diagnostic they can offer.
     catch (const std::invalid_argument &e)
     {
-        // specific, caller-actionable diagnostic for auth
-        // misconfiguration that slipped past factory validation OR
-        // (post-#161) the CURVE engagement guard at the bottom of
-        // the try block.  The queue did not start; reset the
-        // observable mechanism so `mechanism()` reflects the closed
-        // state.
-        pImpl->socket.close();
-        pImpl->mechanism_.store(Mechanism::Uninitialized, std::memory_order_release);
-        pImpl->running_.store(false, std::memory_order_release);
+        // Caller-actionable auth misconfiguration that slipped past factory
+        // validation, or the CURVE engagement guard at the bottom of the
+        // try block.
         LOGGER_ERROR("[hub::ZmqQueue] auth setup failed for '{}': {}", pImpl->endpoint, e.what());
         return false;
     }
     catch (const zmq::error_t &e)
     {
-        pImpl->socket.close();
-        pImpl->mechanism_.store(Mechanism::Uninitialized, std::memory_order_release);
-        pImpl->running_.store(false, std::memory_order_release);
         LOGGER_ERROR("[hub::ZmqQueue] socket setup ({}) failed for '{}': {}",
                      pImpl->bind_socket ? "bind" : "connect", pImpl->endpoint, e.what());
+        return false;
+    }
+    catch (const std::exception &e)
+    {
+        // Everything else.  `KeyStore::pubkey`'s `std::out_of_range` for an
+        // identity name that is not in the store is the known member of
+        // this set.
+        //
+        // This handler is not optional.  `finalize_connect()` is declared
+        // `noexcept` and tail-calls `start()`, so an exception leaving here
+        // does not merely fail the start — it crosses a `noexcept` boundary
+        // and calls `std::terminate`.  `start()` has to be non-throwing in
+        // fact, not just by convention.
+        LOGGER_ERROR("[hub::ZmqQueue] start failed for '{}': {}", pImpl->endpoint, e.what());
+        return false;
+    }
+    catch (...)
+    {
+        LOGGER_ERROR("[hub::ZmqQueue] start failed for '{}': unknown exception", pImpl->endpoint);
         return false;
     }
 
@@ -2171,9 +2219,8 @@ bool ZmqQueue::start()
 
     if (!worker_started)
     {
-        pImpl->socket.close();
-        pImpl->mechanism_.store(Mechanism::Uninitialized, std::memory_order_release);
-        pImpl->running_.store(false, std::memory_order_release);
+        // `start_guard` is still armed — it closes the socket and returns
+        // the queue to Standby on the way out.
         LOGGER_ERROR("[hub::ZmqQueue] {} thread spawn refused for '{}' (endpoint '{}'); "
                      "start() fails rather than reporting Active with no thread "
                      "servicing the socket",
@@ -2181,6 +2228,10 @@ bool ZmqQueue::start()
                      pImpl->bind_socket ? pImpl->actual_endpoint : pImpl->endpoint);
         return false;
     }
+
+    // Socket is bound/connected and a worker is servicing it — this is the
+    // one path on which the queue keeps `running_ == true`.
+    start_guard.dismiss();
 
     // HEP-CORE-0036 §6.7 — queue has bound/connected its socket and
     // spawned its worker thread.  Pair-marker to Standby->Configured

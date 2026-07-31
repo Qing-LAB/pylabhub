@@ -626,28 +626,28 @@ SetModeResult set_keyfile_mode(const fs::path &path, KeyFileRole role, int *out_
 #endif
 }
 
-// ── atomic_write_owner_only_file ────────────────────────────────────────────
+// ── write_keyfile / atomic_write_owner_only_file ────────────────────────────
 
-void atomic_write_owner_only_file(const fs::path &path, std::string_view contents)
+namespace
 {
+
 #ifdef _WIN32
-    // Windows: best-effort atomic via temp file + MoveFileExW
-    // (MOVEFILE_REPLACE_EXISTING).  DACL set via SetNamedSecurityInfoW
-    // to grant owner full access only.  Matches the
-    // publish_public_key fallback shape in hub_vault.cpp.
+/// Windows owner-only write: temp file + DACL granting the calling user
+/// full access only + `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`.
+/// Atomicity is best-effort on NTFS.  Deduplicated when #120 hardens the
+/// Windows path.
+void win32_write_owner_only(const fs::path &path, std::string_view contents)
+{
     const fs::path tmp_path = path.string() + ".tmp";
     {
         std::ofstream ofs(tmp_path, std::ios::binary | std::ios::trunc);
         if (!ofs)
-            throw std::runtime_error("atomic_write_owner_only_file: cannot open tmp '" +
-                                     tmp_path.string() + "'");
+            throw std::runtime_error("write_keyfile: cannot open tmp '" + tmp_path.string() + "'");
         ofs.write(contents.data(), static_cast<std::streamsize>(contents.size()));
         if (!ofs)
-            throw std::runtime_error("atomic_write_owner_only_file: write failed for tmp '" +
-                                     tmp_path.string() + "'");
+            throw std::runtime_error("write_keyfile: write failed for tmp '" + tmp_path.string() +
+                                     "'");
     }
-    // Set DACL: owner-only.  (Same pattern as set_owner_only_permissions
-    // in vault_crypto.cpp; deduplicated when #120 hardens Windows path.)
     HANDLE token = nullptr;
     if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
     {
@@ -676,42 +676,32 @@ void atomic_write_owner_only_file(const fs::path &path, std::string_view content
         CloseHandle(token);
     }
     if (!MoveFileExW(tmp_path.wstring().c_str(), path.wstring().c_str(), MOVEFILE_REPLACE_EXISTING))
-        throw std::runtime_error("atomic_write_owner_only_file: MoveFileExW failed for '" +
-                                 path.string() + "'");
+        throw std::runtime_error("write_keyfile: MoveFileExW failed for '" + path.string() + "'");
+}
 #else
-    // POSIX atomic-replace pattern (HEP-CORE-0035 §4.6.1 spirit):
-    // tmp file with O_CREAT|O_EXCL|O_NOFOLLOW + 0600, then rename(2)
-    // for atomic replacement.  Unlike write_secure_file (which has
-    // strict no-overwrite semantics for vault payloads), this helper
-    // is for files that legitimately get overwritten by CLI ops
-    // (known_roles.json, future configuration shards).
-    const fs::path tmp_path = path.string() + ".tmp";
-    // Best-effort unlink of any stale tmp.  ENOENT is fine; ELOOP /
-    // EACCES will surface at the open(O_EXCL) below with a precise
-    // errno.
-    ::unlink(tmp_path.c_str());
-
-    const int fd =
-        ::open(tmp_path.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC | O_TRUNC,
-               S_IRUSR | S_IWUSR);
-    if (fd < 0)
+/// Normalize the mode against a hostile `umask`, write every byte, make
+/// it durable, and close — unlinking @p cleanup_path on any failure so
+/// no partial file is ever left behind.  Takes ownership of @p fd.
+///
+/// `fsync` before close is what makes the subsequent `rename(2)` a real
+/// commit: without it the rename can survive a power cut while the data
+/// pages are still only in the page cache, leaving a correctly-named
+/// file with garbage in it.  Only one of the three original writers did
+/// this; now all of them do.
+void write_all_and_close_or_unlink(int fd, const fs::path &target, const fs::path &cleanup_path,
+                                   std::string_view contents, int mode_bits, const char *who)
+{
+    const auto fail = [&](const char *what, int err) -> std::runtime_error
     {
-        const int err = errno;
-        if (err == ELOOP)
-            throw std::runtime_error("atomic_write_owner_only_file: tmp '" + tmp_path.string() +
-                                     "' is a symbolic link — refusing to follow "
-                                     "(O_NOFOLLOW)");
-        throw std::runtime_error("atomic_write_owner_only_file: cannot create tmp '" +
-                                 tmp_path.string() + "': " + std::strerror(err));
-    }
-    if (::fchmod(fd, S_IRUSR | S_IWUSR) != 0)
-    {
-        const int err = errno;
         ::close(fd);
-        ::unlink(tmp_path.c_str());
-        throw std::runtime_error("atomic_write_owner_only_file: fchmod 0600 failed for '" +
-                                 tmp_path.string() + "': " + std::strerror(err));
-    }
+        ::unlink(cleanup_path.c_str());
+        return std::runtime_error(std::string{who} + ": " + what + " failed for '" +
+                                  target.string() + "': " + std::strerror(err));
+    };
+
+    if (::fchmod(fd, static_cast<mode_t>(mode_bits)) != 0)
+        throw fail("fchmod", errno);
+
     const char *buf = contents.data();
     std::size_t remaining = contents.size();
     while (remaining > 0)
@@ -721,35 +711,128 @@ void atomic_write_owner_only_file(const fs::path &path, std::string_view content
         {
             if (errno == EINTR)
                 continue;
-            const int err = errno;
-            ::close(fd);
-            ::unlink(tmp_path.c_str());
-            throw std::runtime_error("atomic_write_owner_only_file: write failed for '" +
-                                     tmp_path.string() + "': " + std::strerror(err));
+            throw fail("write", errno);
         }
         buf += n;
         remaining -= static_cast<std::size_t>(n);
     }
-    // fsync ensures the data is durable before the rename — without
-    // it, the rename could complete and survive a power-loss while
-    // the file's data pages are still in the page cache.  Best
-    // effort: EIO from fsync still proceeds to rename, but logs it.
+
     (void)::fsync(fd);
+
     if (::close(fd) != 0)
     {
         const int err = errno;
-        ::unlink(tmp_path.c_str());
-        throw std::runtime_error("atomic_write_owner_only_file: close failed for '" +
-                                 tmp_path.string() + "': " + std::strerror(err));
+        ::unlink(cleanup_path.c_str());
+        throw std::runtime_error(std::string{who} + ": close failed for '" + target.string() +
+                                 "': " + std::strerror(err));
     }
+}
+#endif
+
+/// The single implementation of HEP-CORE-0035 §4.6.1's write recipe.
+/// `write_keyfile` and `atomic_write_owner_only_file` are both thin
+/// callers; nothing else in the tree should open a protected file for
+/// writing by hand.
+void write_protected_file(const fs::path &path, std::string_view contents, uint32_t mode,
+                          ExistingFilePolicy policy)
+{
+#ifdef _WIN32
+    // Refuse is a pre-check here, not an atomic guarantee — see the
+    // Windows caveat on `write_keyfile`.  It replaces a branch that
+    // truncated unconditionally, so the check is a strict improvement
+    // even though it is not race-free.
+    if (policy == ExistingFilePolicy::Refuse && fs::exists(path))
+    {
+        throw std::runtime_error("write_keyfile: file already exists at '" + path.string() +
+                                 "' — refusing to overwrite");
+    }
+    (void)mode; // Windows uses the DACL below, not POSIX mode bits.
+    win32_write_owner_only(path, contents);
+#else
+    const int mode_bits = static_cast<int>(mode);
+
+    if (policy == ExistingFilePolicy::Refuse)
+    {
+        // Write the target directly under O_EXCL: the kernel's
+        // create-or-fail IS the no-clobber guarantee, so there is no
+        // check-then-act window for a racing creator to slip through.
+        const int fd = ::open(path.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC,
+                              static_cast<mode_t>(mode_bits));
+        if (fd < 0)
+        {
+            const int err = errno;
+            if (err == EEXIST)
+                throw std::runtime_error("write_keyfile: file already exists at '" + path.string() +
+                                         "' — refusing to overwrite (atomic O_EXCL guard, "
+                                         "HEP-CORE-0035 §4.6.1)");
+            if (err == ELOOP)
+                throw std::runtime_error("write_keyfile: '" + path.string() +
+                                         "' is a symbolic link — refusing to follow "
+                                         "(atomic O_NOFOLLOW guard, HEP-CORE-0035 §4.6.1)");
+            throw std::runtime_error("write_keyfile: cannot create '" + path.string() +
+                                     "': " + std::strerror(err));
+        }
+        write_all_and_close_or_unlink(fd, path, path, contents, mode_bits, "write_keyfile");
+        return;
+    }
+
+    // Replace: sibling temp + rename(2).  rename is atomic on POSIX
+    // even when the target exists, so a reader sees the old file or the
+    // new one — never a partial write, and never a missing file (which
+    // an unlink-then-create sequence would expose).
+    const fs::path tmp_path = path.string() + ".tmp";
+    ::unlink(tmp_path.c_str()); // best-effort; ENOENT is fine
+
+    const int fd =
+        ::open(tmp_path.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC | O_TRUNC,
+               static_cast<mode_t>(mode_bits));
+    if (fd < 0)
+    {
+        const int err = errno;
+        if (err == ELOOP)
+            throw std::runtime_error("write_keyfile: tmp '" + tmp_path.string() +
+                                     "' is a symbolic link — refusing to follow (O_NOFOLLOW)");
+        throw std::runtime_error("write_keyfile: cannot create tmp '" + tmp_path.string() +
+                                 "': " + std::strerror(err));
+    }
+    write_all_and_close_or_unlink(fd, tmp_path, tmp_path, contents, mode_bits, "write_keyfile");
+
     if (::rename(tmp_path.c_str(), path.c_str()) != 0)
     {
         const int err = errno;
         ::unlink(tmp_path.c_str());
-        throw std::runtime_error("atomic_write_owner_only_file: rename to '" + path.string() +
+        throw std::runtime_error("write_keyfile: rename to '" + path.string() +
                                  "' failed: " + std::strerror(err));
     }
 #endif
 }
+
+} // namespace
+
+void write_keyfile(const fs::path &path, std::string_view contents, KeyFileRole role,
+                   ExistingFilePolicy policy)
+{
+    const uint32_t mode = required_mode_for(role);
+    if (mode == 0)
+    {
+        // ConfigFile / ConfigFileReferencingVault. The operator owns
+        // those modes (see `required_mode_for`), so this function has no
+        // mode to assert and must not invent one.
+        throw std::invalid_argument(
+            std::string{"write_keyfile: role '"} + role_label(role) +
+            "' has no canonical mode — the operator owns config-file permissions "
+            "(HEP-CORE-0035 §4.6.1); use a caller-chosen write path instead");
+    }
+    write_protected_file(path, contents, mode, policy);
+}
+
+void atomic_write_owner_only_file(const fs::path &path, std::string_view contents)
+{
+    // known_roles.json is an owner-only DATA file, not a KeyFileRole —
+    // 0600 is passed directly rather than borrowing `VaultFile` to
+    // reach the same number.
+    write_protected_file(path, contents, kVaultFileMode, ExistingFilePolicy::Replace);
+}
+
 
 } // namespace pylabhub::utils::security

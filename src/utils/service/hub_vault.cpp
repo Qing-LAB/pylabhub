@@ -328,195 +328,51 @@ void HubVault::save(const fs::path &vault_path, const std::string &hub_uid,
 void HubVault::publish_public_key(const fs::path &hub_dir) const
 {
     const fs::path pubkey_path = hub_dir / "hub.pubkey";
-#if defined(PYLABHUB_PLATFORM_WIN64)
-    {
-        std::ofstream ofs(pubkey_path, std::ios::trunc);
-        if (!ofs)
-        {
-            throw std::runtime_error("HubVault: cannot write hub.pubkey: " + pubkey_path.string());
-        }
-        ofs << broker_curve_public_key();
-        if (!ofs)
-        {
-            throw std::runtime_error("HubVault: write failed: " + pubkey_path.string());
-        }
-    }
-#else
-    // POSIX integrity-hardened write (HEP-CORE-0035 §4.6.4 expansion
-    // 2026-06-01): the pubkey file is intentionally world-readable
-    // (0644) — confidentiality is not the goal — but INTEGRITY is.
-    // An attacker who can briefly write inside hub_dir could plant a
-    // symlink at `hub.pubkey` redirecting writes to an attacker-chosen
-    // target (federation-trust hijack: `cp <hub-dir>/hub.pubkey
-    // <role-dir>/` would then propagate the wrong material).
+
+    // The pubkey is intentionally world-readable (0644) — confidentiality
+    // is not the goal here — but INTEGRITY is.  An attacker who can
+    // briefly write inside hub_dir could plant a symlink at `hub.pubkey`
+    // redirecting the write to a target of their choosing, which would
+    // then propagate as federation trust material when the operator
+    // copies the file to a role directory.  `write_keyfile` refuses to
+    // follow a symlink (O_NOFOLLOW) and normalizes the mode with
+    // `fchmod` on the fd rather than `chmod` on the path.
     //
-    // Atomicity guarantee, exact flags as written below:
-    //   - O_CREAT + O_EXCL   : open(2) fails with EEXIST if any path
-    //                          component exists at pubkey_path.  This
-    //                          is the lock that prevents writing onto
-    //                          a path an attacker has under their
-    //                          control between our pre-clean unlink
-    //                          and our create.  NB: the lock is only
-    //                          as strong as the parent dir's mode —
-    //                          an attacker without write-on-parent
-    //                          cannot plant anything to race against.
-    //                          The hub-dir parent is operator-managed,
-    //                          not 0700-enforced like VaultDir; if
-    //                          you're adding a new auth surface that
-    //                          uses this pattern under stricter
-    //                          attacker assumptions, pair it with
-    //                          `verify_keyfile_acl(parent, VaultDir)`
-    //                          per HEP-CORE-0035 §4.6.4 precondition.
-    //   - O_NOFOLLOW         : refuses to traverse a symlink at the
-    //                          FINAL component.  Closes the redirect
-    //                          attack even if O_EXCL would not (we
-    //                          unlink first, but O_NOFOLLOW is the
-    //                          defense-in-depth catch).
-    //   - O_WRONLY + O_CLOEXEC : write-only fd, not inherited by exec.
-    //   - mode 0644 : atomic at create + normalized by fchmod below
-    //                 (matches HEP-CORE-0035 §4.6.1 PublicKeyFile).
+    // This used to be ~90 lines of hand-written open/fchmod/write/close
+    // here — a second copy of HEP-CORE-0035 §4.6.1's recipe, differing
+    // from the vault's copy only in the mode.  `KeyFileRole` already
+    // carried that difference, so both collapse to one call.
     //
-    // O_TRUNC is INTENTIONALLY ABSENT.  We do NOT overwrite in place.
-    // Re-keygen replace works via the explicit unlink-then-O_EXCL
-    // pattern below, NOT via O_TRUNC.  A future "harmonization" that
-    // adds O_TRUNC and drops O_EXCL would silently undo the redirect
-    // defense — the lock is O_EXCL, not the unlink.
+    // `Replace` supersedes the previous unlink-then-create: `rename(2)`
+    // is atomic, so a reader now sees either the old pubkey or the new
+    // one.  The old sequence left a window in which `hub.pubkey` did not
+    // exist at all, and a re-keygen that failed mid-write left it that
+    // way.
+    // Operator-visible note when we are about to overwrite an existing
+    // pubkey.  This is federation trust material: on a re-keygen the
+    // replacement is expected, but if the operator did not expect it,
+    // the fact that a pubkey was already sitting there is the thing
+    // worth investigating.  The signal is about the OVERWRITE, not
+    // about the mechanism — it survived the move to atomic replace
+    // because the operator's question ("was something already here?")
+    // is unchanged.  Pinned by
+    // PlhHubCliTest.KeygenEmitsNote_WhenPreExistingPubkeyRemoved.
     {
-        // Pre-clean: unlink any existing path at pubkey_path so the
-        // atomic O_EXCL create below succeeds on a fresh inode.
-        // remove() without follow_symlink semantics deletes the
-        // symlink itself if one is present (filesystem::remove is
-        // specified as `::unlink(2)` on POSIX).  ENOENT is fine
-        // (first publish).
-        //
-        // SECURITY OBSERVABILITY (HEP-CORE-0035 §4.6.4): if a path
-        // actually existed at pubkey_path before --keygen, that's a
-        // signal — either a prior keygen left it (expected) or an
-        // attacker planted it (unexpected).  Emit a one-line stderr
-        // note so the operator at least has audit-trail evidence
-        // that a removal happened.
         std::error_code ec;
-        const bool removed = std::filesystem::remove(pubkey_path, ec);
-        if (removed)
-            // Wording: "removed (publish attempt follows)" — NOT
-            // "was removed before publish".  If the subsequent
-            // open(O_EXCL) fails (e.g., racing writer plants a new
-            // file → EEXIST), the operator would otherwise see a
-            // contradiction: this note claims publish happened, but
-            // the subsequent error claims it didn't.  "Attempt
-            // follows" keeps the note honest about ordering.
+        if (fs::exists(pubkey_path, ec))
+        {
             std::fprintf(stderr,
                          "[plh_hub] note: pre-existing hub.pubkey at '%s' "
-                         "was removed (publish attempt follows; expected "
-                         "on re-keygen; investigate if unexpected — "
-                         "HEP-CORE-0035 §4.6.4)\n",
+                         "will be atomically replaced (publish attempt "
+                         "follows; expected on re-keygen; investigate if "
+                         "unexpected — HEP-CORE-0035 §4.6.4)\n",
                          pubkey_path.string().c_str());
-        // We don't check ec here — if the unlink failed for any reason
-        // other than ENOENT, the open(O_EXCL) below will surface a
-        // precise errno (EEXIST for a leftover file, ELOOP for an
-        // unreadable symlink chain).
-    }
-    const int fd = ::open(pubkey_path.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC,
-                          S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-    if (fd < 0)
-    {
-        const int err = errno;
-        if (err == ELOOP)
-            throw std::runtime_error("HubVault: '" + pubkey_path.string() +
-                                     "' is a symbolic link — refusing to follow "
-                                     "(atomic O_NOFOLLOW guard, HEP-CORE-0035 §4.6.1)");
-        if (err == EEXIST)
-            throw std::runtime_error("HubVault: '" + pubkey_path.string() +
-                                     "' could not be cleared before publish "
-                                     "(racing writer?)");
-        throw std::runtime_error("HubVault: cannot create '" + pubkey_path.string() +
-                                 "': " + std::strerror(err));
-    }
-    // Normalize mode against pathological umask (subset of write_secure_file
-    // hardening — matches the PublicKeyFile canonical mode).
-    if (::fchmod(fd, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH) != 0)
-    {
-        const int err = errno;
-        ::close(fd);
-        ::unlink(pubkey_path.c_str());
-        throw std::runtime_error("HubVault: fchmod 0644 failed for '" + pubkey_path.string() +
-                                 "': " + std::strerror(err));
-    }
-    const auto key = broker_curve_public_key();
-    const char *buf = key.data();
-    std::size_t remaining = key.size();
-    while (remaining > 0)
-    {
-        const ssize_t n = ::write(fd, buf, remaining);
-        if (n < 0)
-        {
-            if (errno == EINTR)
-                continue;
-            const int err = errno;
-            ::close(fd);
-            ::unlink(pubkey_path.c_str());
-            throw std::runtime_error("HubVault: write failed for '" + pubkey_path.string() +
-                                     "': " + std::strerror(err));
-        }
-        buf += n;
-        remaining -= static_cast<std::size_t>(n);
-    }
-    if (::close(fd) != 0)
-        throw std::runtime_error("HubVault: close failed for '" + pubkey_path.string() +
-                                 "': " + std::strerror(errno));
-#endif
-#if defined(PYLABHUB_PLATFORM_WIN64)
-    // Windows: set DACL granting owner full access + everyone read.
-    {
-        WELL_KNOWN_SID_TYPE everyone_type = WinWorldSid;
-        BYTE everyone_sid[SECURITY_MAX_SID_SIZE];
-        DWORD sid_size = sizeof(everyone_sid);
-        CreateWellKnownSid(everyone_type, nullptr, everyone_sid, &sid_size);
-
-        HANDLE token = nullptr;
-        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
-        {
-            DWORD len = 0;
-            GetTokenInformation(token, TokenUser, nullptr, 0, &len);
-            std::vector<uint8_t> buf(len);
-            if (GetTokenInformation(token, TokenUser, buf.data(), len, &len))
-            {
-                auto *user = reinterpret_cast<TOKEN_USER *>(buf.data());
-
-                EXPLICIT_ACCESS_W ea[2]{};
-                // Owner: full access
-                ea[0].grfAccessPermissions = GENERIC_ALL;
-                ea[0].grfAccessMode = SET_ACCESS;
-                ea[0].grfInheritance = NO_INHERITANCE;
-                ea[0].Trustee.TrusteeForm = TRUSTEE_IS_SID;
-                ea[0].Trustee.ptstrName = reinterpret_cast<LPWSTR>(user->User.Sid);
-                // Everyone: read
-                ea[1].grfAccessPermissions = GENERIC_READ;
-                ea[1].grfAccessMode = SET_ACCESS;
-                ea[1].grfInheritance = NO_INHERITANCE;
-                ea[1].Trustee.TrusteeForm = TRUSTEE_IS_SID;
-                ea[1].Trustee.ptstrName = reinterpret_cast<LPWSTR>(everyone_sid);
-
-                PACL acl = nullptr;
-                if (SetEntriesInAclW(2, ea, nullptr, &acl) == ERROR_SUCCESS)
-                {
-                    SetNamedSecurityInfoW(
-                        const_cast<wchar_t *>(pubkey_path.wstring().c_str()), SE_FILE_OBJECT,
-                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, nullptr,
-                        nullptr, acl, nullptr);
-                    LocalFree(acl);
-                }
-            }
-            CloseHandle(token);
         }
     }
-#endif
-    // POSIX: 0644 is applied atomically by fchmod inside the open
-    // block — guaranteed once we reach this point.  Windows: the
-    // DACL block above is best-effort (each Win32 call returns void
-    // success on failure; we proceed without retry).  Tightening the
-    // Windows path is tracked under task #120.  No additional
-    // fs::permissions call is issued on either branch.
+
+    namespace sec = pylabhub::utils::security;
+    sec::write_keyfile(pubkey_path, broker_curve_public_key(), sec::KeyFileRole::PublicKeyFile,
+                       sec::ExistingFilePolicy::Replace);
 }
 
 } // namespace pylabhub::utils

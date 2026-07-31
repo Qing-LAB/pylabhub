@@ -1,7 +1,9 @@
 # REVIEW — Security tree (shm / zmq / curve), completion pass
 
-**Status:** 🚧 IN PROGRESS — `src/utils/security/` complete, all 6 findings ✅ FIXED;
-the two large `hub/` queue files remain unread.
+**Status:** 🚧 IN PROGRESS — `src/utils/security/` complete; S-1..S-10 all ✅ FIXED.
+Remaining scope: `hub_shm_queue.cpp` (829 of 869 lines unread) and ~200 lines of
+`hub_zmq_queue.cpp` (`write_commit`, `create_reader`/`create_writer` dispatch,
+the recv/send thread bodies).
 **Date:** 2026-07-30. **Task:** #92.
 **Scope:** the ~14,500 lines under `src/utils/security/`, `src/utils/hub/`,
 `src/include/utils/security/`.
@@ -69,13 +71,116 @@ stated contract · **LOW** = correctness/clarity, no security consequence.
 | S-4 | LOW | `shm_capability_channel.cpp:119` | ✅ FIXED 2026-07-31 |
 | S-5 | MED | `attach_protocol.hpp:231` | ✅ FIXED 2026-07-31 |
 | S-6 | LOW | `secure_subsystem.hpp:272-289` | ✅ FIXED 2026-07-31 |
-| S-7 | LOW | `hub_zmq_queue.cpp:339` + `hub_inbox_queue.cpp` | ❌ OPEN |
-| S-8 | MED | `hub_zmq_queue.cpp:1813-2093` | ❌ OPEN |
-| S-9 | LOW | `hub_zmq_queue.cpp:2041-2068` | ❌ OPEN |
+| S-7 | LOW | `hub_zmq_queue.cpp:339` + `hub_inbox_queue.cpp` | ✅ FIXED 2026-07-31 |
+| S-8 | MED | `hub_zmq_queue.cpp:1813-2093` | ✅ FIXED 2026-07-31 |
+| S-9 | LOW | `hub_zmq_queue.cpp:2041-2068` | ✅ FIXED 2026-07-31 |
+| S-10 | MED | `key_file_acl.cpp` + `vault_crypto.cpp` + `hub_vault.cpp` | ✅ FIXED 2026-07-31 |
 
 ---
 
-### S-8 ❌ MED — a missing key wedges the queue in a fake "running" state, and the retry reports success
+### S-10 ✅ FIXED — MED — HEP-0035 §4.6.1's write recipe was prose, typed out three times, and had drifted
+
+`key_file_acl.cpp` (`atomic_write_owner_only_file`), `vault_crypto.cpp`
+(`write_secure_file`), `hub_vault.cpp` (`publish_public_key`).
+
+§4.6.1 states the rule for writing a protected file in a sentence:
+
+> use `open(O_CREAT | O_EXCL, 0600)` followed by an explicit
+> `fchmod(fd, 0600)` at write time.  Do NOT rely on the process `umask`.
+
+Three call sites each implemented that sentence by hand.  The POSIX bodies
+were near-identical — same flags, same EINTR write loop, same
+close-and-unlink rollback, the same error wording down to the quoted HEP
+section.  The only *intended* difference was the mode: 0600 for the vault,
+0644 for `hub.pubkey`.  `KeyFileRole` already encoded exactly that
+difference.
+
+**Two unintended differences had crept in, and both were in the wrong
+direction:**
+
+| | mode | overwrite | `fsync` | Windows |
+|---|---|---|---|---|
+| `atomic_write_owner_only_file` | 0600 | replace (tmp+rename) | **yes** | DACL + `MoveFileExW` |
+| `write_secure_file` (**the vault**) | 0600 | refuse | **no** | `ofstream(trunc)` |
+| `publish_public_key` | 0644 | replace (unlink+create) | **no** | its own |
+
+1. **The vault was the least durable file in the system.** Only
+   `atomic_write_owner_only_file` called `fsync`.  Without it a crash or
+   power cut can leave a correctly-named vault whose data pages never
+   reached the disk — and a vault holds the only copy of an identity
+   keypair.  The file with the most to lose had the weakest guarantee.
+2. **`write_secure_file`'s refuse-to-overwrite did not exist on Windows.**
+   The POSIX branch enforced it with `O_EXCL` and threw a message citing
+   "atomic O_EXCL guard, HEP-CORE-0035 §4.6.1".  The Windows branch was
+   `std::ofstream(path, trunc)` — it silently overwrote.  The guarantee the
+   error message advertised was platform-specific and the code did not say so.
+
+Neither was a decision.  Both are the ordinary outcome of a rule that has
+to be retyped to be obeyed.
+
+**What shipped.** One implementation, `security::write_keyfile(path,
+contents, role, policy)`, in the module that already owns `KeyFileRole` and
+the canonical modes — because "what mode should this file have" and "how do
+I write it" must agree, and keeping them in one file is the only way to
+guarantee they do.
+
+- `role` supplies the mode from the §4.6.1 table.  `ConfigFile` /
+  `ConfigFileReferencingVault` have no canonical mode (the operator owns
+  those) and throw rather than inventing one.
+- `policy` is `Refuse` (vault: never silently clobber) or `Replace`
+  (`hub.pubkey`, `known_roles.json`).
+- All three writers now `fsync` before close.
+- `publish_public_key` gains atomic replace: the old unlink-then-create left
+  a window with no `hub.pubkey` at all, and a re-keygen that failed mid-write
+  left it that way.
+- `atomic_write_owner_only_file` stays as a thin forwarder — `known_roles.json`
+  is an owner-only *data* file, not a `KeyFileRole`, and borrowing `VaultFile`
+  to reach the same 0600 would be a lie at the call site.
+- Windows `Refuse` is an existence check, not atomic.  Stated in the API doc
+  and in the HEP rather than left implicit; closing it needs
+  `CreateFileW(CREATE_NEW)` (#120).  It is still strictly stronger than the
+  branch that truncated without checking.
+
+Net: ~90 lines deleted from `hub_vault.cpp`, ~95 from `vault_crypto.cpp`,
+and `set_owner_only_permissions` — the path-based `chmod` helper that S-2 was
+about — became dead and was removed.
+
+HEP-0035 §4.6.1 updated: the recipe now names its single implementation, and
+records why the single-implementation rule exists.
+
+**The first attempt at this fix broke something — recorded deliberately.**
+
+Deleting `publish_public_key`'s ~90 hand-written lines also deleted the
+`std::filesystem::remove` that preceded them, and with it the stderr note the
+CLI emitted when a pre-existing `hub.pubkey` was about to be overwritten.
+The full sweep caught it in both configurations:
+
+```
+PlhHubCliTest.KeygenEmitsNote_WhenPreExistingPubkeyRemoved (Failed)
+```
+
+That test exists for exactly this. Its own comment:
+
+> This test pins the emission: a pre-planted hub.pubkey + `--keygen` must
+> surface the note. **A regression that silently drops the emission would be
+> invisible otherwise.**
+
+The lesson is about what a mechanism change is allowed to take with it. The
+note answers an operator's question — *"was something already sitting there?"*
+— about **federation trust material**. That question does not depend on
+whether the replacement happens by unlink-then-create or by `rename(2)`. The
+unlink was mechanism; the note was contract. Removing the mechanism silently
+removed the contract along with it.
+
+Restored, reworded from "was removed" to "will be atomically replaced" so the
+text matches what now happens. The test's assertions were left alone — they
+pin the three operator-facing substrings, not the mechanism — but its comments
+described the unlink and were corrected, with a note that the signal must
+survive future rewordings of the mechanism.
+
+---
+
+### S-8 ✅ FIXED — MED — a key removed after construction crosses a `noexcept` boundary
 
 `src/utils/hub/hub_zmq_queue.cpp:1813-2093`, `ZmqQueue::start()`.
 
@@ -103,9 +208,9 @@ The panic guard added at line 1874 does not cover this. It proves
 is actually **in the store**. Those are different failures, and only the first
 one is guarded.
 
-**Failure scenario.** A queue is built with `identity_key_name_ = "role-x"` but
-the vault load that would have installed `role-x` failed earlier, or the name
-was mistyped in config. `start()` runs:
+**Failure scenario.** A queue is built naming a key that IS present, and the
+key is then removed from the KeyStore before `start()` runs — `KeyStore::remove`
+is public API. `start()` then runs:
 
 1. `running_` ← `true`
 2. `ks.pubkey("role-x")` throws `std::out_of_range`
@@ -137,18 +242,55 @@ report for a queue that will never carry a byte. The idempotence check cannot
 tell "already started" from "died halfway through starting" because both states
 are spelled `running_ == true`.
 
-**Shape of the fix** (not yet applied — needs approval): the two-handler list is
-the wrong shape for a function that flips a state flag before it can fail. Either
-set `running_` only on the success path, or make the cleanup a scope guard that
-runs on any exception rather than duplicating it across handlers that must each
-be remembered. The scope guard is the better fit — it is the same
-"make the invalid state unreachable rather than documenting the rule" move used
-for the CURVE panic and the `unrestricted` deletion, and it cannot be defeated by
-a future `throw` of a type nobody enumerated.
+**It is worse than a wedged queue — it aborts the process.**
+
+`ZmqQueue::finalize_connect` is declared **`noexcept override`**
+(`hub_zmq_queue.hpp:534-536`) and tail-calls `start()`
+(`hub_zmq_queue.cpp:1638`). That is the deferred-connect path for fan-in
+DIALING PUSH — the one HEP-CORE-0036 §6.6.3 routes every fan-in producer
+through. So on that path the escaping `std::out_of_range` does not merely skip
+cleanup: it crosses a `noexcept` boundary, and the runtime calls
+`std::terminate`.
+
+**Correction — the severity claim was first written as HIGH on a premise the
+regression test then disproved.** The original write-up said a mistyped key
+name in config would take the process down. It will not:
+`validate_curve_factory_params` calls `ks.has(name)`
+(`hub_zmq_queue.cpp:742`), so `push_to` / `pull_from` return **nullptr** for an
+absent key and the queue is never built. The first version of the S-8 test
+asserted the queue would construct, and failed — which is how the wrong premise
+surfaced.
+
+The reachable trigger is therefore narrower than claimed: the key must go
+missing *between* construction and `start()`. That window is real (`remove` is
+public and the two calls are not atomic with respect to each other) and the
+consequence when it opens is still `std::terminate`, so the fix stands — but
+the severity is **MED**, not HIGH. Recorded rather than quietly amended: the
+claim shipped in this document and in `API_TODO.md` before it was checked.
+
+**What shipped.** Both halves, because the guard alone still lets the exception
+cross the `noexcept` boundary:
+
+1. **`pylabhub::basics::make_scope_guard`** (the existing helper in
+   `utils/scope_guard.hpp`, not a new one) installed immediately after the
+   `running_.exchange(true)`, owning `socket.close()` + `mechanism_ ←
+   Uninitialized` + `running_ ← false`. Dismissed on the one path that
+   completes a start. The three duplicated cleanup blocks — two `catch`
+   handlers and the `!worker_started` branch — collapse into it. A guard cannot
+   be defeated by a throw whose type nobody enumerated, which is exactly how
+   this bug survived.
+2. **A terminal `catch (const std::exception &)` + `catch (...)`**, so `start()`
+   is non-throwing *in fact* rather than by convention — which is what its
+   `noexcept` caller already assumed.
+
+The two specific handlers stay, because they still carry better diagnostics;
+they just no longer carry the cleanup.
+
+Verified: Debug 2725/2725, Release 2722/2722.
 
 ---
 
-### S-9 ❌ LOW — the CURVE engagement guard checks what was *configured*, not what was *negotiated*
+### S-9 ✅ FIXED — LOW — the CURVE engagement guard checks what was *configured*, not what was *negotiated*
 
 `src/utils/hub/hub_zmq_queue.cpp:2041-2068`.
 
@@ -182,12 +324,15 @@ But it cannot detect a failed or downgraded handshake, and the comment claims it
 can. In a codebase where comments are treated as contract, that gap invites
 someone to lean on a guarantee that was never there.
 
-**Shape of the fix** (not yet applied): correct the comment to say what it
-checks — configuration, verified locally, before any peer exists. If an
-actually-negotiated check is wanted, that is the socket-monitor work already
+**What shipped.** The comment now says what the check actually does —
+configuration, verified locally, before any peer exists — cites
+`options.cpp:1159` for why, notes that `connect()` is asynchronous so there is
+nothing negotiated yet, and states plainly that it cannot detect a failed or
+downgraded handshake. The guard itself is unchanged and kept: proving the CURVE
+setsockopts took effect rather than being silently ignored is a real regression
+class. Observing an actually-negotiated mechanism is the socket-monitor work
 tracked as **#93** (`ZMQ_EVENT_HANDSHAKE_SUCCEEDED` /
-`ZMQ_EVENT_HANDSHAKE_FAILED_*` are the events that carry real handshake
-outcomes), not a getsockopt.
+`ZMQ_EVENT_HANDSHAKE_FAILED_*`), not a getsockopt.
 
 ---
 
@@ -361,16 +506,43 @@ this code at all — so it is an authenticated role attacking its own hub, which
 the trust model does not defend against.  Recorded as defence-in-depth, not as
 a live exposure.
 
-**Fix direction (not applied).**  Pass an `unpack_limit` derived from what the
-schema can legitimately produce: `array` ≤ `schema_defs_.size()` (the payload
-array is the only array in the frame), `bin` ≤ `item_sz`, and a small `depth`
-(the 5-tuple envelope nests exactly two levels).  One extra argument at two
-call sites, and it makes the parser's bounds match the format's actual shape
-instead of the library's permissive default.
+**What shipped.**  Not an extra argument at each call site — a new owning entry
+point, `wire_detail::decode_frame(data, size, max_payload_fields)`, returning a
+`DecodedFrame`.  There were **three** raw `msgpack::unpack` sites, not two
+(`hub_zmq_queue.cpp:340`, `hub_inbox_queue.cpp:600`, `:1088`), and all three
+are now migrated.  The header already called itself *"the single source of
+truth for the 5-tuple frame"*, but decode escaped it; this closes that.
 
-Both call sites go through the same `wire_detail` codec, so this is one fix
-covering the data queue and the inbox — consistent with HEP-CORE-0047 §3.0's
-"one owning entry point per surface".
+The limits are derived from the format rather than picked:
+
+| Axis | Bound | Why |
+|---|---|---|
+| array | `max(kFrameTupleSize, max_payload_fields)` | the outer frame is the 5-tuple; the payload is one element per schema field |
+| map, ext | **0** | the frame format contains neither |
+| str, bin | `size` | a blob cannot exceed the buffer it was read from — exact, not conservative |
+| depth | `kMaxFrameDepth` (4) | outer array → payload array, plus headroom |
+
+`DecodedFrame` bundles the `object_handle` with the `FrameEnvelope` because the
+envelope's `recv_tag` / `payload` / `checksum` are **views into the zone the
+handle owns**.  Held as two locals, keeping the handle alive for exactly as long
+as the envelope is read was an unwritten rule every call site had to know; now
+the lifetime is structural.  Moving a `DecodedFrame` is safe — the zone is
+heap-allocated, so the addresses do not change.
+
+Two library facts were verified rather than assumed, since the fix depends on
+both:
+
+- The limit check **precedes** the allocation (`unpack.hpp:114` checks
+  `n > limit.array()`, `:124` then allocates `n * sizeof(msgpack::object)`), so
+  the bound genuinely prevents the allocation rather than merely reporting it
+  afterwards.  A 40-byte frame declaring `0xffffffff` elements was a ~68 GB
+  request on a 64-bit host.
+- With a null reference function msgpack **copies** every str/bin/ext into its
+  own zone (`unpack.hpp:173-177`) rather than pointing at the caller's buffer —
+  so a `DecodedFrame` owns its bytes and may outlive the message it was read
+  from.  That property is now stated in the doc comment.
+
+Verified: Debug 2725/2725, Release 2722/2722.
 
 ---
 
@@ -436,8 +608,8 @@ drawn about those files from this document.
 | `security/known_roles.cpp` | 326 | ✅ full | No findings. Strict parsing throughout: `require_string_or_empty` rejects a present-but-wrong-type field instead of silently coercing (`nlohmann::value(k, default)` returns the default for BOTH absent and wrong-type, which had masked `"pubkey_z85": null`); `validate_entry` refuses empty uid, empty pubkey, and any length != 40. The HEP-CORE-0036 §I10 one-pubkey-per-uid invariant correctly treats same-uid replacement as rotation rather than a duplicate. Its compile-time bypass is handled properly — see the observation below. |
 | `security/attach_channel_shm.cpp` | 193 | ✅ full | No findings. Length-prefixed framing with `kMaxAttachFrameBytes` enforced on BOTH send and recv, zero-length rejected, and the `std::vector<char> body(len)` allocation happens only AFTER the cap check — so a hostile length prefix cannot drive an allocation. `recv_all_until`/`send_all` re-evaluate the deadline every iteration, continue on EINTR, and treat `recv()==0` as an explicit peer-closed-mid-frame error rather than a short read. |
 | `security/shm_attach_orchestrator.cpp` | 243 | ✅ full | No findings — the best fail-closed reasoning in the tree; see the observation below. |
-| `hub/hub_zmq_queue.cpp` | 2598 | 🚧 ~800 | No findings yet. Read: the CURVE arm, `validate_curve_factory_params`, `connect_one`, and `apply_master_approval` (the trust entry point — it consumes broker-supplied JSON and configures identity + allowlist). That function validates array shape, fan-out cardinality (HEP-0017 §3.3.0 SUB has exactly one PUB), per-entry object-ness, `pubkey_z85` length 40, and DIALING-side endpoint presence; Standby fields are only filled when currently empty, so an Active queue is not mutated. The deferred-connect logic for fan-in DIALING PUSH correctly anticipates the ZAP race (connect before the peer's allowlist is seeded → terminal DENY) — the same class of bug as the inbox hang fixed earlier today. `start()` and `stop()` now read, no findings. `start()` puts the Standby gate BEFORE the `running_` exchange so a refused start can be retried, resolves the ZAP domain with explicit → instance_id → name@address fallbacks, seeds a deny-all allowlist ONLY when nothing populated one (clobbering would drop REG_ACK's `initial_allowlist` and leave an authenticated PUSH deny-all), and registers the domain BEFORE bind so an early peer connect cannot hit an unregistered domain and be denied while admission is in fact configured. `stop()` drains threads first, grace-polls detached ones for 5s, and logs honestly that a subsequent `~ZmqQueueImpl` would UAF a runaway thread rather than pretending otherwise. NOT read: the read/write data path (`read_acquire`/`write_acquire`/`write_commit`), `finalize_connect`, `create_reader`/`create_writer` topology dispatch, and the recv/send thread bodies. |
-| `hub/hub_shm_queue.cpp` | 872 | 🚧 ~40 (NEXT) | Only the flagged legacy-comment regions. |
+| `hub/hub_zmq_queue.cpp` | 2632 | 🚧 ~2400 | S-8 + S-9 found. Read: the CURVE arm, `validate_curve_factory_params`, `connect_one`, and `apply_master_approval` (the trust entry point — it consumes broker-supplied JSON and configures identity + allowlist). That function validates array shape, fan-out cardinality (HEP-0017 §3.3.0 SUB has exactly one PUB), per-entry object-ness, `pubkey_z85` length 40, and DIALING-side endpoint presence; Standby fields are only filled when currently empty, so an Active queue is not mutated. The deferred-connect logic for fan-in DIALING PUSH correctly anticipates the ZAP race (connect before the peer's allowlist is seeded → terminal DENY) — the same class of bug as the inbox hang fixed earlier today. `start()` and `stop()` now read, no findings. `start()` puts the Standby gate BEFORE the `running_` exchange so a refused start can be retried, resolves the ZAP domain with explicit → instance_id → name@address fallbacks, seeds a deny-all allowlist ONLY when nothing populated one (clobbering would drop REG_ACK's `initial_allowlist` and leave an authenticated PUSH deny-all), and registers the domain BEFORE bind so an early peer connect cannot hit an unregistered domain and be denied while admission is in fact configured. `stop()` drains threads first, grace-polls detached ones for 5s, and logs honestly that a subsequent `~ZmqQueueImpl` would UAF a runaway thread rather than pretending otherwise. `finalize_connect` read — polls the readiness oracle with an explicit deadline and a cancellation hook, and treats `PermanentError` as fatal rather than retrying forever. `read_acquire`/`read_release`/`write_acquire` read — the ring copy is into a pre-allocated buffer (no per-item heap churn), and both overflow policies count a failed cycle into `data_drop_count_` rather than dropping silently. NOT read: `write_commit`, `create_reader`/`create_writer` topology dispatch, and the recv/send thread bodies (~200 lines). |
+| `hub/hub_shm_queue.cpp` | 869 | 🚧 ~40 (NEXT) | Only the flagged legacy-comment regions. |
 | `security/zap_router.cpp` | 781 | 🚧 partial | `pump_one`, domain register/unregister, `ZapPumpThread` read during the teardown work. |
 
 ---

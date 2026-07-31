@@ -30,6 +30,7 @@
 
 #include <msgpack.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstddef>
@@ -47,6 +48,15 @@ namespace pylabhub::hub::wire_detail
 
 /// Frame magic: 'P','L','H','Q'
 static constexpr uint32_t kFrameMagic = 0x51484C50u;
+
+/// Elements in the outer frame array: magic, schema_tag, seq, payload, checksum.
+static constexpr std::size_t kFrameTupleSize = 5;
+
+/// Deepest nesting a valid frame reaches: outer array → payload array.
+/// Stated as 4 rather than 2 so a future field that nests one level does
+/// not silently become a decode failure, while still refusing the
+/// unbounded recursion msgpack allows by default.
+static constexpr std::size_t kMaxFrameDepth = 4;
 
 // ============================================================================
 // Backward-compatible aliases
@@ -308,6 +318,93 @@ inline FrameEnvelope unpack_envelope(const msgpack::object &obj) noexcept
 
     r.valid = true;
     return r;
+}
+
+/// A frame decoded from the wire: the msgpack zone plus the validated
+/// envelope that views into it.
+///
+/// These are one type because `FrameEnvelope::recv_tag` / `payload` /
+/// `checksum` point INTO the zone that `handle` owns.  Held as two
+/// separate locals, keeping the handle alive for exactly as long as the
+/// envelope is read is an unwritten rule every call site has to know.
+/// Bundling them makes that lifetime structural instead.
+///
+/// Moving a `DecodedFrame` is safe: the zone is heap-allocated and the
+/// handle moves a pointer to it, so the addresses the envelope holds do
+/// not change.
+///
+/// The decoded frame owns its bytes and may outlive the buffer it was
+/// read from — `decode_frame` passes no reference function, and msgpack
+/// then copies every str/bin/ext into the zone rather than pointing at
+/// the caller's buffer (`unpack.hpp:173-177`).
+struct DecodedFrame
+{
+    msgpack::object_handle handle;
+    FrameEnvelope env;
+
+    /// True iff the bytes parsed AND destructured into a valid 5-tuple.
+    explicit operator bool() const noexcept { return env.valid; }
+};
+
+/// Parse and destructure wire bytes into a validated frame, with every
+/// msgpack allocation bounded by the input that asked for it.
+///
+/// **This is the only sanctioned way to turn frame bytes into a
+/// `FrameEnvelope`.** Calling `msgpack::unpack` directly re-opens the
+/// hole described below, and re-creates the handle/envelope lifetime
+/// pairing this type exists to remove.
+///
+/// `msgpack::unpack`'s default `unpack_limit` is `0xffffffff` on every
+/// axis, and msgpack allocates on a *declared* size before it discovers
+/// the bytes behind it were never sent (`unpack.hpp:114` checks the
+/// limit, `:124` then allocates `n * sizeof(msgpack::object)`).  A
+/// forty-byte frame declaring a `0xffffffff`-element array therefore
+/// asks a 64-bit host for roughly 68 GB.  The frame-size cap callers
+/// apply upstream bounds the *input*; it does not bound what the input
+/// is allowed to ask for.  These limits close that gap:
+///
+///   - **array** — `max(kFrameTupleSize, max_payload_fields)`.  msgpack
+///     exposes ONE array limit covering every array in the message, and
+///     the outer frame is always a 5-tuple, so the bound cannot go below
+///     `kFrameTupleSize`.  For a schema with fewer than 5 fields a
+///     slightly-oversized payload array therefore still decodes.  That is
+///     deliberate and not a hole: this limit bounds ALLOCATION, and five
+///     elements is not an allocation concern.  Exact field-count
+///     enforcement is the caller's `payload_size != defs.size()` check,
+///     which every caller performs immediately after decoding — so the
+///     envelope reports the true `payload_size` precisely so the caller
+///     CAN reject it.
+///   - **map**, **ext** — the frame format contains neither. Zero.
+///   - **str**, **bin** — a blob cannot exceed the buffer it was read
+///     from, so `size` is exact rather than merely conservative.
+///   - **depth** — `kMaxFrameDepth`.
+///
+/// Never throws.  msgpack reports a limit breach by throwing, which here
+/// means the same thing as a structural failure — a malformed frame —
+/// so both arrive as `env.valid == false` and the caller applies its own
+/// error-counting and rate-limiting policy.
+inline DecodedFrame decode_frame(const void *data, std::size_t size,
+                                 std::size_t max_payload_fields) noexcept
+{
+    DecodedFrame out;
+    const msgpack::unpack_limit limit{
+        /*array*/ std::max(kFrameTupleSize, max_payload_fields),
+        /*map  */ 0,
+        /*str  */ size,
+        /*bin  */ size,
+        /*ext  */ 0,
+        /*depth*/ kMaxFrameDepth};
+    try
+    {
+        out.handle =
+            msgpack::unpack(static_cast<const char *>(data), size, nullptr, nullptr, limit);
+    }
+    catch (...)
+    {
+        return out; // env.valid stays false — caller counts it as a frame error
+    }
+    out.env = unpack_envelope(out.handle.get());
+    return out;
 }
 
 /// Decode all payload fields into a pre-zeroed destination buffer.

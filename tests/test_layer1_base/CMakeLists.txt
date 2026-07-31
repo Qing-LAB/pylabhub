@@ -194,6 +194,47 @@ pylabhub_add_gtest(TARGET test_layer1_portable_atomic_shared_ptr
     TIMEOUT 30)
 
 # ============================================================================
+# Test: ZMQ 5-tuple wire frame codec (review S-7)
+#
+# `zmq_wire_helpers.hpp` is internal to the hub/ translation units and is
+# not reachable from the public include tree, so this target adds
+# src/utils to its include path — the same arrangement
+# test_layer1_portable_atomic_shared_ptr above already uses.  The codec is
+# a pure function over bytes (no LOGGER_*, no lifecycle), so it is
+# Pattern 1 and needs no worker subprocess.
+# ============================================================================
+
+add_executable(test_layer1_zmq_wire_frame
+    test_zmq_wire_frame.cpp
+)
+
+target_include_directories(test_layer1_zmq_wire_frame
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/utils
+)
+
+target_link_libraries(test_layer1_zmq_wire_frame
+    PRIVATE
+        pylabhub::utils
+        pylabhub::test_framework
+        # msgpack is PRIVATE to pylabhub-utils because no PUBLIC header uses
+        # it.  This test includes an INTERNAL header that does, so it takes
+        # on that header's dependency explicitly rather than widening the
+        # library's public surface to suit a test.
+        pylabhub::third_party::msgpack
+        GTest::gtest
+        GTest::gtest_main
+)
+
+pylabhub_ensure_sanitizer_for_executable(test_layer1_zmq_wire_frame)
+
+layer1_require_staged_utils(test_layer1_zmq_wire_frame)
+
+pylabhub_add_gtest(TARGET test_layer1_zmq_wire_frame
+    LABELS "layer1;base;zmq;wire"
+    TIMEOUT 30)
+
+# ============================================================================
 # Test: ModuleDef builder API (Pimpl, links pylabhub::utils)
 # ============================================================================
 
