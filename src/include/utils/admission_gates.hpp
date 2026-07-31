@@ -84,6 +84,23 @@ enum class RejectCode
     pubkey_mismatch,   ///< I-PUBKEY-BINDING: uid known, pubkey does not match
     uid_conflict,      ///< uid already registered (duplicate REG)
 
+    // Provenance (added 2026-07-29 with the attested-identity gate).  These
+    // two exist because the alternatives were factually wrong: a connection
+    // that produced no proof is not an `unknown_role` (nothing was looked
+    // up), and a federation peer's key IS known — reporting either as
+    // `unknown_role` sends an operator to investigate a role that is
+    // configured perfectly well.  A denial has to name what actually
+    // happened or it costs more than it saves.
+    unauthenticated,  ///< The connection produced no proof of identity: no
+                      ///< enforced handshake, so there is nothing to check a
+                      ///< claim against.  Registration requires proof.
+    wrong_peer_kind,  ///< The attested key belongs to a federation PEER HUB,
+                      ///< not a local role.  A peer may carry identities
+                      ///< other than its own, but only under the delegation
+                      ///< modes of HEP-CORE-0035 §4.3 — which are not built,
+                      ///< so it is refused on the registration plane rather
+                      ///< than silently permitted.
+
     // Anti-replay (gate 5)
     replay_or_skew, ///< I-REPLAY-BOUND: nonce reuse or wall_ts skew
 

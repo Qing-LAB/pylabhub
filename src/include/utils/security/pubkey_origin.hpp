@@ -132,12 +132,42 @@ struct PYLABHUB_UTILS_EXPORT RosterEntry
 /// keyword on the handle rather than by the type. Anyone holding a non-const
 /// reference could edit a live authority.
 ///
-/// The roster it mirrors DOES change during hub lifetime (roles are added
-/// and revoked), and the CTRL allowlist it projects into is swapped
-/// atomically on reload (HEP-CORE-0035 §4.8.5). Both are satisfied by
-/// replacement rather than mutation: build a fresh authority, publish it as
+/// **How immutability and replacement are meant to be used.**  The roster
+/// this mirrors is operator configuration, so it changes when the operator
+/// changes it — but an instance never does. Updates happen by REPLACEMENT:
+/// build a fresh authority from the new roster, publish it as
 /// `std::shared_ptr<const PeerAuthority>`, swap the pointer. Readers hold a
-/// snapshot that cannot change under them; old readers drain naturally.
+/// snapshot that cannot change under them, and old readers drain naturally
+/// as they finish the message they were handling.
+///
+/// Three things about that model are easy to get wrong, so they are stated
+/// here rather than left to be rediscovered:
+///
+/// 1. **Nothing replaces it today.**  `publish_*` is called once, at broker
+///    construction. `plh_hub --add-known-role` writes the vault and does not
+///    talk to a running hub, so adding a role currently means a restart. What
+///    exists is the MECHANISM for reload with no caller — see task #89, where
+///    the reload design lives together with the vault-access work it shares a
+///    foundation with.
+///
+/// 2. **A replacement must swap this AND the ZAP allowlist together.**  The
+///    control-plane allowlist is a PROJECTION of this authority held
+///    separately by the admission object (HEP-CORE-0035 §4.8.5). Publishing
+///    one without the other leaves a revoked role still resolving to a valid
+///    identity while ZAP has already begun denying it — precisely the
+///    divergence that collapsing several projections into one authority
+///    exists to prevent. Today both are published once from the same source
+///    so they cannot disagree; the moment a second publication point exists,
+///    it must be one operation that swaps both or neither.
+///
+/// 3. **Replacing this does not disconnect anybody.**  ZAP runs at HANDSHAKE
+///    time, once per connection, and the key it verified is then stamped on
+///    every message from that connection for its lifetime. So a new authority
+///    governs who may NEWLY connect; a peer already connected keeps operating
+///    on its existing session. "Revoked" therefore means "revoked for future
+///    connections" unless something separately ejects the live one. Anyone
+///    wiring reload has to decide that deliberately — it is policy, and it
+///    does not belong in this type.
 ///
 /// **Questions return answers, not subjects.**  There is deliberately no
 /// `resolve()` handing back the internal record. Every authorization
@@ -216,7 +246,7 @@ class PYLABHUB_UTILS_EXPORT PeerAuthority
     /// The ZAP layer's view: every known key as a `{curve, key}` identity.
     ///
     /// The ONLY sanctioned way to build a control-plane allowlist.
-    /// `unrestricted` is always false — an empty authority is deny-all,
+    /// An empty authority is deny-all —
     /// which is the correct bootstrap state for a hub with no configured
     /// roles (HEP-CORE-0035 §4.8.4), not an invitation to admit everyone.
     [[nodiscard]] PeerAllowlist zap_allowlist() const;

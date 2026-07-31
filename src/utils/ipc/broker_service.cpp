@@ -6892,9 +6892,12 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState &state)
             }
             catch (const std::exception &e)
             {
-                LOGGER_WARN("[broker] known_roles entry '{}' is not usable as an identity "
-                            "and was skipped: {}",
-                            kr.uid, e.what());
+                // Rejected, not fatal.  An unusable entry fails CLOSED — it can
+                // never admit anyone — so refusing to start would only turn one
+                // bad value in an operator file into everyone else's outage.
+                // The config belongs to the operator; enforcing it as written
+                // is this code's whole job.
+                LOGGER_ERROR("[broker] known_roles entry '{}' rejected: {}", kr.uid, e.what());
             }
         }
         for (const auto &peer : pImpl->cfg.peers)
@@ -6914,9 +6917,9 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState &state)
             }
             catch (const std::exception &e)
             {
-                LOGGER_WARN("[broker] federation peer '{}' is not usable as an identity "
-                            "and was skipped: {}",
-                            peer.hub_uid, e.what());
+                // Neither empty (a defined value meaning "no CURVE", skipped
+                // above) nor valid.
+                LOGGER_ERROR("[broker] federation peer '{}' rejected: {}", peer.hub_uid, e.what());
             }
         }
         pImpl->publish_peer_authority(std::move(authority).build());

@@ -179,6 +179,13 @@ post-reconcile shipped-sprint detail).
   through the existing `bool` / `ShutdownOutcome` channels, with three
   discarded `spawn()` returns fixed);
   deferred: Python client SDK, script-spawned worker threads, `src/` restructure.
+- **Security / vault (`API_TODO.md`, task #89)** — **#89 SMS expansion + vault
+  design**: retained vault key in SMS, script vault surface (HEP-CORE-0038 /
+  #106, confirmed NOT implemented from `key_store.hpp:215,297`), and runtime
+  config reload — one task because all three need the vault openable after
+  startup without the password being script-reachable.  Includes the live hole
+  that the master password sits in the environment in cleartext while
+  `os.getenv` is unsandboxed in Lua and Python has no sandbox at all.
 - **MessageHub / broker protocol (`MESSAGEHUB_TODO.md`)** — #92 `_REQ`-frame
   half-mix audit; (H43 federation role-disconnect → folded into #69); Wave-M2 MP4
   residuals; HEP-0039 Hub State Query Layer Phases B+ (Phase A shipped);

@@ -84,6 +84,10 @@ std::string_view to_wire_string(RejectCode code) noexcept
         return "PUBKEY_MISMATCH";
     case RejectCode::uid_conflict:
         return "UID_CONFLICT";
+    case RejectCode::unauthenticated:
+        return "UNAUTHENTICATED";
+    case RejectCode::wrong_peer_kind:
+        return "WRONG_PEER_KIND";
     case RejectCode::replay_or_skew:
         return "REPLAY_OR_SKEW";
     case RejectCode::invalid_role_tag:

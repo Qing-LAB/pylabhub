@@ -24,6 +24,35 @@ removals from D2 / D3 drift batches).
 > `docs/archive/transient-2026-07-18/todo-completions/`.  #235 residual: L3 parity
 > regression tests → fold into **#232**.
 
+### #89 — SMS expansion + vault design (retained key, script vault, config reload)
+
+**Filed 2026-07-29.**  One task because these are the same foundation: reloading
+config out of the vault at runtime and letting a script save/load its own vault
+entries both need the vault openable *after* startup without the password being
+reachable.  Detail lives on task #89; the headlines that other work must not
+contradict:
+
+- **`api.vault_save` / `api.vault_load` do NOT exist.**  Confirmed from the code,
+  not the HEP: `key_store.hpp:215` and `:297` both say "NOT implemented —
+  deferred, #106".  What shipped is the storage half (`add_raw` / `lookup_raw`,
+  HEP-CORE-0043 §7), sketched for HEP-0038 and now serving the admin-session
+  seal key instead.
+- **No runtime reload exists.**  `publish_peer_authority()` runs once, at broker
+  construction; `plh_hub --add-known-role` writes the vault and does not talk to
+  a running hub.  Adding a role means a restart.
+- **Live hole:** the vault master password sits in the environment in cleartext
+  for non-interactive startup, and `lua_state.cpp:70` does not disable
+  `os.getenv` while the Python engine has no sandbox at all.  A user script can
+  read the key that opens the hub's private identity, the admin token and the
+  allowlist — breaking the isolation contract asserted at `hub_config.cpp:358`.
+- **The system-vs-script vault directory separation was discussed and its
+  outcome recorded as UNRESOLVED** (HEP-0038 §2.2 lists three candidate shapes
+  and calls the API "shape-agnostic on purpose").  It is a requirement, not an
+  option, and belongs in #106's scope.
+- **Not in the HEP's own open-questions list:** KeyStore name sandboxing.  A
+  retained vault key would share the store with `hub_identity`; namespacing is
+  what stops a script asking for the key that opens everything.
+
 ### #88 — Thread-spawn resource failure escapes the non-throwing failure channel
 
 **Found 2026-07-28** while auditing allocation on the shutdown, panic, and
