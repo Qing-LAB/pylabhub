@@ -838,10 +838,45 @@ check vault file at <resolved_keyfile_path>
   - st_uid != geteuid()         → ERROR  "vault file <path> owned
                                   by uid N; expected uid M.  Check file
                                   ownership."
-  - parent dir (st_mode & 0077) != 0
-                                → WARN   (parent dir leak is recoverable;
-                                  some operators want group-readable
-                                  parents for shared host setups)
+  - parent dir (st_mode & 0022) != 0 AND NOT (st_mode & S_ISVTX)
+                                → ERROR  "parent directory <path> is
+                                  group/world-WRITABLE (mode 0NNN) and not
+                                  sticky — any such user can rename(2) or
+                                  unlink the vault file and substitute
+                                  their own.  Run: chmod go-w <path>"
+  - parent dir writable WITH sticky bit (e.g. /tmp, 01777)
+                                → OK.  The sticky bit restricts rename and
+                                  unlink to the file's owner, the
+                                  directory's owner, or root, which closes
+                                  the substitution vector the ERROR above
+                                  exists to catch.
+  - parent dir (st_mode & 0055) != 0
+                                → WARN   (a READABLE parent leaks only the
+                                  file's existence and name, which is
+                                  recoverable; some operators want
+                                  group-readable parents for shared host
+                                  setups)
+
+> **Amended 2026-07-30 (review S-1).**  The parent-directory rule was
+> previously a single `(st_mode & 0077) != 0 → WARN`, justified by the
+> "some operators want group-readable parents" note now attached to the
+> read bits.  That rationale is about VISIBILITY and does not cover the
+> WRITE bits, which `0077` also matched.  Permission to replace a
+> directory entry comes from the directory, not the file: with a
+> group- or world-writable parent, any such user can `rename(2)` or
+> `unlink`+recreate the vault and substitute the hub's identity key,
+> and the file's own `0600` is irrelevant to that operation.  The rule
+> is therefore split — read stays advisory, write is an error.  Note
+> this also removes a disagreement with the vault-DIRECTORY rule
+> below, which already hard-failed on the same mask.
+>
+> The sticky-bit carve-out is load-bearing and was missed on the first
+> attempt: `/tmp` is mode `01777`, and a rule that rejected it would
+> have been a false positive on the single most common scratch
+> location.  `S_ISVTX` restricts rename/unlink to the file's owner,
+> the directory's owner, or root — which is exactly the vector the
+> write-bit ERROR exists to catch, so with sticky set there is
+> nothing to reject.
 
 check vault directory at <resolved_keyfile_path>.parent_path()
   - (st_mode & 0077) != 0       → ERROR  "vault directory <path> is

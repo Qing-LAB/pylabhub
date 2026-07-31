@@ -448,7 +448,8 @@ TEST_F(KeyFileAclTest, VaultFile_0640_GroupReadable_Error)
     EXPECT_FALSE(v.ok);
     EXPECT_EQ(v.observed_mode, 0640u);
     EXPECT_TRUE(contains(v.diagnostic, "vault file")) << v.diagnostic;
-    EXPECT_TRUE(contains(v.diagnostic, "group/world-accessible")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "group/world-accessible"))
+        << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, octal4(0640)))
         << "diagnostic must show observed mode 0640: " << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, "chmod 0600"))
@@ -817,12 +818,72 @@ TEST_F(KeyFileAclTest, VaultFile_ParentDir_0750_WarnsParentLeak)
                       << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, "parent directory"))
         << "diagnostic must name the parent dir explicitly: " << v.diagnostic;
-    EXPECT_TRUE(contains(v.diagnostic, "group/world-accessible")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "group/world-readable"))
+        << "the diagnostic must say READABLE, not the old 'accessible' — that "
+           "word conflated read with write, and the conflation is exactly what "
+           "let a WRITABLE parent be reported as a mere advisory: "
+        << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, "0750")) << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, parent.string()))
         << "diagnostic must include the parent path: " << v.diagnostic;
     EXPECT_TRUE(contains(v.diagnostic, "chmod 0700"))
         << "diagnostic must give the parent-dir fix command: " << v.diagnostic;
+}
+
+// ── Parent-directory WRITE bits (HEP-CORE-0035 §4.6.2, review S-1) ─────────
+//
+// A readable parent leaks the vault's name; a WRITABLE parent lets any such
+// user rename(2) or unlink the vault and substitute their own key, which the
+// file's own 0600 does not prevent.  These two pin the distinction, and the
+// second pins the carve-out that makes the rule correct rather than merely
+// strict.
+
+TEST_F(KeyFileAclTest, VaultFile_ParentDir_Writable_NoSticky_IsError)
+{
+    const auto parent = tmpdir_with_mode("writable_parent", 0777);
+    const auto file_p = parent / "vault_in_writable_parent";
+    {
+        std::ofstream out(file_p);
+        out << "x\n";
+    }
+    ::chmod(file_p.c_str(), 0600);
+
+    const AclVerdict v = verify_keyfile_acl(file_p, KeyFileRole::VaultFile);
+
+    EXPECT_FALSE(v.ok) << "a group/world-writable, non-sticky parent permits "
+                          "substitution of the vault file and MUST be an error, "
+                          "not an advisory.  Got diagnostic: "
+                       << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "WRITABLE")) << v.diagnostic;
+    EXPECT_TRUE(contains(v.diagnostic, "chmod go-w"))
+        << "diagnostic must give the fix command: " << v.diagnostic;
+}
+
+TEST_F(KeyFileAclTest, VaultFile_ParentDir_Writable_WithSticky_IsAccepted)
+{
+    // 01777 is /tmp.  The sticky bit restricts rename/unlink to the file's
+    // owner, the directory's owner, or root — closing the exact vector the
+    // error above exists to catch, so this must NOT be rejected.
+    //
+    // Regression pin: the first version of the write-bit rule tested only
+    // `mode & 0022` and therefore condemned /tmp, failing 10 tests across the
+    // L2 suite.  Without this case, the rule could be "simplified" back.
+    const auto parent = tmpdir_with_mode("sticky_parent", 01777);
+    const auto file_p = parent / "vault_in_sticky_parent";
+    {
+        std::ofstream out(file_p);
+        out << "x\n";
+    }
+    ::chmod(file_p.c_str(), 0600);
+
+    const AclVerdict v = verify_keyfile_acl(file_p, KeyFileRole::VaultFile);
+
+    EXPECT_TRUE(v.ok) << "a sticky writable parent (/tmp is 01777) must be "
+                         "accepted — the kernel already prevents substitution.  "
+                         "Got diagnostic: "
+                      << v.diagnostic;
+    EXPECT_FALSE(contains(v.diagnostic, "WRITABLE"))
+        << "must not report the write-bit error for a sticky directory: " << v.diagnostic;
 }
 
 TEST_F(KeyFileAclTest, VaultFile_ParentDir_0755_WarnsParentLeak)

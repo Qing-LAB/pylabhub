@@ -182,6 +182,30 @@ void write_secure_file(const fs::path &path, const std::vector<uint8_t> &data)
 
 std::vector<uint8_t> read_file(const fs::path &path)
 {
+#ifndef _WIN32
+    // O_NOFOLLOW on the READ path too (review S-2).  The write path has
+    // refused to traverse a symlink at the final component since it was
+    // written (`O_CREAT|O_EXCL|O_NOFOLLOW` above), but the read did not —
+    // so a link planted at the vault path would be followed here, and
+    // `verify_keyfile_acl` could not report it either because it stats the
+    // TARGET.  The asymmetry had no rationale; it was simply never closed.
+    {
+        const int probe = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        if (probe == -1)
+        {
+            const int err = errno;
+            if (err == ELOOP)
+            {
+                throw std::runtime_error("vault: '" + path.string() +
+                                         "' is a symlink — refusing to follow "
+                                         "(O_NOFOLLOW guard, HEP-CORE-0035 §4.6.1)");
+            }
+            throw std::runtime_error("vault: cannot open: " + path.string() + ": " +
+                                     std::strerror(err));
+        }
+        ::close(probe);
+    }
+#endif
     std::ifstream ifs(path, std::ios::binary | std::ios::ate);
     if (!ifs)
     {

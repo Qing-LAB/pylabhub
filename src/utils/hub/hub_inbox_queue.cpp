@@ -259,6 +259,11 @@ static std::array<uint8_t, 8> compute_inbox_schema_tag(const std::vector<ZmqSche
     }
     canonical += "|pack:";
     canonical += packing;
+    // Unchecked deliberately — same reasoning as `wire_envelope.cpp`: an
+    // all-zero return would make EVERY schema tag identical, so mismatch
+    // detection would stop discriminating.  Unreachable because `canonical`
+    // is a std::string (data() never null) and the fixed-outlen hash does not
+    // fail.  Revisit if either premise changes.
     auto full_hash = pylabhub::utils::security::secure().compute_blake2b_array(canonical.data(),
                                                                                canonical.size());
     std::array<uint8_t, 8> tag{};

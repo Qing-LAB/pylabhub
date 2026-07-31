@@ -116,7 +116,9 @@ MemfdProducer::MemfdProducer(size_t bytes)
             "(HEP-CORE-0041 §6 — anonymous SHM regions are sized at construction).");
     }
 
-    anon_fd_ = ::memfd_create("plh_shm_capability", MFD_CLOEXEC);
+    // MFD_ALLOW_SEALING is required AT CREATION for any seal to be
+    // applicable later — it cannot be retrofitted onto an existing memfd.
+    anon_fd_ = ::memfd_create("plh_shm_capability", MFD_CLOEXEC | MFD_ALLOW_SEALING);
     if (anon_fd_ == -1)
     {
         throw make_errno_error("Producer", "memfd_create failed", errno);
@@ -128,6 +130,27 @@ MemfdProducer::MemfdProducer(size_t bytes)
         ::close(anon_fd_);
         anon_fd_ = -1;
         throw make_errno_error("Producer", "ftruncate failed", captured);
+    }
+
+    // Seal the size now that it is final.  Both sides map this region and
+    // each holds a writable fd, so without F_SEAL_SHRINK either could
+    // `ftruncate` it smaller and the other would take **SIGBUS** on the next
+    // access to a page past the new end — a signal, not an error return, so
+    // no amount of care in the victim can handle it.  The region is sized
+    // once at construction and never resized, so sealing costs nothing.
+    //
+    // F_SEAL_GROW is included for the same reason in the other direction: a
+    // peer that grows the region cannot make our existing mapping larger, so
+    // growth only creates a size the two sides disagree about.
+    //
+    // NOT sealed: writes (the region is the data channel) and F_SEAL_SEAL
+    // (which would prevent adding seals later).
+    if (::fcntl(anon_fd_, F_ADD_SEALS, F_SEAL_SHRINK | F_SEAL_GROW) == -1)
+    {
+        const int captured = errno;
+        ::close(anon_fd_);
+        anon_fd_ = -1;
+        throw make_errno_error("Producer", "fcntl(F_ADD_SEALS, SHRINK|GROW) failed", captured);
     }
 
     void *base = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, anon_fd_, /*offset=*/0);
@@ -429,17 +452,31 @@ MemfdProducer::accept_one(std::chrono::milliseconds timeout)
     AcceptedPeer result{};
     result.peer_socket_fd = peer;
 
+    // A failed credential read is a FAILURE, not a credential.
+    //
+    // This previously left the zero-initialized fields in place and carried
+    // on, reasoning that the L2 uid equality check would reject uid 0 "for
+    // any non-root expectation".  That reasoning names its own hole: when the
+    // deployment runs AS root, `expected_uid` is 0 too, so a credential read
+    // that never succeeded compares EQUAL and the peer is admitted.  Encoding
+    // "unknown" as a value that can legitimately match is the same shape as
+    // the admission backdoors closed in #90/#91.
+    //
+    // `ShmAttachOrchestrator` one layer up already treats every
+    // cannot-ascertain answer as denial; this brings the transport in line.
     ucred cred{};
     socklen_t cred_len = sizeof(cred);
-    if (::getsockopt(peer, SOL_SOCKET, SO_PEERCRED, &cred, &cred_len) == 0)
+    if (::getsockopt(peer, SOL_SOCKET, SO_PEERCRED, &cred, &cred_len) != 0)
     {
-        result.pid = cred.pid;
-        result.uid = cred.uid;
-        result.gid = cred.gid;
+        const int captured = errno;
+        ::close(peer);
+        throw make_errno_error("Producer::accept_one",
+                               "SO_PEERCRED failed — peer identity cannot be established",
+                               captured);
     }
-    // SO_PEERCRED failure leaves the fields at zero defaults.  The L2
-    // auth layer (task #250) does an explicit equality check against the
-    // expected uid; zero default fails closed for any non-root expectation.
+    result.pid = cred.pid;
+    result.uid = cred.uid;
+    result.gid = cred.gid;
 
     return result;
 }

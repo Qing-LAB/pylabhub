@@ -265,7 +265,8 @@ TEST_F(AttachProtocolTest, RoundTrip_HelloAndChallengeResponse)
             try
             {
                 connected_fd = initiate_consumer_handshake(path, cons_auth, prod.pub_z85,
-                                                           std::chrono::milliseconds{2000});
+                                                           std::chrono::milliseconds{2000},
+                                                           /*require_mutual_auth=*/false);
             }
             catch (...)
             {
@@ -309,7 +310,8 @@ TEST_F(AttachProtocolTest, ConnectToUnboundEndpoint_ReturnsNulloptNotThrow)
     std::optional<int> result;
     ASSERT_NO_THROW({
         result = initiate_consumer_handshake(path, cons_auth, prod.pub_z85,
-                                             std::chrono::milliseconds{200});
+                                             std::chrono::milliseconds{200},
+                                             /*require_mutual_auth=*/false);
     }) << "ENOENT/ECONNREFUSED is the H3a retry signal — MUST NOT throw";
     EXPECT_FALSE(result.has_value())
         << "unbound endpoint must yield nullopt so the dial loop retries";
@@ -323,7 +325,8 @@ TEST_F(AttachProtocolTest, EmptyEndpoint_ThrowsNotNullopt)
     // A boundary/programmer error must throw (so the dial loop bails), NOT
     // return nullopt (which would spin the retry loop uselessly).
     EXPECT_THROW(
-        initiate_consumer_handshake("", cons_auth, prod.pub_z85, std::chrono::milliseconds{200}),
+        initiate_consumer_handshake("", cons_auth, prod.pub_z85, std::chrono::milliseconds{200},
+                                    /*require_mutual_auth=*/false),
         std::invalid_argument)
         << "empty endpoint is a programmer error — must throw, not retry";
 }
@@ -354,7 +357,8 @@ TEST_F(AttachProtocolTest, RejectsConsumerWithWrongSeckey)
                                 try
                                 {
                                     initiate_consumer_handshake(path, impersonator, prod.pub_z85,
-                                                                std::chrono::milliseconds{2000});
+                                                                std::chrono::milliseconds{2000},
+                                                                /*require_mutual_auth=*/false);
                                 }
                                 catch (...)
                                 {
@@ -631,7 +635,8 @@ TEST_F(AttachProtocolTest, ConsumerHandshakeReturnsNulloptOnAbsentEndpoint)
 
     ConsumerAuthMaterial cons_auth{"consumer.test", cons.pub_z85, cons.name};
     auto res = initiate_consumer_handshake(nonexistent, cons_auth, prod.pub_z85,
-                                           std::chrono::milliseconds{100});
+                                           std::chrono::milliseconds{100},
+                                           /*require_mutual_auth=*/false);
     EXPECT_FALSE(res.has_value())
         << "ENOENT/ECONNREFUSED on connect must return nullopt, not throw";
 }
@@ -826,9 +831,9 @@ TEST_F(AttachProtocolTest, MutualAuth_BackwardCompat_OldConsumerNoFrame3)
         {
             try
             {
-                connected_fd = initiate_consumer_handshake(
-                    path, cons_auth, prod.pub_z85,
-                    std::chrono::milliseconds{2000} /*require_mutual_auth defaults false*/);
+                connected_fd = initiate_consumer_handshake(path, cons_auth, prod.pub_z85,
+                                                           std::chrono::milliseconds{2000},
+                                                           /*require_mutual_auth=*/false);
             }
             catch (...)
             {

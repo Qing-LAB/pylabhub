@@ -248,7 +248,20 @@ scenarios.  Inventory: `TESTING_TODO.md` § "Test infrastructure inventory".
 
 ---
 
-## Active code reviews (5 — updated 2026-07-22)
+## Active code reviews (6 — updated 2026-07-30)
+
+- `code_review/REVIEW_SecurityTree_2026-07-30.md` — completion pass over the
+  ~14,500-line shm/zmq/curve tree (task #92). 🚧 **IN PROGRESS, 2 OPEN.**
+  Exists because the earlier same-day pass was signal-driven (residue markers,
+  compiler warnings, greps) rather than a read: it covered ~8,500 lines and
+  produced two findings that were WRONG from reasoning about unread code — one
+  whose proposed fix would have broken the HEP-0036 §6.7 Standby state.  The
+  doc carries a per-file coverage ledger, so "no findings" in an unread file
+  means nothing.  Open: S-1 (HIGH — a group/world-WRITABLE vault parent
+  directory is only a warning; the HEP rationale quoted for it covers only the
+  read bits, while write permission on the parent allows outright replacement
+  of the vault file), S-2 (MED — the vault read follows symlinks while the
+  write path refuses to).
 
 - `code_review/REVIEW_FullSystem_2026-07-20.md` — full-system HEP-vs-code audit
   (56 findings). 🚧 **52 RESOLVED (07-20→07-24), 4 OPEN** (#69 + 3

@@ -223,12 +223,23 @@ class PYLABHUB_UTILS_EXPORT AttachProtocolAcceptor
 ///      requires the plaintext to equal the challenge sent in step 1.
 ///   5. Any missing / mismatched piece raises `std::runtime_error`
 ///      with an `attach_producer_not_authenticated` marker.
-/// When `require_mutual_auth == false` (default), the consumer keeps
-/// the original 2-frame flow (backward compatible with pre-#262 producers).
+/// When `require_mutual_auth == false`, the consumer keeps the original
+/// 2-frame flow and NEVER verifies the producer's identity — it accepts an
+/// SCM_RIGHTS fd and maps shared memory from a peer it did not authenticate.
+///
+/// **There is no default.**  It was `= false`, justified as "backward
+/// compatible with pre-#262 producers" — but producer and consumer build from
+/// the same tree and ship together, and the project does not support partial
+/// deployments, so that peer cannot exist.  What the default actually did was
+/// hand the UNauthenticated flow to any caller who forgot the argument: both
+/// in-tree test callers landed on it silently, not by intent.  Every call site
+/// now states which flow it wants, and a new one cannot pick the weak path by
+/// omission.  Production passes `config.startup().shm_require_mutual_auth`,
+/// which defaults true.
 PYLABHUB_UTILS_EXPORT std::optional<int>
 initiate_consumer_handshake(const std::string &endpoint, const ConsumerAuthMaterial &self,
                             const std::string &producer_pubkey_z85,
-                            std::chrono::milliseconds timeout, bool require_mutual_auth = false);
+                            std::chrono::milliseconds timeout, bool require_mutual_auth);
 
 #endif // PYLABHUB_PLATFORM_LINUX
 

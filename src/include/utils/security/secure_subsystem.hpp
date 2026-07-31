@@ -279,12 +279,22 @@ class PYLABHUB_UTILS_EXPORT SecureSubsystem
     /// Callers that want a hard-failure signal should use
     /// `compute_blake2b(out, data, len) → bool` instead.
     ///
-    /// All-zeros can also be a LEGITIMATE hash output for a
-    /// specific input; treating it as a failure marker is
-    /// intentionally weak.  The alternative — returning
-    /// `std::optional<std::array<...>>` — would churn ~15 caller
-    /// sites without buying meaningful safety over "does your input
-    /// non-null and non-empty" upstream checks.
+    /// **Understand which way the risk runs.**  An earlier revision of this
+    /// comment justified the weak marker by saying all-zeros "can also be a
+    /// LEGITIMATE hash output for a specific input".  That is the harmless
+    /// direction and it is not reachable — producing 32 zero bytes from
+    /// BLAKE2b-256 is a preimage attack (~2^256).  Nobody will ever hit it.
+    ///
+    /// The direction that matters is the opposite one: on failure this
+    /// returns a value that compares EQUAL for every input.  Callers that
+    /// compare two of these — envelope tamper binding, schema tags — would
+    /// then agree unconditionally, so an integrity check built on it fails
+    /// OPEN, not closed.  That is why the callers below document why their
+    /// trigger is unreachable rather than simply not checking.
+    ///
+    /// The alternative — returning `std::optional<std::array<...>>` — would
+    /// churn ~15 caller sites; the chosen mitigation is instead that every
+    /// caller either checks, or states at the call site why it cannot fire.
     [[nodiscard]] std::array<std::uint8_t, 32> compute_blake2b_array(const void *data,
                                                                      std::size_t len);
 

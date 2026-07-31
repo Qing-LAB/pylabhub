@@ -218,7 +218,8 @@ std::thread spawn_consumer_thread(const std::string &endpoint, const TestKeypair
             {
                 ConsumerAuthMaterial cons_auth{cons_uid, cons_kp.pub_z85, cons_kp.name};
                 auto fd = initiate_consumer_handshake(endpoint, cons_auth, prod_pubkey_z85,
-                                                      std::chrono::milliseconds{2000});
+                                                      std::chrono::milliseconds{2000},
+                                                      /*require_mutual_auth=*/false);
                 if (!fd || *fd < 0)
                     return;
 
@@ -556,7 +557,8 @@ TEST_F(ShmAttachOrchestratorTest, HandshakeFailure_FromImpersonator)
             {
                 ConsumerAuthMaterial bogus{"impersonator.test", k_legit.pub_z85, k_attacker.name};
                 auto fd = initiate_consumer_handshake(path, bogus, prod.pub_z85,
-                                                      std::chrono::milliseconds{2000});
+                                                      std::chrono::milliseconds{2000},
+                                                      /*require_mutual_auth=*/false);
                 if (fd && *fd >= 0)
                     ::close(*fd);
             }

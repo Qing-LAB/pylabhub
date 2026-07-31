@@ -35,6 +35,14 @@ std::string compute_envelope_hash_impl(std::string_view identity, std::string_vi
     scratch.append(identity);
     scratch.append(msg_type);
     scratch.append(correlation_id);
+    // Unchecked deliberately, and safe here for a reason worth stating: this
+    // value IS the envelope tamper binding (I-ENVELOPE-BODY-BINDING), so a
+    // silent failure would be severe — sender and receiver would both compute
+    // all-zeros, agree, and the tamper check would pass.  It cannot fire:
+    // `compute_blake2b_array` fails only on a null `data` or a
+    // `crypto_generichash` error, and `std::string::data()` is never null
+    // (even when empty) while the 32-byte-outlen call has no failure mode.
+    // If either premise ever changes, this call must start checking.
     const auto hash =
         pylabhub::utils::security::secure().compute_blake2b_array(scratch.data(), scratch.size());
     return format_tools::bytes_to_hex(

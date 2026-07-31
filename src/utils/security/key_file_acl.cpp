@@ -129,13 +129,31 @@ AclVerdict stat_failure_verdict(const fs::path &path, KeyFileRole role, int errn
     return v;
 }
 
-/// HEP-CORE-0035 §4.6.2 parent-directory WARN: when checking a
-/// vault FILE, also stat its parent and append a soft warning to
-/// `diagnostic` (without flipping `ok` to false) if the parent has
-/// group/world bits set.  Per the spec note, "parent dir leak is
-/// recoverable; some operators want group-readable parents for
-/// shared host setups" — so this is an advisory, not a contract
-/// failure.  Concatenates onto existing diagnostic text via "; ".
+/// HEP-CORE-0035 §4.6.2 parent-directory check.  The mask is SPLIT by
+/// consequence, because the two halves are not the same kind of problem:
+///
+///   - WRITE bits (0022) WITHOUT the sticky bit → ERROR.  Permission to
+///     replace a directory entry comes from the DIRECTORY, not the file, so
+///     any such user can `rename(2)` or `unlink`+recreate the vault and
+///     substitute the hub's identity key — the file's own 0600 does not
+///     enter into it.
+///   - WRITE bits WITH the sticky bit (S_ISVTX, 01000) → NOT an error.  The
+///     sticky bit exists for exactly this: on such a directory only the
+///     file's owner, the directory's owner, or root may rename or unlink a
+///     file.  `/tmp` is mode 01777 and is a correct, safe location — a rule
+///     that rejected it would be a false positive, which is how this was
+///     first written and what the L2 suite caught.
+///   - READ/EXEC bits (0055) → WARN, `ok` unchanged.  These leak only the
+///     file's existence and name; per the spec note, "some operators want
+///     group-readable parents for shared host setups".
+///
+/// Amended 2026-07-30 (review S-1).  This was one `(pmode & 0077)` test
+/// producing a WARN for every bit, with the group-readable rationale quoted
+/// as justification — a reason about VISIBILITY used to downgrade a
+/// REPLACEMENT vector.  It also disagreed with `verify_vault_dir`, which
+/// already hard-fails on the same mask.
+///
+/// Appends onto existing diagnostic text via "; ".
 void append_parent_dir_warning(const fs::path &file_path, AclVerdict &v)
 {
     const fs::path parent = file_path.parent_path();
@@ -154,7 +172,30 @@ void append_parent_dir_warning(const fs::path &file_path, AclVerdict &v)
         return;
     }
     const uint32_t pmode = static_cast<uint32_t>(pst.st_mode) & 07777;
-    if ((pmode & 0077) == 0)
+
+    // Writable parent WITHOUT sticky — an ERROR, overriding any prior verdict.
+    // With sticky set the replacement vector is closed by the kernel, so a
+    // world-writable /tmp (01777) is fine and must not be rejected.
+    const bool sticky = (pst.st_mode & S_ISVTX) != 0;
+    if ((pmode & 0022) != 0 && !sticky)
+    {
+        std::ostringstream oss;
+        if (!v.diagnostic.empty())
+        {
+            oss << v.diagnostic << "; ";
+        }
+        oss << "parent directory " << parent << " is group/world-WRITABLE (mode " << octal4(pmode)
+            << ") and NOT sticky — any such user can rename(2) or unlink the "
+               "vault file and substitute their own; the vault's own 0600 does "
+               "not prevent it (HEP-CORE-0035 §4.6.2).  Run: chmod go-w "
+            << parent;
+        v.ok = false;
+        v.diagnostic = oss.str();
+        return;
+    }
+
+    // Readable/searchable parent — advisory only.
+    if ((pmode & 0055) == 0)
     {
         return;
     }
@@ -163,10 +204,10 @@ void append_parent_dir_warning(const fs::path &file_path, AclVerdict &v)
     {
         oss << v.diagnostic << "; ";
     }
-    oss << "parent directory " << parent << " is group/world-accessible (mode " << octal4(pmode)
-        << ") — recoverable per HEP-CORE-0035 §4.6.2 "
-           "(some operators want group-readable parents for shared "
-           "host setups), but consider: chmod 0700 "
+    oss << "parent directory " << parent << " is group/world-readable (mode " << octal4(pmode)
+        << ") — leaks the vault's existence and name only; recoverable per "
+           "HEP-CORE-0035 §4.6.2 (some operators want group-readable parents "
+           "for shared host setups), but consider: chmod 0700 "
         << parent;
     v.diagnostic = oss.str();
 }
@@ -544,12 +585,30 @@ SetModeResult set_keyfile_mode(const fs::path &path, KeyFileRole role, int *out_
             // canonical mode; operator owns them.
             return SetModeResult::NoCanonicalMode;
         }
-        if (::chmod(path.c_str(), static_cast<mode_t>(mode)) != 0)
+        // fchmod on an O_NOFOLLOW fd, not chmod on the path (review S-2).
+        // `chmod(path)` follows symlinks, so a link planted at `path` would
+        // have had the mode applied to its TARGET — tightening someone else's
+        // file while leaving the vault path itself unprotected.  Opening with
+        // O_NOFOLLOW first means we can only ever chmod the thing we looked
+        // at.  This is the same fd-based discipline `vault_crypto.cpp`
+        // already uses to defeat a pathological umask.
+        const int fd = ::open(path.c_str(),
+                              (role == KeyFileRole::VaultDir ? O_RDONLY | O_DIRECTORY : O_RDONLY) |
+                                  O_NOFOLLOW | O_CLOEXEC);
+        if (fd == -1)
         {
             if (out_errno != nullptr)
                 *out_errno = errno;
             return SetModeResult::ChmodFailed;
         }
+        if (::fchmod(fd, static_cast<mode_t>(mode)) != 0)
+        {
+            if (out_errno != nullptr)
+                *out_errno = errno;
+            ::close(fd);
+            return SetModeResult::ChmodFailed;
+        }
+        ::close(fd);
         return SetModeResult::Applied;
     }
     catch (...)
