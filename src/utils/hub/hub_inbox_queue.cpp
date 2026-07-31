@@ -16,7 +16,7 @@
 #include "utils/debug_info.hpp" // PLH_PANIC — unarmed-CURVE invariant
 #include "utils/logger.hpp"
 #include "utils/zmq_context.hpp"
-#include "utils/curve_socket.hpp"              // arm_curve_server (shared CURVE arm)
+#include "utils/curve_socket.hpp"              // arm_curve_server / arm_curve_client
 #include "utils/security/key_store.hpp"        // kRoleIdentityName, secure().keys()
 #include "utils/security/secure_subsystem.hpp" // secure()
 #include "utils/security/zap_router.hpp"       // ZapRouter, ZapDomainHandle
@@ -865,14 +865,8 @@ bool InboxClient::start()
                       "called before start() (HEP-CORE-0027 §3.5).",
                       pImpl->endpoint);
         }
-        {
-            namespace sec = pylabhub::utils::security;
-            auto &ks = sec::secure().keys();
-            pImpl->socket.set(zmq::sockopt::curve_publickey, ks.pubkey(pImpl->identity_key_name_));
-            ks.with_seckey(pImpl->identity_key_name_, [&](std::string_view seckey)
-                           { pImpl->socket.set(zmq::sockopt::curve_secretkey, seckey); });
-            pImpl->socket.set(zmq::sockopt::curve_serverkey, pImpl->server_pubkey_z85_);
-        }
+        pylabhub::utils::arm_curve_client(pImpl->socket, pImpl->identity_key_name_,
+                                          pImpl->server_pubkey_z85_);
 
         pImpl->socket.connect(pImpl->endpoint);
     }

@@ -12,6 +12,7 @@
 #include "utils/security/secure_subsystem.hpp"
 
 #include "plh_platform.hpp" // platform::get_pid()
+#include "utils/curve_socket.hpp" // arm_curve_client
 #include "utils/logger.hpp"
 #include "utils/wire_adapter.hpp"
 #include "utils/wire_bodies.hpp" // WireBodyError
@@ -790,10 +791,7 @@ bool BrokerRequestComm::connect(const Config &cfg)
                     "(KeyStore['{}']) endpoint='{}'",
                     cfg.broker_pubkey, ks.pubkey(cfg.keystore_name), cfg.keystore_name,
                     cfg.broker_endpoint);
-        pImpl->dealer->set(zmq::sockopt::curve_serverkey, cfg.broker_pubkey);
-        pImpl->dealer->set(zmq::sockopt::curve_publickey, ks.pubkey(cfg.keystore_name));
-        ks.with_seckey(cfg.keystore_name, [&](std::string_view sec)
-                       { pImpl->dealer->set(zmq::sockopt::curve_secretkey, sec); });
+        pylabhub::utils::arm_curve_client(*pImpl->dealer, cfg.keystore_name, cfg.broker_pubkey);
 
         // I-DEALER-IDENTITY (HEP-CORE-0046 §8.1):
         //   the DEALER MUST set ZMQ_ROUTING_ID to its owning role's
