@@ -572,10 +572,68 @@ that was tried and found wanting.**
    The REG_ACK wire field still carries bare keys; migrating it is the inbox
    slice's protocol change across broker and role.
 
-**Where it lives.**  Currently published by the broker as
-`PortableAtomicSharedPtr<const PeerAuthority>` rather than held in `HubState`
-as this section originally specified.  Replacement-not-mutation satisfies the
-reload requirement either way; the home is an open item.
+**Where it lives — DECIDED 2026-08-01.**  Owned by `HubHost`, as a **peer of
+`HubState`, not a member of it**, and published as an atomically-swapped
+immutable snapshot.
+
+This section originally specified `HubState`, and the implementation put it on
+`BrokerServiceImpl`.  Both are wrong, for the same reason: they answer
+different questions than the authority does.
+
+- **`HubState` is what is happening.**  Channels, roles, shm blocks, access
+  records, instance counters — every entry is a *consequence* of the hub
+  running.  The authority is not a consequence of anything: it is loaded from
+  the vault before the hub does anything and does not change because the hub
+  ran.  Filing it here would make the aggregate mean two things at once, and
+  the next contributor would reasonably add an `_on_authority_changed`
+  capability op alongside the other `_on_*` mutators — dissolving the
+  immutability the `Builder`/`build() &&` split exists to guarantee.
+
+- **`BrokerServiceImpl` is what the hub does.**  The broker is the hub's
+  behaviour, not a store.  That the object happens to outlive or be outlived
+  by another is a fact about wiring, not a reason.
+
+The authority is neither: it is **validated identity configuration in
+queryable form** — the answer to "who do I recognise", derived from
+`HubConfig::known_roles()` + `peers` and frozen.  `HubHost` already owns both
+the raw config and the running state, so the authority sits beside them as a
+third thing of its own kind:
+
+```
+HubHost
+├── HubConfig        raw operator input
+├── PeerAuthority    validated identity roster   ← peer of HubState
+└── HubState         what is happening now
+```
+
+The broker holds a non-owning pointer, exactly as it already does for
+`HubState`.
+
+**This shape is what survives role/hub unification.**  A role needs the same
+pair — its own running state, plus its own authority built from
+`REG_ACK.known_roles` for inbox attribution (§4.2.2).  "The process owner holds
+the running state and the identity roster as separate aggregates" is then one
+rule on both sides, rather than a hub-shaped exception.
+
+**Publication stays replacement-not-mutation.**  `HubHost` owns the snapshot
+pointer; publishing swaps it atomically.  Readers on the ZAP pump thread, the
+broker router thread, and (post-unification) the role process each take a
+`shared_ptr` to a frozen view.  Holding it in an aggregate whose other members
+are edited under a lock must NOT drag the authority into that discipline.
+
+**Malformed entries are fatal — DECIDED 2026-08-01.**  The `Builder` is the one
+place operator text becomes a recognised principal, so it is the one place that
+can refuse.  A `known_roles` or `peers` entry that does not parse — wrong type,
+missing field, a key that is not 40 valid Z85 characters — aborts hub startup
+with the offending entry named.  It is NOT skipped with a warning.
+
+Skipping is silent corruption: the hub comes up with every log green while a
+role it was configured to recognise has quietly lost its identity, and the
+first symptom is that device failing to connect for a reason buried in a
+startup line nobody re-reads.  This is a CURVE-authenticated,
+integrity-critical system with no partial-deployment story; a config the
+operator cannot trust to be loaded whole is worse than a hub that refuses to
+start.
 
 Both the ZAP handler (Layer 1) and the federation-trust gate (Layer 2)
 read from this single index. There is exactly one structure that
