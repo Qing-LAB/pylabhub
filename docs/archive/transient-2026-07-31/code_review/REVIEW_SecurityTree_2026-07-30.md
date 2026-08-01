@@ -1,7 +1,7 @@
 # REVIEW — Security tree (shm / zmq / curve), completion pass
 
-**Status:** ✅ **READ COMPLETE** — every file in scope has been read.
-S-1..S-10 ✅ FIXED; S-11 ❌ OPEN (LOW, robustness, fix not yet approved).
+**Status:** ✅ **COMPLETE** — every file in scope read; S-1..S-11 all ✅ FIXED.
+Archived per `docs/DOC_STRUCTURE.md §2.2`.
 **Date:** 2026-07-30. **Task:** #92.
 **Scope:** the ~14,500 lines under `src/utils/security/`, `src/utils/hub/`,
 `src/include/utils/security/`.
@@ -73,11 +73,11 @@ stated contract · **LOW** = correctness/clarity, no security consequence.
 | S-8 | MED | `hub_zmq_queue.cpp:1813-2093` | ✅ FIXED 2026-07-31 |
 | S-9 | LOW | `hub_zmq_queue.cpp:2041-2068` | ✅ FIXED 2026-07-31 |
 | S-10 | MED | `key_file_acl.cpp` + `vault_crypto.cpp` + `hub_vault.cpp` | ✅ FIXED 2026-07-31 |
-| S-11 | LOW | `hub_zmq_queue.cpp:472-498` | ❌ OPEN |
+| S-11 | LOW | `hub_zmq_queue.cpp:472-498` | ✅ FIXED 2026-07-31 |
 
 ---
 
-### S-11 ❌ LOW — the send thread's retry loop ignores the shutdown signal it was handed
+### S-11 ✅ FIXED — LOW — the send thread's retry loop ignores the shutdown signal it was handed
 
 `src/utils/hub/hub_zmq_queue.cpp:472-498`, `ZmqQueueImpl::run_send_thread_`.
 
@@ -122,10 +122,25 @@ construct one where `drain()` runs without `send_stop_` already set. It is a
 latent robustness gap, recorded so the next person changing `stop()`'s ordering
 knows what depends on it.
 
-**Fix direction (not applied — needs approval).** Have the inner loop test the
-same pair the outer one does, and give the retry a ceiling so a permanently
-blocked peer surfaces as a drop with a diagnostic rather than as a thread that
-looks busy forever.
+**What shipped.** The inner loop now tests the same pair the outer one does —
+`send_stop_ || ctx.shutdown_requested()` — so it honours the signal it was
+handed instead of depending on `stop()`'s statement ordering.
+
+**The retry ceiling was deliberately NOT added**, and the original fix
+direction above was wrong to suggest it. EAGAIN here means the peer is not
+draining; deciding to discard the owner's data after N attempts is a policy
+call, and HEP-CORE-0011's framework rule is that the framework reports state
+and the script decides. A silent drop-after-N would be exactly the
+baby-sitting that rule forbids.
+
+What the operator actually lacked was not a cap but *visibility*: an unbounded
+retry is indistinguishable from a healthy idle thread from outside. So the
+loop gained the same edge-triggered latch `InboxClientImpl` already uses —
+one `SendBlocked` line once a peer has refused ~0.5s of frames, one
+`SendRecovered` line with the retry count when it drains again, and silence in
+between. EAGAIN is the only in-process signal available here (libzmq exposes
+no receive-queue depth), and a line per 10ms retry would bury the log at
+precisely the moment it needs reading.
 
 ---
 
@@ -442,7 +457,7 @@ So a rationale about **visibility** is being used to downgrade a
 on `0077` for the vault directory itself. Only the parent-of-file path softens
 it — the two disagree about the same class of exposure.
 
-**Fix direction (not applied).** Split the mask: keep group/world *read* as
+**Fix direction, as originally filed** (superseded by "What shipped" below). Split the mask: keep group/world *read* as
 the documented advisory, make group/world *write* an error. This contradicts a
 documented HEP decision as literally written, so it needs an owner ruling +
 a HEP-CORE-0035 §4.6.2 amendment, not a quiet code change.
@@ -474,7 +489,7 @@ applies `::chmod(path, 0600)` by PATH, which also follows symlinks: a planted
 link means the mode is applied to the target instead. Folded here rather than
 raised separately, because it is reachable only under the same preconditions.
 
-**Fix direction (not applied).** Open with `O_NOFOLLOW` and read from the fd,
+**Fix direction, as originally filed** (superseded by "What shipped" below). Open with `O_NOFOLLOW` and read from the fd,
 mirroring the write path; `fchmod` on that fd instead of `chmod` on the path;
 consider `lstat` in `verify_vault_file` so the check can say "this is a
 symlink" rather than silently validating the target. **The pattern already
@@ -518,7 +533,7 @@ an ordinary deployment — but together they are unlikely. Severity is about
 likelihood here, not about the shape, which is the same silent-downgrade
 pattern as the two backdoors closed today.
 
-**Fix direction (not applied).** Treat the failure as a failure: capture
+**Fix direction, as originally filed** (superseded by "What shipped" below). Treat the failure as a failure: capture
 `errno` at the call site (the file's own stated discipline, `:80`) and either
 throw, or carry an explicit `credentials_valid` flag on `AcceptedPeer` that the
 L2 check must consult. Do not encode "unknown" as a value that can equal a
@@ -556,7 +571,7 @@ the shrink/SIGBUS case is not named anywhere.
 
 ---
 
-### S-7 ❌ LOW — the frame-size cap bounds input bytes, not what msgpack will allocate
+### S-7 ✅ FIXED — LOW — the frame-size cap bounds input bytes, not what msgpack will allocate
 
 `src/utils/hub/hub_zmq_queue.cpp:339` (`run_recv_thread_`) and the equivalent
 call in `hub_inbox_queue.cpp::recv_one` both do:
@@ -739,7 +754,7 @@ the project says it does not support — the same shape as
 `PeerAllowlist::unrestricted` citing an `--allow-anonymous-data` flag that
 never existed (#91).
 
-**Fix direction (not applied).** Flip the default to `true`, or better, remove
+**Fix direction, as originally filed** (superseded by "What shipped" below). Flip the default to `true`, or better, remove
 the default entirely so every call site states its intent — the two test
 callers then declare whether they mean to test the unauthenticated flow.
 Removing the default is the compile-time-refusal shape that worked for #91.
@@ -863,7 +878,7 @@ value that compares EQUAL across different inputs, so every downstream equality
 check silently passes.  A maintainer consulting this header to decide whether
 checking matters is pointed at the harmless direction.
 
-**Fix direction (not applied).** Rewrite the rationale to name the real
+**Fix direction, as originally filed** (superseded by "What shipped" below). Rewrite the rationale to name the real
 consequence — "if this ever fires, every equality check on the result agrees,
 so integrity checks fail open" — and note at the `wire_envelope` and schema-tag
 sites why the trigger is unreachable there (`std::string::data()` is non-null),

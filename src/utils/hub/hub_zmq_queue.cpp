@@ -183,6 +183,22 @@ struct ZmqQueueImpl
     std::atomic<uint64_t> recv_gap_count_{0}; ///< [ZQ10] sequence gaps
     std::atomic<uint64_t> send_drop_count_{0};
     std::atomic<uint64_t> send_retry_count_{0};
+
+    /// Edge latch for the SendBlocked / SendRecovered pair.  Touched only by
+    /// the send thread, so a plain bool is correct — no other thread reads it.
+    ///
+    /// Same shape as `InboxClientImpl::send_blocked_`: EAGAIN is the only
+    /// in-process signal that a peer has stopped draining (libzmq exposes no
+    /// receive-queue depth), and a line per retry would bury the log at
+    /// exactly the moment an operator needs to read it.  One line on the way
+    /// into the blocked state, one on the way out.
+    bool send_blocked_{false};
+
+    /// Retries before the first SendBlocked line.  At the 10ms default
+    /// interval this is ~0.5s of a peer not accepting anything — long enough
+    /// that ordinary backpressure stays quiet, short enough to show up well
+    /// before an operator starts wondering.
+    static constexpr uint64_t kSendBlockedWarnAfterRetries = 50;
     std::atomic<uint64_t> data_drop_count_{0};
 
     // ── CURVE auth state (HEP-CORE-0036 §7 + HEP-CORE-0040 §8.4) ──────────────
@@ -469,6 +485,19 @@ struct ZmqQueueImpl
             }
 
             // ── Send with retry on EAGAIN ─────────────────────────────────
+            //
+            // The retry is deliberately unbounded: EAGAIN here means the peer
+            // is not draining, and dropping the caller's data after N attempts
+            // would be this layer deciding a policy that belongs to the owner
+            // (HEP-CORE-0011 — the framework reports state, the script decides).
+            // What the loop MUST do is notice when it is being told to stop.
+            //
+            // It used to check only `send_stop_`, while the outer loop checked
+            // `ctx.shutdown_requested()`.  That worked solely because `stop()`
+            // sets `send_stop_` before calling `drain()` — so correctness rested
+            // on the ordering of two statements in another function rather than
+            // on this loop honouring the signal it was handed.  `run_recv_thread_`
+            // checks both; so does this one now.
             while (socket)
             {
                 try
@@ -476,15 +505,42 @@ struct ZmqQueueImpl
                     auto sr = socket.send(zmq::const_buffer(send_sbuf_.data(), send_sbuf_.size()),
                                           zmq::send_flags::dontwait);
                     if (sr.has_value())
-                        break; // sent
-
-                    // EAGAIN — send ring full
-                    if (send_stop_.load(std::memory_order_relaxed))
                     {
+                        // Recovered — report the edge, once, with how long we
+                        // were stuck.  Silence here would leave the operator
+                        // unable to tell "never blocked" from "blocked and
+                        // came back".
+                        if (send_blocked_)
+                        {
+                            send_blocked_ = false;
+                            LOGGER_INFO("[hub::ZmqQueue] event=SendRecovered queue='{}' "
+                                        "after {} retries (peer draining again)",
+                                        queue_name,
+                                        send_retry_count_.load(std::memory_order_relaxed));
+                        }
+                        break; // sent
+                    }
+
+                    // EAGAIN — peer is not draining.
+                    if (send_stop_.load(std::memory_order_relaxed) || ctx.shutdown_requested())
+                    {
+                        // Teardown: drop rather than retry, matching the
+                        // documented "on stop, send remaining items once" rule.
                         ++send_drop_count_;
                         break;
                     }
-                    ++send_retry_count_;
+                    const auto retries = send_retry_count_.fetch_add(1, std::memory_order_relaxed);
+                    // Edge-triggered, not per-retry: a line every 10ms would
+                    // bury the log at exactly the moment it needs reading.
+                    if (!send_blocked_ && retries >= kSendBlockedWarnAfterRetries)
+                    {
+                        send_blocked_ = true;
+                        LOGGER_WARN("[hub::ZmqQueue] event=SendBlocked queue='{}' "
+                                    "endpoint='{}' — peer has not accepted a frame in "
+                                    "{} retries ({}ms apart); still retrying (suppressing "
+                                    "further lines until it recovers)",
+                                    queue_name, endpoint, retries, send_retry_interval_ms_);
+                    }
                     std::this_thread::sleep_for(std::chrono::milliseconds(send_retry_interval_ms_));
                     continue;
                 }

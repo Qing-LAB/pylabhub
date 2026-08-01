@@ -1833,6 +1833,61 @@ auto json = nlohmann::json::parse(msg);             // ← parse only after auth
 
 ---
 
+### A prescribed recipe needs one implementation, not a paragraph
+
+If a design document specifies *how* to do something — the exact flags, the
+exact order — that specification belongs in a function, not in prose that each
+call site retypes.
+
+Source: review S-11/S-10 batch, 2026-07-31. HEP-CORE-0035 §4.6.1 gave the
+protected-file write recipe as a sentence (`open(O_CREAT|O_EXCL, mode)`, then
+`fchmod`, never trust the umask). Three files implemented that sentence
+independently, and they had drifted in ways nobody chose:
+
+- Only one of the three called `fsync`, so the **vault** — the file holding the
+  only copy of an identity keypair — was the least durable write in the tree.
+- One file's Windows branch used a truncating `ofstream`, so the
+  refuse-to-overwrite guarantee its POSIX branch enforced with `O_EXCL`, and
+  advertised in its own thrown error text, did not exist on that platform.
+
+Neither was a decision. Both are the ordinary result of a rule that has to be
+retyped to be obeyed. The fix was one `write_keyfile(path, contents, role,
+policy)` placed in the module that already owned the mode table — because
+"what mode should this have" and "how do I write it" must agree, and one file
+is the only way to keep them agreeing.
+
+**Test for this shape:** if a HEP sentence contains an API call sequence, grep
+for that sequence. More than one hit is a bug waiting to be found by
+divergence rather than by review.
+
+### Derive state from the resource; do not run a parallel flag beside it
+
+A boolean that says "I am running" can disagree with reality. A pointer to the
+thing you are running cannot.
+
+Source: review S-8, 2026-07-31. `ZmqQueue::start()` set
+`std::atomic<bool> running_ = true` before the work that could fail. An
+exception type the handler list did not enumerate skipped the reset, leaving
+the queue Active-looking with nothing bound — and `start()`'s own idempotence
+check (`if (running_) return true`) then reported **success** on every retry.
+A scope guard now owns the unwind, which is correct but still defends a
+representation where "Active" and "died halfway through starting" are the same
+bit.
+
+`ShmQueue` in the same tree shows the shape that removes the question:
+
+```cpp
+bool ShmQueue::is_running() const noexcept
+{
+    return pImpl && (pImpl->dbc.get() != nullptr || pImpl->dbp.get() != nullptr);
+}
+```
+
+There is no flag to leave stale, because the only way to *say* you are running
+is to *hold* the resource. Prefer this when adding a lifecycle to a new class.
+Where a flag already exists, a scope guard is the minimum; the flag is still
+the thing that made the bug silent.
+
 ## Error Taxonomy — Broker, Producer, and Consumer
 
 This taxonomy governs all error-handling decisions across `BrokerService`, `hub::Producer`,
@@ -2233,6 +2288,30 @@ for the operator-side details, and the memory rule
 - [ ] No unnecessary memory barriers
 
 ---
+
+### Reading discipline for module-wide reviews
+
+Added after review #92, 2026-07-31, where an earlier same-day pass over the
+same tree was signal-driven — residue markers, compiler warnings, greps — and
+produced two findings that were **wrong** because they reasoned about code
+nobody had opened. One of the two proposed a "fix" that would have broken the
+HEP-CORE-0036 §6.7 Standby state.
+
+- **Read the file. Do not infer from names, comments, or greps.** A grep tells
+  you a symbol exists, not what it does.
+- **Keep a per-file coverage ledger in the review document**, with honest line
+  counts. "No findings" in a file nobody opened means nothing, and a reader six
+  months later cannot tell the two apart unless the document says so.
+- **Prefer a structural refusal over an audit item** where the shape allows it.
+  A `PLH_PANIC` on an unarmed CURVE socket found a plaintext ROUTER in an
+  unrelated test suite that no amount of reading the subject files would have
+  surfaced; deleting a permissive enum member named five more sites at compile
+  time. A refusal keeps working after the reviewer stops looking.
+- **Write the regression test before believing the finding.** In this review
+  two write-ups survived reading and were then falsified by their own tests —
+  one claimed a failure scenario the factory already rejected, the other
+  claimed a bound tighter than the library can express. Both had already
+  shipped in the review document.
 
 ## Session Hygiene — Keeping TODO State Current
 

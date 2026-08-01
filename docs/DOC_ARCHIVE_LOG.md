@@ -6,6 +6,52 @@
 
 ## Archive batches
 
+### 2026-07-31 (#92 security-tree review — 11 findings, merged into HEP-0035 + IMPLEMENTATION_GUIDANCE)
+
+`REVIEW_SecurityTree_2026-07-30.md` completed (S-1..S-11 all ✅ FIXED) and moved
+to `docs/archive/transient-2026-07-31/code_review/`.
+
+The review existed because an earlier same-day pass over the same tree was
+signal-driven — residue markers, compiler warnings, greps — rather than a read.
+That pass covered ~8,500 of ~14,500 lines and produced two findings that were
+**wrong** because they reasoned about unread code; one proposed a fix that
+would have broken the HEP-CORE-0036 §6.7 Standby state. The completion pass
+read every file in scope and carried a per-file coverage ledger throughout.
+
+| Finding | Merged into | Shipped-code evidence |
+|---|---|---|
+| S-1, S-2 (vault parent-dir write bits; symlink-following read) | HEP-CORE-0035 §4.6.2 | `append_parent_dir_warning` sticky-bit carve-out + `read_file` `O_NOFOLLOW` (`key_file_acl.cpp`, `vault_crypto.cpp`); commit `654c2083` |
+| S-3, S-4 (`SO_PEERCRED` fail-closed; memfd `F_SEAL_SHRINK\|GROW`) | — (local, no doc change) | `shm_capability_channel.cpp:469`, `:148` |
+| S-5 (mutual-auth default) | HEP-CORE-0041 §9 | Default **removed** from `initiate_consumer_handshake`, not flipped — every call site now states its flow (`attach_protocol.hpp:231`) |
+| S-6, S-9 (docs claiming more than the code checked) | — | `compute_blake2b_array` doc; CURVE guard comment now says *configured*, not *negotiated*, citing libzmq `options.cpp:1159` |
+| S-7 (unbounded msgpack decode) | — | `wire_detail::decode_frame` — one bounded entry point replacing three raw `msgpack::unpack` sites; nine Pattern-1 tests in `test_layer1_zmq_wire_frame` |
+| S-8 (failed `start()` left the queue Active-looking; retry reported success) | **IMPLEMENTATION_GUIDANCE** § "Derive state from the resource" | `make_scope_guard` + non-throwing boundary in all three `start()`s; pinned by `ZmqQueueAuthTest.FailedStart_LeavesQueueStandby_AndRetryStillFails`; commit `fab0b460` |
+| S-10 (HEP §4.6.1's write recipe was prose, typed out 3×, drifted) | **HEP-CORE-0035 §4.6.1** + **IMPLEMENTATION_GUIDANCE** § "A prescribed recipe needs one implementation" | `security::write_keyfile(path, contents, role, policy)`; ~185 lines net removed; the vault was the only one of the three writers without `fsync`, and one Windows branch silently truncated where POSIX refused |
+| S-11 (send retry ignored the shutdown signal) | — | Inner loop now tests `send_stop_ \|\| ctx.shutdown_requested()`, plus the `SendBlocked`/`SendRecovered` edge latch |
+| Review method | **IMPLEMENTATION_GUIDANCE** § "Reading discipline for module-wide reviews" | read-don't-infer, per-file coverage ledger, prefer structural refusals, write the test before believing the finding |
+
+**Two findings were falsified by their own regression tests, after they had
+already shipped in the review document.** Recorded rather than quietly amended:
+
+- S-8 was filed HIGH claiming a mistyped key name in config would abort the
+  process. `validate_curve_factory_params` calls `ks.has(name)`, so the factory
+  returns nullptr and a typo never reaches `start()`. The real window is
+  construct → `KeyStore::remove` → `start()`. **Severity corrected to MED.**
+- S-7's doc comment called `max_payload_fields` "the true ceiling" for the array
+  bound. msgpack exposes one array limit for every array in a message and the
+  outer frame is always a 5-tuple, so the bound cannot go below 5. Comment
+  corrected; a test now pins the floor so nobody "tightens" it and breaks
+  decoding.
+
+One deliberate non-fix: S-11's original write-up proposed a retry ceiling. Not
+implemented — discarding the owner's data after N attempts is a policy decision
+that HEP-CORE-0011 assigns to the script, not the framework. The operator's
+actual gap was visibility, which the edge latch closes.
+
+Verified: Debug 2736/2736, Release 2733/2733. Commits `654c2083`, `0d497a01`,
+`fab0b460`, `ea2ca457`, `e5f663d0`.
+
+
 ### 2026-07-26 (#74 objective peer counts — merged into HEP-0028/0007/0017/0036)
 
 Design draft `DRAFT_objective_peer_counts_2026-07-26.md` (SHIPPED) merged into

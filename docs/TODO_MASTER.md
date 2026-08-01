@@ -248,29 +248,7 @@ scenarios.  Inventory: `TESTING_TODO.md` § "Test infrastructure inventory".
 
 ---
 
-## Active code reviews (6 — updated 2026-07-30)
-
-- `code_review/REVIEW_SecurityTree_2026-07-30.md` — completion pass over the
-  ~14,500-line shm/zmq/curve tree (task #92). ✅ **READ COMPLETE 2026-07-31 —
-  S-1..S-10 FIXED, S-11 OPEN (LOW).**  Every file in scope has been opened; the
-  per-file coverage ledger says "read" throughout, so no claim in it rests on
-  inference.  Exists because the earlier same-day pass was signal-driven
-  (residue markers, compiler warnings, greps) rather than a read: it covered
-  ~8,500 lines and produced two findings that were WRONG from reasoning about
-  unread code — one whose proposed fix would have broken the HEP-0036 §6.7
-  Standby state.
-  Fixed: S-1/S-2 (vault parent-dir write bits; symlink-following read),
-  S-3/S-4 (SO_PEERCRED fail-closed; memfd seals), S-5 (mutual-auth default
-  REMOVED from the API rather than flipped), S-6/S-9 (docs that overstated what
-  the code checked), S-7 (unbounded msgpack decode → one bounded
-  `decode_frame`), S-8 (failed `start()` left the queue Active-looking and the
-  retry reported success; scope guard + non-throwing boundary), S-10 (HEP-0035
-  §4.6.1's write recipe was prose typed out three times and had drifted — the
-  vault was the only one of the three without `fsync`).
-  Open: **S-11** (LOW — `run_send_thread_`'s EAGAIN retry checks `send_stop_`
-  but not `ctx.shutdown_requested()`, so correctness rests on `stop()`'s
-  statement ordering; task #94).  **NOT archived**: DOC_STRUCTURE §2.2 gates
-  archiving on all follow-ups being addressed.
+## Active code reviews (5 — updated 2026-07-31)
 
 - `code_review/REVIEW_FullSystem_2026-07-20.md` — full-system HEP-vs-code audit
   (56 findings). 🚧 **52 RESOLVED (07-20→07-24), 4 OPEN** (#69 + 3
