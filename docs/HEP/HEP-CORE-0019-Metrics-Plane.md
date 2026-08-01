@@ -671,8 +671,10 @@ sources are the X-macros listed above.
 | `recv_overflow_count` | ZMQ-rx: messages dropped because the recv-ring filled. |
 | `recv_frame_error_count` | ZMQ-rx: frames rejected due to wire-shape mismatch / decoding error. |
 | `recv_gap_count` | ZMQ-rx: monotonic sequence gaps detected (one increment per detected gap, not per missing slot). |
+| `pending_recv_count` | ZMQ-rx: items received and not yet read — a **live depth**, not a running total, and not cleared by a metrics reset.  Read as a fraction of `capacity()` (not duplicated into the struct).  SHM: 0 — the DataBlock sync policy governs what a consumer may skip, so "unread" is not a backlog there. |
 | `send_drop_count` | ZMQ-tx: messages dropped because the send-ring filled (overflow_policy=drop). |
 | `send_retry_count` | ZMQ-tx: retries inside the send-ring policy loop. |
+| `pending_send_count` | ZMQ-tx: items written by the owner and not yet on the wire — a **live depth**, same semantics as `pending_recv_count`.  **This is the signal for a stalled peer:** `send_retry_count` is cumulative and cannot separate one long stall from many brief hiccups, whereas a rising `pending_send_count` says the backlog is growing *now*, while there is still room to react.  SHM: 0 — writes land in the DataBlock directly, so nothing queues in-process. |
 | `checksum_error_count` | Slots where BLAKE2b verification failed (consumer side). |
 
 **`loop.*`** (LoopMetricsSnapshot — host's data-loop driver):

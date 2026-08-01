@@ -119,10 +119,22 @@ inline OverflowPolicy parse_overflow_policy(const std::string &s, const char *co
  * @brief Unified transport-agnostic diagnostic counters for QueueReader/QueueWriter
  * implementations.
  *
- * All counters are read atomically per-field.  Neighbouring fields may reflect
- * slightly different instants if a concurrent write is in progress — this is
- * acceptable for diagnostics.  For a fully consistent snapshot, stop() the queue
- * first so all background threads have quiesced.
+ * Most fields are read atomically per-field.  The two `pending_*` depths are
+ * instead read under the ring mutex, because each is maintained alongside its
+ * ring's head/tail indices and is only consistent with those held.
+ *
+ * Either way, neighbouring fields may reflect slightly different instants if a
+ * concurrent write is in progress — acceptable for diagnostics.  For a fully
+ * consistent snapshot, stop() the queue first so all background threads have
+ * quiesced.
+ *
+ * ## Counters vs gauges
+ *
+ * Most fields accumulate and are zeroed by `reset_metrics()`.  The `pending_*`
+ * depths are **gauges** — current occupancy, read fresh per call, and NOT
+ * cleared by a reset, because zeroing one would report an empty queue that is
+ * in fact full.  Capacity is deliberately not duplicated here; `capacity()`
+ * already returns it on both `QueueReader` and `QueueWriter`.
  *
  * ## Timing fields (Domain 2+3, HEP-CORE-0008 §10)
  *
@@ -132,8 +144,9 @@ inline OverflowPolicy parse_overflow_policy(const std::string &s, const char *co
  *
  * ## Transport-specific counters
  *
- * ZMQ-specific: recv_frame_error_count, recv_gap_count, send_drop_count, send_retry_count
- * (always 0 for ShmQueue).
+ * ZMQ-specific: recv_frame_error_count, recv_gap_count, send_drop_count,
+ * send_retry_count, pending_recv_count, pending_send_count (always 0 for
+ * ShmQueue — see each field's note for why).
  */
 struct QueueMetrics
 {
@@ -162,6 +175,21 @@ struct QueueMetrics
     /// ZmqQueue only; always 0 for ShmQueue.
     uint64_t recv_gap_count{0};
 
+    /// Items received and not yet handed to the reader — a live depth, not a
+    /// running total.  Read fresh on every `metrics()` call and deliberately
+    /// NOT cleared by `reset_metrics()`: zeroing a gauge would report an empty
+    /// queue that is in fact full.
+    ///
+    /// Read as a fraction of `QueueReader::capacity()` — a backlog of 47 means
+    /// nothing until you know whether the ring holds 64 or 4096.  Capacity is
+    /// NOT duplicated into this struct; `capacity()` already returns it for
+    /// both transports.
+    ///
+    /// ZmqQueue: items in the recv ring.  ShmQueue: 0 — the DataBlock's sync
+    /// policy governs what a consumer may skip, so "unread" is not a backlog
+    /// there in the sense this field means.
+    uint64_t pending_recv_count{0};
+
     // ── Send side (write_commit path) ─────────────────────────────────────────
     /// Frames permanently dropped (zmq_send error during stop drain, or non-retriable error).
     /// ZmqQueue only; always 0 for ShmQueue.
@@ -170,6 +198,24 @@ struct QueueMetrics
     /// Transient EAGAIN retries by the send_thread_ (ZMQ HWM temporarily exceeded).
     /// ZmqQueue only; always 0 for ShmQueue.
     uint64_t send_retry_count{0};
+
+    /// Items written by the owner and not yet on the wire — a live depth, not
+    /// a running total.  Same gauge semantics as `pending_recv_count`: read
+    /// fresh per call, never cleared by `reset_metrics()`.
+    ///
+    /// **This is the signal to watch for a stalled peer.**  `send_retry_count`
+    /// tells you how much retrying has happened in total, which cannot
+    /// distinguish one long stall from many brief hiccups.  A rising
+    /// `pending_send_count` says the backlog is growing *now*, while there is
+    /// still room to react — the framework reports the depth and the script
+    /// decides what to do about it (HEP-CORE-0011).
+    ///
+    /// Read as a fraction of `QueueWriter::capacity()`, which already returns
+    /// the send-ring depth — not duplicated here.
+    ///
+    /// ZmqQueue: filled slots in the send ring.  ShmQueue: 0 — writes land in
+    /// the DataBlock directly, so nothing queues in-process.
+    uint64_t pending_send_count{0};
 
     // ── Checksum ─────────────────────────────────────────────────────────────
     /// Slot checksum verification failures in read_acquire().
@@ -204,10 +250,45 @@ struct QueueMetrics
     X(recv_overflow_count)                                                                         \
     X(recv_frame_error_count)                                                                      \
     X(recv_gap_count)                                                                              \
+    X(pending_recv_count)                                                                          \
     X(send_drop_count)                                                                             \
     X(send_retry_count)                                                                            \
+    X(pending_send_count)                                                                          \
     X(checksum_error_count)
 // NOLINTEND(cppcoreguidelines-macro-usage)
+
+/// Number of entries in `PYLABHUB_QUEUE_METRICS_FIELDS`, counted by the
+/// preprocessor rather than maintained by hand.
+// Intentionally an expression fragment, not a parenthesised value: the
+// expansions are summed (`0 +1 +1 ...`), so wrapping each in parens would not
+// compile.
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage,bugprone-macro-parentheses)
+#define PYLABHUB_QUEUE_METRICS_COUNT_ONE(field) +1
+inline constexpr std::size_t kQueueMetricsFieldCount =
+    0 PYLABHUB_QUEUE_METRICS_FIELDS(PYLABHUB_QUEUE_METRICS_COUNT_ONE);
+#undef PYLABHUB_QUEUE_METRICS_COUNT_ONE
+
+/// The struct and its serialization list must not drift apart.
+///
+/// Adding a member to `QueueMetrics` without the matching `X()` line does not
+/// break any build and does not fail any test — the field simply never reaches
+/// JSON, scripts, or the admin console. It is a silent hole, and it was made
+/// for real while adding `pending_send_count` / `pending_recv_count`
+/// (2026-07-31): both queue sweeps passed, 2736 and 2733 green, with the
+/// fields invisible to every consumer.
+///
+/// Every member is a `uint64_t`, so the struct's size in `uint64_t` units is
+/// exactly the member count. Comparing that to the macro's entry count turns
+/// the omission into a compile error at the point of the mistake.
+///
+/// If this fires after adding a member of some OTHER type, the arithmetic no
+/// longer holds and this assert needs rethinking rather than silencing — but
+/// stop and consider whether a non-`uint64_t` belongs in a struct whose whole
+/// contract is "flat list of counters and gauges".
+static_assert(sizeof(QueueMetrics) == kQueueMetricsFieldCount * sizeof(std::uint64_t),
+              "QueueMetrics has a member with no PYLABHUB_QUEUE_METRICS_FIELDS entry (or vice "
+              "versa). A member without its X() line compiles and tests clean while being "
+              "absent from every metrics consumer — add the X() line.");
 
 /// Negotiated transport-level authentication mechanism of a started
 /// queue.  Transport-agnostic enum: each concrete queue subclass

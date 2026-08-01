@@ -2691,6 +2691,25 @@ QueueMetrics ZmqQueue::metrics() const noexcept
     m.send_drop_count = pImpl->send_drop_count_.load(std::memory_order_relaxed);
     m.send_retry_count = pImpl->send_retry_count_.load(std::memory_order_relaxed);
     m.checksum_error_count = pImpl->ctx_metrics_.checksum_error_count_val();
+
+    // Live depths.  These are the only fields here read under a lock rather
+    // than from an atomic: `ring_count_` / `send_count_` are maintained
+    // alongside the head/tail indices, so they are consistent only with those
+    // indices held.  Locking inside a `noexcept` member matches
+    // `producer_peer_count()`, `is_admission_populated()` and
+    // `is_configured()`, which do the same; the hold is two integer reads.
+    //
+    // Both are reported regardless of mode: a reader's send ring is empty and
+    // a writer's recv ring is empty, so the unused side reads 0/0 without a
+    // branch.
+    {
+        std::lock_guard<std::mutex> lk(pImpl->recv_mu_);
+        m.pending_recv_count = static_cast<uint64_t>(pImpl->ring_count_);
+    }
+    {
+        std::lock_guard<std::mutex> lk(pImpl->send_mu_);
+        m.pending_send_count = static_cast<uint64_t>(pImpl->send_count_);
+    }
     return m;
 }
 
@@ -2705,6 +2724,9 @@ void ZmqQueue::reset_metrics()
     pImpl->recv_gap_count_.store(0, std::memory_order_relaxed);
     pImpl->send_drop_count_.store(0, std::memory_order_relaxed);
     pImpl->send_retry_count_.store(0, std::memory_order_relaxed);
+    // pending_*_count is NOT reset here.  They are live depths
+    // read straight from the rings on each metrics() call, not accumulators —
+    // "resetting" one would report an empty queue that is in fact full.
     pImpl->t_iter_start_ = {};
     pImpl->t_acquired_ = {};
 }
