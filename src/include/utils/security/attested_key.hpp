@@ -116,7 +116,7 @@ class PYLABHUB_UTILS_EXPORT AttestedKey
     /// Projection for admission APIs that speak `PeerIdentity`.
     [[nodiscard]] PeerIdentity as_peer_identity() const
     {
-        return PeerIdentity{kCurveMechanism, key_.str()};
+        return PeerIdentity{kCurveMechanism, std::string{key_.view()}};
     }
 
   private:

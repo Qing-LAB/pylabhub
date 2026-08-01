@@ -380,7 +380,7 @@ TEST_F(ZmqQueueTest, PullFrom_EmptySchema_SchemaPending_ApplyAndStartRefused)
     ack["producers"] = nlohmann::json::array(
         {nlohmann::json{{"role_uid", "prod.pending.uid1"},
                         {"endpoint", "tcp://127.0.0.1:5999"},
-                        {"pubkey_z85", std::string{test_server_key().str()}}}});
+                        {"pubkey_z85", std::string{test_server_key().view()}}}});
     ExpectLogError("slot schema still pending");
     EXPECT_FALSE(q->apply_master_approval(ack));
     EXPECT_FALSE(q->is_configured());
@@ -442,7 +442,7 @@ TEST_F(ZmqQueueTest, ConfigureSlotSchema_ThenApply_RoundtripDelivers)
     ack["producers"] = nlohmann::json::array(
         {nlohmann::json{{"role_uid", "prod.pending.uid2"},
                         {"endpoint", ep},
-                        {"pubkey_z85", std::string{test_server_key().str()}}}});
+                        {"pubkey_z85", std::string{test_server_key().view()}}}});
     ASSERT_TRUE(pull->apply_master_approval(ack));
     ASSERT_TRUE(pull->is_running());
     std::this_thread::sleep_for(50ms); // connection setup (as Roundtrip_SingleItem)
@@ -3124,7 +3124,7 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_SubSetProducerPeers_MultiPeerRefused
     auto sub = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(opts));
     ASSERT_NE(sub, nullptr);
 
-    const std::string pk{test_server_key().str()};
+    const std::string pk{test_server_key().view()};
     std::vector<pylabhub::hub::ProducerPeer> peers;
     peers.push_back({/*role_uid=*/"p0",
                      /*endpoint=*/"tcp://127.0.0.1:1234",
@@ -3239,7 +3239,7 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanInProducer_WireApplyMasterApproval)
     reg_ack["initial_allowlist"] = nlohmann::json::array();
     reg_ack["initial_allowlist"].push_back({{"role_uid", "consumer0"},
                                             {"endpoint", ep},
-                                            {"pubkey_z85", std::string{test_server_key().str()}}});
+                                            {"pubkey_z85", std::string{test_server_key().view()}}});
     ASSERT_TRUE(push->apply_master_approval(reg_ack))
         << "apply_master_approval must promote initial_allowlist[0] "
            "endpoint + pubkey_z85 on a DIALING PUSH queue";
@@ -3300,7 +3300,7 @@ TEST_F(ZmqQueueTest, ApplyMasterApproval_FanOutDialingRejectsMultiPeer)
     auto sub = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(opts));
     ASSERT_NE(sub, nullptr);
 
-    const std::string pk{test_server_key().str()};
+    const std::string pk{test_server_key().view()};
     nlohmann::json ack;
     ack["producers"] = nlohmann::json::array();
     ack["producers"].push_back({{"endpoint", "tcp://127.0.0.1:1"}, {"pubkey_z85", pk}});

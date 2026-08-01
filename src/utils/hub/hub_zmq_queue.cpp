@@ -862,7 +862,7 @@ ZmqQueue::pull_from(const std::string &endpoint,
     // unconditionally — that would pass 40 zero bytes through and
     // libzmq would silently accept them.
     const std::string server_pubkey_str =
-        server_pubkey.empty() ? std::string{} : std::string{server_pubkey.str()};
+        server_pubkey.empty() ? std::string{} : std::string{server_pubkey.view()};
 
     if (auto err =
             validate_curve_factory_params(identity_key_name, server_pubkey_str, /*bind_side=*/bind);
@@ -901,7 +901,7 @@ ZmqQueue::push_to(const std::string &endpoint, std::vector<ZmqSchemaField> schem
                   pylabhub::utils::security::Z85PublicKey server_pubkey)
 {
     const std::string server_pubkey_str =
-        server_pubkey.empty() ? std::string{} : std::string{server_pubkey.str()};
+        server_pubkey.empty() ? std::string{} : std::string{server_pubkey.view()};
     if (auto err = validate_curve_factory_params(identity_key_name, server_pubkey_str,
                                                  /*bind_side=*/bind);
         !err.empty())
@@ -1004,7 +1004,7 @@ std::unique_ptr<ZmqQueue> ZmqQueue::create_reader(pylabhub::hub::ChannelTopology
                          opts.endpoint);
             return nullptr;
         }
-        const std::string server_pubkey_str{opts.server_pubkey.str()};
+        const std::string server_pubkey_str{opts.server_pubkey.view()};
         if (auto err = validate_curve_factory_params(opts.identity_key_name, server_pubkey_str,
                                                      /*bind_side=*/false);
             !err.empty())

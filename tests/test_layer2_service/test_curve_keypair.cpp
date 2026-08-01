@@ -31,6 +31,7 @@
  *     cannot be confused with a validated pubkey).
  */
 
+#include <type_traits>
 #include "utils/security/curve_keypair.hpp"
 
 #include <gtest/gtest.h>
@@ -74,7 +75,7 @@ TEST(Z85PublicKeyTest, Validate_ValidLength_Succeeds)
     EXPECT_NO_THROW((void)Z85PublicKey::validate(kValidPub40));
     const auto p = Z85PublicKey::validate(kValidPub40);
     EXPECT_EQ(p.view(), kValidPub40);
-    EXPECT_EQ(p.str().size(), 40u);
+    EXPECT_EQ(p.view().size(), 40u);
 }
 
 TEST(Z85PublicKeyTest, Validate_TooShort_Throws)
@@ -181,12 +182,12 @@ TEST(Z85PublicKeyTest, DefaultCtor_ProducesEmptyValue)
 {
     Z85PublicKey p;
     EXPECT_TRUE(p.empty());
-    EXPECT_EQ(p.str().size(), 40u);
+    EXPECT_EQ(p.view().size(), 40u);
     // Underlying storage is 40 zero bytes — important so the type is
     // always exactly 40 chars wide on the wire if someone serializes
     // its `view()`, and so that `empty()` cannot be ambiguous with a
     // real pubkey (real pubkeys cannot contain '\0').
-    for (char c : p.str())
+    for (char c : p.view())
         EXPECT_EQ(c, '\0');
 }
 
@@ -244,13 +245,13 @@ TEST(Z85PublicKeyTest, Move_PreservesValue)
     auto a = Z85PublicKey::validate(kValidPub40);
     Z85PublicKey b{std::move(a)}; // move ctor
     EXPECT_EQ(b.view(), kValidPub40);
-    EXPECT_EQ(b.str().size(), 40u);
+    EXPECT_EQ(b.view().size(), 40u);
 
     auto c = Z85PublicKey::validate(kValidPub40);
     Z85PublicKey d;
     d = std::move(c); // move assignment
     EXPECT_EQ(d.view(), kValidPub40);
-    EXPECT_EQ(d.str().size(), 40u);
+    EXPECT_EQ(d.view().size(), 40u);
 }
 
 // ─── string_view stability ──────────────────────────────────────────────────
@@ -263,4 +264,75 @@ TEST(Z85PublicKeyTest, View_PointsIntoStorage_StableAcrossReads)
     EXPECT_EQ(v1.data(), v2.data()) << "view() must return a stable pointer into the underlying "
                                        "storage so callers can pass it to libzmq sockopt without "
                                        "an intermediate std::string copy.";
+}
+
+// ── try_validate — HEP-CORE-0040 §8.4.1 item 3 ────────────────────────────
+//
+// Specified in the HEP since the contract was written; implemented
+// 2026-07-31 when AttestedKey::from_message became the first caller that
+// runs per inbound message.  Until then the doc described an API the code
+// did not have, so anyone following the call-site table got a compile error.
+
+TEST(Z85PublicKeyTryValidate, AcceptsAValidKeyAndYieldsTheSameBytes)
+{
+    const auto kp = pylabhub::utils::security::generate_curve_keypair();
+    const auto ok = pylabhub::utils::security::Z85PublicKey::try_validate(kp.public_z85);
+    ASSERT_TRUE(ok.has_value());
+    EXPECT_EQ(ok->view(), kp.public_z85);
+    EXPECT_FALSE(ok->empty());
+}
+
+TEST(Z85PublicKeyTryValidate, RejectsWithoutThrowing)
+{
+    using pylabhub::utils::security::Z85PublicKey;
+    // The whole point: these are peer-supplied shapes, and none of them may
+    // cost an exception.  EXPECT_NO_THROW is the assertion, not decoration.
+    EXPECT_NO_THROW({
+        EXPECT_FALSE(Z85PublicKey::try_validate("").has_value());
+        EXPECT_FALSE(Z85PublicKey::try_validate("too-short").has_value());
+        EXPECT_FALSE(Z85PublicKey::try_validate(std::string(41, 'a')).has_value());
+        // Right length, wrong alphabet — a length-only check would pass this,
+        // and that gap is why the alphabet test exists at all.
+        EXPECT_FALSE(Z85PublicKey::try_validate(std::string(40, '\0')).has_value());
+        EXPECT_FALSE(Z85PublicKey::try_validate(std::string(40, '"')).has_value());
+    });
+}
+
+TEST(Z85PublicKeyTryValidate, AgreesWithValidateOnEveryInput)
+{
+    using pylabhub::utils::security::Z85PublicKey;
+    // Two factories, ONE rule.  If they ever disagree, one path admits a key
+    // the other refuses — which on the attestation path means the throwing
+    // and non-throwing ingresses have different ideas of what is authentic.
+    const auto kp = pylabhub::utils::security::generate_curve_keypair();
+    const std::string cases[] = {
+        kp.public_z85, "", "short", std::string(39, 'a'), std::string(40, 'a'),
+        std::string(41, 'a'), std::string(40, '\0'), std::string(40, '"'),
+    };
+    for (const auto &c : cases)
+    {
+        bool validate_ok = true;
+        try
+        {
+            (void)Z85PublicKey::validate(c);
+        }
+        catch (const std::invalid_argument &)
+        {
+            validate_ok = false;
+        }
+        EXPECT_EQ(validate_ok, Z85PublicKey::try_validate(c).has_value())
+            << "validate() and try_validate() disagree on a " << c.size() << "-char input";
+    }
+}
+
+TEST(Z85PublicKeyStorage, IsTriviallyCopyableAndFixedWidth)
+{
+    // The storage decision from HEP-CORE-0040 §8.4.1, pinned: a fixed array
+    // rather than a std::string, so validation allocates nothing and passing
+    // a key by value is free.  A revert to std::string fails here.
+    using pylabhub::utils::security::Z85PublicKey;
+    static_assert(std::is_trivially_copyable_v<Z85PublicKey>,
+                  "Z85PublicKey must stay trivially copyable — see HEP-CORE-0040 §8.4.1");
+    EXPECT_EQ(sizeof(Z85PublicKey), Z85PublicKey::kZ85Chars);
+    EXPECT_EQ(Z85PublicKey{}.view().size(), Z85PublicKey::kZ85Chars);
 }

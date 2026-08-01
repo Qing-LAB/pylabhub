@@ -393,16 +393,28 @@ std::optional<AttestedKey> AttestedKey::from_message(const zmq::socket_t &sock,
         if (user_id == nullptr || *user_id == '\0')
             return std::nullopt;
 
-        return AttestedKey(Z85PublicKey::validate(user_id));
+        // try_validate, not validate: a malformed User-Id is peer-supplied,
+        // so on a wired ingress an attacker could otherwise ask this path to
+        // build and destroy an exception per message.  A verdict is the
+        // honest return type when the negative answer is routine
+        // (HEP-CORE-0040 §8.4.1).
+        auto key = Z85PublicKey::try_validate(user_id);
+        if (!key.has_value())
+        {
+            LOGGER_WARN("AttestedKey::from_message: refusing to attest — User-Id is not a "
+                        "well-formed Z85 public key, so it is not a value this ZAP handler "
+                        "produced");
+            return std::nullopt;
+        }
+        return AttestedKey(*std::move(key));
     }
     catch (const std::exception &e)
     {
-        // Covers a malformed Z85 value from Z85PublicKey::validate and any
-        // sockopt failure.  Either way we have no proof, and this path must
-        // not throw into a poll loop.
-        LOGGER_WARN("AttestedKey::from_message: refusing to attest ({}) — this is not a value "
-                    "this ZAP handler produced",
-                    e.what());
+        // Now only the sockopt read above can throw; the Z85 check does not.
+        // Kept because this runs on the message-ingest path, where an
+        // escaping exception would unwind a poll loop over a peer-supplied
+        // value.
+        LOGGER_WARN("AttestedKey::from_message: refusing to attest ({})", e.what());
         return std::nullopt;
     }
 }

@@ -8,6 +8,8 @@
  */
 #include "utils/security/curve_keypair.hpp"
 
+#include <algorithm>
+#include <optional>
 #include <sodium.h>
 #include <zmq.h>
 
@@ -75,42 +77,75 @@ constexpr bool make_z85_alphabet_table_(unsigned char c)
 
 } // namespace
 
-Z85PublicKey::Z85PublicKey() noexcept : z85_(Z85PublicKey::kZ85Chars, '\0') {}
+Z85PublicKey::Z85PublicKey() noexcept = default; // z85_ is zero-initialized in-class
 
-Z85PublicKey Z85PublicKey::validate(std::string_view z85)
+namespace
+{
+
+/// Operator-facing explanation of WHY @p z85 is not a well-formed key.
+///
+/// Only ever called on input `try_validate` has already rejected, so it
+/// cannot admit anything the rule refused — the worst it could do if it ever
+/// drifted is describe a throw vaguely, never turn a reject into an accept.
+/// Kept off the accepting path because building this text allocates, and the
+/// accepting path runs per inbound message.
+std::string z85_pubkey_reject_reason(std::string_view z85)
 {
     if (z85.size() != Z85PublicKey::kZ85Chars)
     {
-        throw std::invalid_argument(
-            "pylabhub::utils::security::Z85PublicKey::validate: input length " +
-            std::to_string(z85.size()) + " is not the required " +
-            std::to_string(Z85PublicKey::kZ85Chars) +
-            " chars (CURVE public key, Z85-encoded — RFC 32 §4)");
+        return "input length " + std::to_string(z85.size()) + " is not the required " +
+               std::to_string(Z85PublicKey::kZ85Chars) +
+               " chars (CURVE public key, Z85-encoded — RFC 32 §4)";
     }
     for (std::size_t i = 0; i < z85.size(); ++i)
     {
         const auto c = static_cast<unsigned char>(z85[i]);
         if (!make_z85_alphabet_table_(c))
         {
-            throw std::invalid_argument(
-                "pylabhub::utils::security::Z85PublicKey::validate: input "
-                "contains non-Z85 character at position " +
-                std::to_string(i) + " (byte 0x" +
-                [](unsigned char b)
-                {
-                    const char hex[] = "0123456789abcdef";
-                    std::string s{hex[b >> 4], hex[b & 0xF]};
-                    return s;
-                }(c) +
-                "); the Z85 alphabet is 0-9 a-z A-Z .-:+=^!/*?&<>()[]{}@%$# "
-                "per RFC 32 §4");
+            const char hex[] = "0123456789abcdef";
+            const std::string byte_hex{hex[c >> 4], hex[c & 0xF]};
+            return "input contains non-Z85 character at position " + std::to_string(i) +
+                   " (byte 0x" + byte_hex +
+                   "); the Z85 alphabet is 0-9 a-z A-Z .-:+=^!/*?&<>()[]{}@%$# per RFC 32 §4";
         }
     }
-    // Validation passed — fill the sentinel-default object with the
-    // 40 verified chars and return by value (mandatory copy elision).
+    // Unreachable via `validate`, which only asks after a rejection.  A
+    // generic message rather than an assert: this is the error path, and a
+    // vague throw beats aborting while reporting an error.
+    return "input is not a well-formed Z85 CURVE public key";
+}
+
+} // namespace
+
+std::optional<Z85PublicKey> Z85PublicKey::try_validate(std::string_view z85) noexcept
+{
+    // THE RULE.  This is the single authority on what a well-formed Z85
+    // public key is; `validate` is this function plus a throw.  The verdict
+    // is the primitive and throwing is a policy over it, not the other way
+    // round — an earlier revision of this file had the two paths carrying
+    // separate copies of the length check and the alphabet loop, which is
+    // exactly how a throwing and a non-throwing ingress come to disagree
+    // about what is authentic.
+    if (z85.size() != Z85PublicKey::kZ85Chars)
+        return std::nullopt;
+    for (const char ch : z85)
+    {
+        if (!make_z85_alphabet_table_(static_cast<unsigned char>(ch)))
+            return std::nullopt;
+    }
     Z85PublicKey result;
-    result.z85_.assign(z85.begin(), z85.end());
+    std::copy(z85.begin(), z85.end(), result.z85_.begin());
     return result;
+}
+
+Z85PublicKey Z85PublicKey::validate(std::string_view z85)
+{
+    if (auto key = try_validate(z85))
+        return *std::move(key);
+    // Rejected.  Re-scanning to build the diagnostic costs nothing here:
+    // this path already ends in an exception.
+    throw std::invalid_argument("pylabhub::utils::security::Z85PublicKey::validate: " +
+                                z85_pubkey_reject_reason(z85));
 }
 
 bool Z85PublicKey::empty() const noexcept

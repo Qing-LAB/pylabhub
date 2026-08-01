@@ -53,6 +53,8 @@
  */
 #include "pylabhub_utils_export.h"
 
+#include <array>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -126,7 +128,27 @@ class PYLABHUB_UTILS_EXPORT Z85PublicKey
     /// Throws `std::invalid_argument` on bad input.  `main()` programs
     /// catch `std::exception` at every phase boundary and produce a
     /// clean exit-1 with a diagnostic.  See HEP-CORE-0040 §8.4.1.
+    ///
+    /// For OPERATOR-controlled input (config, vault, CLI), where a
+    /// malformed key is a fatal startup error worth a precise message.
     [[nodiscard]] static Z85PublicKey validate(std::string_view z85);
+
+    /// Non-throwing sibling of `validate`, for PEER-controlled input.
+    ///
+    /// HEP-CORE-0040 §8.4.1 has specified this since the contract was
+    /// written; it is implemented here (2026-07-31) because
+    /// `AttestedKey::from_message` is the first caller that runs inside a
+    /// poll loop on every inbound message.
+    ///
+    /// The reason is not merely cost.  A throw from a poll-loop callback
+    /// unwinds out of the poll thread; the surrounding `try`/`catch` that
+    /// exists today converts it back to `nullopt`, so the exception is
+    /// constructed and destroyed purely to express "no".  Since the input
+    /// is peer-supplied, a malformed value is attacker-triggerable per
+    /// message — which makes exception construction something a remote
+    /// party can ask for at will.  A verdict is the honest return type for
+    /// a question whose negative answer is routine.
+    [[nodiscard]] static std::optional<Z85PublicKey> try_validate(std::string_view z85) noexcept;
 
     Z85PublicKey(const Z85PublicKey &) = default;
     Z85PublicKey(Z85PublicKey &&) noexcept = default;
@@ -134,14 +156,21 @@ class PYLABHUB_UTILS_EXPORT Z85PublicKey
     Z85PublicKey &operator=(Z85PublicKey &&) noexcept = default;
     ~Z85PublicKey() = default;
 
-    /// View over the 40 Z85 chars.  Use to pass to libzmq sockopt
-    /// (`zmq::sockopt::curve_serverkey` accepts string_view) without
-    /// copying.  Lifetime tied to this instance.
-    [[nodiscard]] std::string_view view() const noexcept { return z85_; }
-
-    /// Underlying 40-byte ASCII storage.  Lifetime tied to this
-    /// instance.
-    [[nodiscard]] const std::string &str() const noexcept { return z85_; }
+    /// View over the 40 Z85 chars — the ONE accessor.
+    ///
+    /// Pass to libzmq sockopts (`curve_serverkey` and friends take a
+    /// `string_view`) with no copy.  Lifetime tied to this instance.
+    ///
+    /// There is deliberately no `str()`.  Storage is a fixed array, so no
+    /// `std::string` exists to return a reference to, and adding a
+    /// `std::string`-returning overload under the old name would have kept
+    /// every call site compiling while silently turning a free reference
+    /// into an allocation.  Callers wanting an owning copy write
+    /// `std::string{k.view()}`.  HEP-CORE-0040 §8.4.1.
+    [[nodiscard]] std::string_view view() const noexcept
+    {
+        return std::string_view{z85_.data(), kZ85Chars};
+    }
 
     /// `true` iff this is the default sentinel (40 zero bytes).
     /// Equivalent to "no pubkey set"; cryptographically invalid for
@@ -158,7 +187,16 @@ class PYLABHUB_UTILS_EXPORT Z85PublicKey
     }
 
   private:
-    std::string z85_;
+    /// Exactly 40 chars, always — the length is a property of the Z85
+    /// encoding, not of a particular key.  A fixed array keeps that fact in
+    /// the type instead of re-storing it at runtime, removes the heap
+    /// allocation `std::string` needs for 40 chars (past every mainstream
+    /// SSO buffer), and makes this type trivially copyable.
+    ///
+    /// Zero-initialized by the default ctor: that IS the "unset" sentinel,
+    /// and `\0` is outside the Z85 alphabet, so it cannot collide with a
+    /// validated key.
+    std::array<char, kZ85Chars> z85_{};
 };
 
 /// A ZMQ CURVE keypair — both members Z85-encoded ASCII (40 chars

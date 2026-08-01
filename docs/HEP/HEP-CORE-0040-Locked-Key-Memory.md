@@ -794,6 +794,26 @@ Two surface forms for the same author-intent ("I want an unset key") with diverg
 
 The factory-only design closes the bug class **at compile time**: there is no `Z85PublicKey{some_var}` construction path at all.  Every author must explicitly write `Z85PublicKey{}` or `Z85PublicKey::validate(some_var)` — the choice is forced, the intent is visible, and the validating constructor's empty branch ceases to exist as an attractive nuisance.
 
+**`try_validate` is the rule; `validate` is `try_validate` plus a throw.**
+
+The two factories must never disagree about what a well-formed key is — a
+throwing ingress and a non-throwing ingress that accept different inputs is
+two different answers to "is this peer authentic".  So exactly one of them
+carries the check, and it is the non-throwing one: a verdict is the primitive,
+and raising is a policy layered over it.
+
+`validate` calls `try_validate`, and only on rejection re-scans the input to
+build its precise "non-Z85 character at position N" diagnostic.  That second
+pass is free because it happens solely on a path that already ends in an
+exception, and the reason-builder is only ever handed input the rule already
+refused — so even if it drifted it could only describe a throw badly, never
+turn a rejection into an acceptance.
+
+Recorded because the first implementation (2026-07-31) got this wrong in a way
+that reviewed clean: both factories carried their own copy of the length check
+and the alphabet loop, under a comment asserting the rule lived in one place.
+Tests passed, because the two copies agreed on the day they were written.
+
 **Which factory to use at each call site.**
 
 | Site | Use | Why |
@@ -803,6 +823,37 @@ The factory-only design closes the bug class **at compile time**: there is no `Z
 | Standby/sentinel use (rx-queue construction with no producers yet per §6.7) | `Z85PublicKey{}` | Explicit author intent: "no pubkey configured yet."  No string involved; no validation needed. |
 
 **`empty()` predicate still distinguishes the sentinel.**  An "unset" `Z85PublicKey` is 40 internal null bytes; valid Z85 strings cannot contain null bytes (the Z85 alphabet is `0-9 a-z A-Z .-:+=^!/*?&<>()[]{}@%$#`).  The internal `empty()` check loops over the 40 bytes — unambiguous discriminator.
+
+**Storage is a fixed 40-byte array, and `view()` is the only accessor.**
+
+The length is not a property of a particular key; it is a property of the
+*encoding*.  Every `Z85PublicKey` that exists is exactly 40 characters —
+`validate()` guarantees it and the sentinel is 40 nulls.  A `std::string`
+therefore stores a runtime length that is a compile-time constant, and pays a
+heap allocation for it: 40 characters exceeds the small-string buffer on every
+mainstream implementation, so **every validation allocates**.
+
+That is affordable while keys are validated at startup.  It stops being
+affordable at HEP-CORE-0035 §4.2, where `AttestedKey::from_message` validates
+the `User-Id` of **every inbound message** on every ROUTER ingress.  A
+per-message `malloc` on the authentication path is a cost the design does not
+need to carry, and the fixed array also makes the type trivially copyable —
+so passing a key by value stops being a decision anyone has to think about.
+
+Consequently there is **one accessor, `view()`**, returning a
+`std::string_view` over the array:
+
+- `str()` returning `const std::string &` cannot exist: there is no
+  `std::string` to refer to.
+- It was deliberately NOT replaced by a `std::string`-returning overload of
+  the same name.  That would keep every call site compiling while silently
+  converting a free reference into an allocation — the kind of change that
+  passes review because nothing looks different.  Deleting it makes the
+  compiler name every site, and each one then states whether it truly needs
+  an owning string.
+
+Callers needing an owning copy write `std::string{key.view()}` — which is what
+the call sites already did around the old `str()`.
 
 **Audit boundary.**  Construction sites for `Z85PublicKey` are a discrete, greppable surface (`Z85PublicKey(` or `Z85PublicKey{`).  Code review for new auth code should sweep this grep periodically — any new construction path that is not `Z85PublicKey{}`, `Z85PublicKey::validate(...)`, or `Z85PublicKey::try_validate(...)` is a violation.
 

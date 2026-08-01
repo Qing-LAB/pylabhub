@@ -170,7 +170,7 @@ PeerAllowlist PeerAuthority::zap_allowlist() const
 {
     PeerAllowlist al;
     for (const auto &[key, origin] : by_pubkey_)
-        al.peers.insert(PeerIdentity{kCurveMechanism, key.str()});
+        al.peers.insert(PeerIdentity{kCurveMechanism, std::string{key.view()}});
     return al;
 }
 
@@ -181,7 +181,7 @@ std::set<RosterEntry> PeerAuthority::local_role_roster() const
     std::set<RosterEntry> out;
     for (const auto &[key, origin] : by_pubkey_)
         if (origin.kind == PubkeyOrigin::Kind::LocalRole)
-            out.insert(RosterEntry{origin.subject_uid, key.str()});
+            out.insert(RosterEntry{origin.subject_uid, std::string{key.view()}});
     return out;
 }
 
