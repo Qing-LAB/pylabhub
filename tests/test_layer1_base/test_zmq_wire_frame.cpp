@@ -17,14 +17,13 @@
  * already tried the allocation.  So the assertions below are about *which*
  * frames are refused, not merely that bad ones are.
  */
-// `zmq_wire_helpers.hpp` is not self-contained — it uses `ZmqSchemaField`
-// without declaring it, relying on every production TU having included
-// `utils/hub_zmq_queue.hpp` first.  Mirrored here rather than "fixed" in
-// passing: making the header standalone is a change to production code
-// that this test has no mandate to make, and doing it silently as a
-// side-effect of adding coverage is how unrelated regressions get in.
-#include "utils/hub_zmq_queue.hpp" // ZmqSchemaField (transitive dependency)
-
+// Included on its own, deliberately: this test is also the check that
+// `zmq_wire_helpers.hpp` is self-contained.  It was not — it named
+// `ZmqSchemaField` (which lives in `hub_zmq_queue.hpp`) for a
+// `compute_field_layout` overload that reinterpret_cast a type to itself,
+// since `ZmqSchemaField` IS `SchemaFieldDesc`.  That overload is gone; if
+// anyone reintroduces a dependency on include order, this file stops
+// compiling.
 #include "hub/zmq_wire_helpers.hpp"
 
 #include <gtest/gtest.h>

@@ -68,23 +68,10 @@ using ::pylabhub::hub::field_elem_size;
 using ::pylabhub::hub::FieldLayout;
 using ::pylabhub::hub::is_valid_type_str;
 using ::pylabhub::hub::SchemaFieldDesc;
+using ::pylabhub::hub::compute_field_layout;
 
 /// WireFieldDesc is now FieldLayout (defined in schema_field_layout.hpp).
 using WireFieldDesc = FieldLayout;
-
-// ============================================================================
-// Overload compute_field_layout for ZmqSchemaField (backward-compatible)
-// ============================================================================
-
-/// compute_field_layout taking ZmqSchemaField vector.
-/// ZmqSchemaField is an alias for SchemaFieldDesc, so this delegates directly.
-inline std::pair<std::vector<FieldLayout>, size_t>
-compute_field_layout(const std::vector<ZmqSchemaField> &fields, const std::string &packing)
-{
-    // ZmqSchemaField == SchemaFieldDesc, so just call the canonical version.
-    const auto &base = reinterpret_cast<const std::vector<SchemaFieldDesc> &>(fields);
-    return ::pylabhub::hub::compute_field_layout(base, packing);
-}
 
 /// Compute recv frame buffer size for schema mode.
 /// Outer envelope: fixarray(1)+uint32(5)+bin8(10)+uint64(9) = 25 bytes.
@@ -255,7 +242,11 @@ inline void pack_frame(msgpack::packer<msgpack::sbuffer> &pk,
     pk.pack_bin_body(reinterpret_cast<const char *>(checksum), 32);
 }
 
-/// Parsed frame envelope returned by unpack_envelope().
+/// A validated 5-tuple frame, destructured.
+///
+/// Every pointer here is a VIEW into the msgpack zone owned by the
+/// `DecodedFrame` this came from — see that type for the lifetime rule.
+/// `valid == false` means nothing else in the struct is meaningful.
 struct FrameEnvelope
 {
     bool valid{false};
@@ -265,60 +256,6 @@ struct FrameEnvelope
     uint32_t payload_size{0};                ///< payload->via.array.size
     const uint8_t *checksum{nullptr};        ///< 32 bytes; points into msgpack buffer
 };
-
-/// Validate and destructure a 5-tuple frame. Returns {valid=false} on any
-/// structural error (wrong array size, bad magic, missing/mistyped fields).
-/// Does NOT check schema-tag match or checksum correctness — callers handle
-/// those with their own error-counting and rate-limiting policies.
-inline FrameEnvelope unpack_envelope(const msgpack::object &obj) noexcept
-{
-    FrameEnvelope r;
-    if (obj.type != msgpack::type::ARRAY || obj.via.array.size != 5)
-        return r;
-    const auto *e = obj.via.array.ptr;
-
-    // [0] magic
-    uint32_t magic = 0;
-    try
-    {
-        e[0].convert(magic);
-    }
-    catch (...)
-    {
-        return r;
-    }
-    if (magic != kFrameMagic)
-        return r;
-
-    // [1] schema_tag (bin, 8 bytes)
-    if (e[1].type != msgpack::type::BIN || e[1].via.bin.size != 8)
-        return r;
-    r.recv_tag = reinterpret_cast<const uint8_t *>(e[1].via.bin.ptr);
-
-    // [2] seq
-    try
-    {
-        e[2].convert(r.seq);
-    }
-    catch (...)
-    {
-        return r;
-    }
-
-    // [3] payload array
-    if (e[3].type != msgpack::type::ARRAY)
-        return r;
-    r.payload = &e[3];
-    r.payload_size = e[3].via.array.size;
-
-    // [4] checksum (bin, 32 bytes)
-    if (e[4].type != msgpack::type::BIN || e[4].via.bin.size != 32)
-        return r;
-    r.checksum = reinterpret_cast<const uint8_t *>(e[4].via.bin.ptr);
-
-    r.valid = true;
-    return r;
-}
 
 /// A frame decoded from the wire: the msgpack zone plus the validated
 /// envelope that views into it.
@@ -349,10 +286,13 @@ struct DecodedFrame
 /// Parse and destructure wire bytes into a validated frame, with every
 /// msgpack allocation bounded by the input that asked for it.
 ///
-/// **This is the only sanctioned way to turn frame bytes into a
-/// `FrameEnvelope`.** Calling `msgpack::unpack` directly re-opens the
-/// hole described below, and re-creates the handle/envelope lifetime
-/// pairing this type exists to remove.
+/// **This is the only way to produce a valid `FrameEnvelope`** — not by
+/// convention but by construction: the destructuring lives inside this
+/// function and is not separately callable.  It used to be a public
+/// `unpack_envelope()` sitting beside this comment, which made the
+/// sentence a request rather than a fact.  Calling `msgpack::unpack`
+/// yourself re-opens the allocation hole described below and re-creates
+/// the handle/envelope lifetime pairing `DecodedFrame` exists to remove.
 ///
 /// `msgpack::unpack`'s default `unpack_limit` is `0xffffffff` on every
 /// axis, and msgpack allocates on a *declared* size before it discovers
@@ -403,7 +343,63 @@ inline DecodedFrame decode_frame(const void *data, std::size_t size,
     {
         return out; // env.valid stays false — caller counts it as a frame error
     }
-    out.env = unpack_envelope(out.handle.get());
+
+    // ── Destructure the 5-tuple ──────────────────────────────────────────
+    //
+    // Inlined rather than a separate `unpack_envelope()` helper: this is the
+    // ONLY sanctioned way to produce a `FrameEnvelope`, and while that helper
+    // existed as its own name the claim was merely a comment someone could
+    // step around by unpacking themselves and calling it directly.  With no
+    // second entry point the rule is structural.
+    //
+    // Checks structure only — array shape, magic, field types and sizes.
+    // Schema-tag match and checksum correctness are deliberately NOT checked
+    // here: each caller counts and rate-limits those on its own policy.
+    const msgpack::object &obj = out.handle.get();
+    if (obj.type != msgpack::type::ARRAY || obj.via.array.size != kFrameTupleSize)
+        return out;
+    const auto *e = obj.via.array.ptr;
+
+    // [0] magic
+    uint32_t magic = 0;
+    try
+    {
+        e[0].convert(magic);
+    }
+    catch (...)
+    {
+        return out;
+    }
+    if (magic != kFrameMagic)
+        return out;
+
+    // [1] schema_tag (bin, 8 bytes)
+    if (e[1].type != msgpack::type::BIN || e[1].via.bin.size != 8)
+        return out;
+    out.env.recv_tag = reinterpret_cast<const uint8_t *>(e[1].via.bin.ptr);
+
+    // [2] seq
+    try
+    {
+        e[2].convert(out.env.seq);
+    }
+    catch (...)
+    {
+        return out;
+    }
+
+    // [3] payload array
+    if (e[3].type != msgpack::type::ARRAY)
+        return out;
+    out.env.payload = &e[3];
+    out.env.payload_size = e[3].via.array.size;
+
+    // [4] checksum (bin, 32 bytes)
+    if (e[4].type != msgpack::type::BIN || e[4].via.bin.size != 32)
+        return out;
+    out.env.checksum = reinterpret_cast<const uint8_t *>(e[4].via.bin.ptr);
+
+    out.env.valid = true;
     return out;
 }
 
