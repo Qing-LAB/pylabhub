@@ -1224,8 +1224,7 @@ TEST_F(Pattern4BrokerProtocolTest, RegReq_WithoutRoleName_Succeeds)
     auto prod = make_wire_client(ctx, setup, uid);
     auto body = producer_reg_body(setup, channel, uid, /*shm=*/false);
     body.erase("role_name");
-    auto reply =
-        prod.request("REG_REQ", body, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    auto reply = prod.request("REG_REQ", body, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
     ASSERT_TRUE(reply.has_value()) << "REG_REQ timed out";
     EXPECT_EQ(reply->value("status", std::string{}), "success")
         << "role_name is OPTIONAL — omitting it must not fail; body=" << reply->dump();
@@ -1709,6 +1708,131 @@ TEST_F(Pattern4BrokerProtocolTest, RegReq_ReplayedNonce_RejectedReplayOrSkew)
         << " body=" << reply->second.dump();
     EXPECT_EQ(reply->second.value("error_code", std::string{}), "REPLAY_OR_SKEW")
         << "replayed REG must reject REPLAY_OR_SKEW; body=" << reply->second.dump();
+
+    broker.signal_quit();
+}
+
+// ── Attested identity: a proven key cannot register as someone else ────
+//
+// THE defect this closes (HEP-CORE-0035 §4.2).  Alice and Bob are BOTH in
+// the roster, so neither of the cases below is an unknown-key rejection:
+// every value on the wire is one the hub recognises.  What separates them
+// is provenance — which key the connection actually PROVED at handshake —
+// and that is the fact the registration path used to discard.
+//
+// Both cases set the DEALER routing id to Bob's uid deliberately.  Without
+// it the dealer-identity consistency gate rejects first, the attested
+// binding gate never runs, and the test would pass while proving nothing.
+
+TEST_F(Pattern4BrokerProtocolTest, RegReq_ProvenKeyClaimingAnotherRolesKey_Rejected)
+{
+    // Alice proves Alice's key, then sends {role_uid: bob, zmq_pubkey:
+    // BOB'S KEY}.  A roster lookup on that pair MATCHES — which is exactly
+    // why reading the body alone admitted this.  The announced key
+    // disagrees with the proven one, so it dies as PUBKEY_MISMATCH.
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string alice = "prod.attested.alice" + suffix;
+    const std::string bob = "prod.attested.bob" + suffix;
+    const std::string alice_ch = "attested.alice.ch" + suffix;
+    const std::string bob_ch = "attested.bob.ch" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_attested_key");
+    const auto setup = make_pattern4_setup({alice, bob});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+
+    // Premise: this broker and roster DO admit Alice as Alice.  Without
+    // this, a broker that rejected everything would pass the assertion
+    // below for the wrong reason.
+    {
+        auto honest = make_wire_client(ctx, setup, alice);
+        auto ack = honest.request("REG_REQ",
+                                  producer_reg_body(setup, alice_ch, alice,
+                                                    /*shm=*/false),
+                                  "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+        ASSERT_TRUE(ack.has_value()) << "honest REG_REQ timed out";
+        ASSERT_EQ(ack->value("status", std::string{}), "success")
+            << "Alice must be admitted as Alice, or the impersonation "
+               "assertion below proves nothing; body="
+            << ack->dump();
+    }
+
+    // Alice's keypair on the socket, Bob's uid as routing id.
+    const auto &alice_kp = setup.curve.role(alice);
+    BrokerWireClient::Config c;
+    c.broker_endpoint = setup.broker_endpoint;
+    c.broker_pubkey = setup.curve.hub.public_z85;
+    c.client_pubkey = alice_kp.public_z85;
+    c.client_seckey = alice_kp.secret_z85;
+    c.client_role_uid = bob;
+    BrokerWireClient impostor(ctx, c);
+
+    // Body claims Bob completely — Bob's uid AND Bob's real pubkey.
+    impostor.send("REG_REQ", producer_reg_body(setup, bob_ch, bob, /*shm=*/false));
+    auto reply = impostor.receive(milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(reply.has_value()) << "no reply to impersonating REG_REQ";
+    EXPECT_EQ(reply->first, "ERROR")
+        << "a peer that proved Alice's key MUST NOT register as Bob; got msg_type=" << reply->first
+        << " body=" << reply->second.dump();
+    EXPECT_EQ(reply->second.value("error_code", std::string{}), "PUBKEY_MISMATCH")
+        << "the announced key disagrees with the proven one; body=" << reply->second.dump();
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerProtocolTest, RegReq_ProvenKeyClaimingAnotherRolesUid_Rejected)
+{
+    // The subtler half.  Alice proves Alice's key and announces ALICE'S
+    // key — internally consistent, so the announced-vs-proven check passes
+    // — but claims Bob's uid.  Only resolving the proven key to its owner
+    // catches this: the key belongs to Alice, so Alice is who registers,
+    // and the claim is refused as IDENTITY_MISMATCH.
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string alice = "prod.attested2.alice" + suffix;
+    const std::string bob = "prod.attested2.bob" + suffix;
+    const std::string channel = "attested2.ch" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_attested_uid");
+    const auto setup = make_pattern4_setup({alice, bob});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+
+    const auto &alice_kp = setup.curve.role(alice);
+    BrokerWireClient::Config c;
+    c.broker_endpoint = setup.broker_endpoint;
+    c.broker_pubkey = setup.curve.hub.public_z85;
+    c.client_pubkey = alice_kp.public_z85;
+    c.client_seckey = alice_kp.secret_z85;
+    c.client_role_uid = bob;
+    BrokerWireClient impostor(ctx, c);
+
+    // Claim Bob's uid, but announce the key actually proved (Alice's), so
+    // the body is self-consistent with the handshake.
+    nlohmann::json body = producer_reg_body(setup, channel, bob, /*shm=*/false);
+    body["zmq_pubkey"] = alice_kp.public_z85;
+
+    impostor.send("REG_REQ", body);
+    auto reply = impostor.receive(milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(reply.has_value()) << "no reply to impersonating REG_REQ";
+    EXPECT_EQ(reply->first, "ERROR")
+        << "Alice's proven key MUST NOT carry Bob's identity; got msg_type=" << reply->first
+        << " body=" << reply->second.dump();
+    EXPECT_EQ(reply->second.value("error_code", std::string{}), "IDENTITY_MISMATCH")
+        << "the proven key belongs to Alice, not the claimed Bob; body=" << reply->second.dump();
 
     broker.signal_quit();
 }

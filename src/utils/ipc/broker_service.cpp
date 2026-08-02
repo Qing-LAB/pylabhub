@@ -17,8 +17,8 @@
 #include "utils/lifecycle.hpp"
 #include "utils/logger.hpp"
 #include "utils/security/curve_keypair.hpp"  // HEP-CORE-0035 §2 — shared keygen
-#include "utils/curve_socket.hpp"      // arm_curve_server (shared CURVE arm)
-#include "utils/zmq_socket_policy.hpp" // apply_socket_policy (house ZMQ rules)
+#include "utils/curve_socket.hpp"            // arm_curve_server (shared CURVE arm)
+#include "utils/zmq_socket_policy.hpp"       // apply_socket_policy (house ZMQ rules)
 #include "utils/security/key_store.hpp"      // HEP-CORE-0040 §172 — hub identity
 #include "utils/security/peer_admission.hpp" // HEP-CORE-0035 Phase D
 #include "utils/security/zap_router.hpp"     // HEP-CORE-0035 Phase D
@@ -447,8 +447,7 @@ class BrokerServiceImpl
     void publish_peer_authority(pylabhub::utils::security::PeerAuthority built)
     {
         peer_authority_snapshot.store(
-            std::make_shared<const pylabhub::utils::security::PeerAuthority>(
-                std::move(built)));
+            std::make_shared<const pylabhub::utils::security::PeerAuthority>(std::move(built)));
     }
 
     /// HEP-CORE-0033 §8 state aggregate.  Sole owner of channel / role /
@@ -1431,7 +1430,7 @@ void BrokerServiceImpl::run()
                     // security invariants are enforced HERE, not in the
                     // per-msg handlers.  See HEP-CORE-0046 "What is LIVE today".
                     auto received = ::pylabhub::wire::dispatch::receive_and_validate(
-                        std::move(raw), admission_binder_.context);
+                        std::move(raw), router, admission_binder_.context);
                     dispatch_received(router, std::move(received));
                 }
             }
@@ -2147,7 +2146,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
     // connecting socket holds a known_roles pubkey; this binds the
     // REG_REQ to the specific uid claimed in the body.
     // Known-role (uid, pubkey) binding check already ran at the
-    // wire_dispatch pipeline via gate_known_role_binding per
+    // wire_dispatch pipeline via gate_attested_binding per
     // HEP-CORE-0046 §14.5 gate 5.  Legacy verify_known_role_binding
     // retired (2026-07-14 task #46).
 
@@ -3750,7 +3749,7 @@ BrokerServiceImpl::handle_consumer_reg_req(const ::pylabhub::wire::WireEnvelope 
     // CONSUMER_REG_REQ to a specific (role_uid, pubkey) pair within
     // the operator-authorized known_roles allowlist.
     // Known-role (uid, pubkey) binding check already ran at the
-    // wire_dispatch pipeline via gate_known_role_binding.  Legacy
+    // wire_dispatch pipeline via gate_attested_binding.  Legacy
     // verify_known_role_binding retired (2026-07-14 task #46).
     entry.zmq_pubkey = consumer_pubkey;
     // Capture ZMQ identity for future CHANNEL_CLOSING_NOTIFY.
@@ -6961,24 +6960,19 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState &state)
     {
         auto *impl = pImpl.get();
 
-        // I-PUBKEY-BINDING: look up (role_uid, zmq_pubkey) in the
-        // hub's known_roles table (loaded from vault/known_roles.json
-        // at HubHost startup, or seeded by tests).
-        impl->admission_binder_.callbacks.lookup_known_role =
-            [impl](std::string_view uid,
-                   std::string_view pubkey) -> ::pylabhub::admission::KnownRoleLookup
-        {
-            for (const auto &kr : impl->cfg.known_roles)
-            {
-                if (kr.uid == uid)
-                {
-                    if (kr.pubkey_z85 == pubkey)
-                        return ::pylabhub::admission::KnownRoleLookup::binding_matches;
-                    return ::pylabhub::admission::KnownRoleLookup::pubkey_mismatch;
-                }
-            }
-            return ::pylabhub::admission::KnownRoleLookup::uid_unknown;
-        };
+        // I-PUBKEY-BINDING: decide the claim against the published
+        // authority snapshot (HEP-CORE-0035 §4.2).  The gate receives a
+        // verdict and never the roster — it cannot enumerate who this hub
+        // recognises, only learn the outcome for one claim.
+        //
+        // Each call loads the current snapshot, so a roster swap is
+        // observed by the next registration without re-binding this
+        // callback.
+        impl->admission_binder_.callbacks.check_registration =
+            [impl](const std::optional<::pylabhub::utils::security::AttestedKey> &attested,
+                   std::string_view uid,
+                   std::string_view pubkey) -> ::pylabhub::utils::security::ClaimVerdict
+        { return impl->peer_authority()->check_registration_claim(attested, uid, pubkey); };
 
         // I-KEY-ROTATION-VIA-DEREG (HEP-0046): a role's CURVE pubkey is
         // immutable for the broker's lifetime.  Rotation is edit-config

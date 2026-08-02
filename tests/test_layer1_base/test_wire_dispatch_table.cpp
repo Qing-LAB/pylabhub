@@ -157,16 +157,33 @@ struct RavFixture
     ag::AdmissionCallbacks cb;
     std::set<std::string> seen_nonces;
 
+    // These tests hand the pipeline frames they built themselves, so there
+    // is no connection behind them.  An unarmed socket has no enforced ZAP
+    // domain, so parse mints no attestation — which is what these cases
+    // assert on: body schema, correlation echo, nonce replay, msg_type
+    // routing.  Identity provenance is pinned separately against real
+    // handshakes.
+    zmq::context_t zmq_ctx{1};
+    zmq::socket_t unarmed_sock{zmq_ctx, zmq::socket_type::router};
+
     RavFixture()
     {
-        cb.lookup_known_role = [](std::string_view uid,
-                                  std::string_view pubkey) -> ag::KnownRoleLookup
+        // Admit the expected (uid, key) pair so the non-identity cases
+        // below reach the gate they are actually about.  A real authority
+        // would also require the connection to have PROVEN kPubkey; these
+        // frames are hand-built with no connection behind them, so that
+        // half is pinned where handshakes are real (L2 zap_router_workers,
+        // L1 test_admission_gates for the gate's own mapping).
+        cb.check_registration =
+            [](const std::optional<pylabhub::utils::security::AttestedKey> &, std::string_view uid,
+               std::string_view pubkey) -> pylabhub::utils::security::ClaimVerdict
         {
+            using CV = pylabhub::utils::security::ClaimVerdict;
             if (uid != kUid)
-                return ag::KnownRoleLookup::uid_unknown;
+                return CV::identity_mismatch;
             if (pubkey != kPubkey)
-                return ag::KnownRoleLookup::pubkey_mismatch;
-            return ag::KnownRoleLookup::binding_matches;
+                return CV::pubkey_mismatch;
+            return CV::accepted;
         };
         cb.record_and_check_nonce = [this](std::string_view uid, std::string_view nonce)
         {
@@ -177,6 +194,8 @@ struct RavFixture
         };
         cb.wall_now_ms = []() { return kNowMs; };
     }
+
+    [[nodiscard]] const zmq::socket_t &sock() const { return unarmed_sock; }
 
     [[nodiscard]] ag::AdmissionContext ctx() const
     {
@@ -217,7 +236,7 @@ TEST(ReceiveAndValidate, HappyPathRegReqYieldsTypedVariant)
 {
     RavFixture f;
     auto received = wd::receive_and_validate(RavFixture::wire_reg(RavFixture::reg_body(), "n-1"),
-                                             f.ctx());
+                                             f.sock(), f.ctx());
     auto *v = std::get_if<wd::ValidatedRegReq>(&received);
     ASSERT_NE(v, nullptr) << "expected ValidatedRegReq variant";
     EXPECT_EQ(v->body.channel_name(), "lab.test.channel");
@@ -231,7 +250,8 @@ TEST(ReceiveAndValidate, MissingRequiredFieldRejectsBodySchemaViolation)
     RavFixture f;
     auto body = RavFixture::reg_body();
     body.erase("data_transport");
-    auto received = wd::receive_and_validate(RavFixture::wire_reg(std::move(body), "n-2"), f.ctx());
+    auto received =
+        wd::receive_and_validate(RavFixture::wire_reg(std::move(body), "n-2"), f.sock(), f.ctx());
     auto *r = std::get_if<wd::RejectedMessage>(&received);
     ASSERT_NE(r, nullptr) << "expected RejectedMessage variant";
     EXPECT_EQ(r->code, ag::RejectCode::body_schema_violation);
@@ -248,7 +268,8 @@ TEST(ReceiveAndValidate, MalformedEmbeddedInboxSchemaRejectedAtBoundary)
     RavFixture f;
     auto body = RavFixture::reg_body();
     body["inbox_schema_json"] = "not-json";
-    auto received = wd::receive_and_validate(RavFixture::wire_reg(std::move(body), "n-3"), f.ctx());
+    auto received =
+        wd::receive_and_validate(RavFixture::wire_reg(std::move(body), "n-3"), f.sock(), f.ctx());
     auto *r = std::get_if<wd::RejectedMessage>(&received);
     ASSERT_NE(r, nullptr);
     EXPECT_EQ(r->code, ag::RejectCode::body_schema_violation);
@@ -257,7 +278,7 @@ TEST(ReceiveAndValidate, MalformedEmbeddedInboxSchemaRejectedAtBoundary)
     auto body2 = RavFixture::reg_body();
     body2["inbox_schema_json"] = R"([{"name":"v","type":"float64"}])";
     auto received2 =
-        wd::receive_and_validate(RavFixture::wire_reg(std::move(body2), "n-4"), f.ctx());
+        wd::receive_and_validate(RavFixture::wire_reg(std::move(body2), "n-4"), f.sock(), f.ctx());
     auto *r2 = std::get_if<wd::RejectedMessage>(&received2);
     ASSERT_NE(r2, nullptr);
     EXPECT_EQ(r2->code, ag::RejectCode::body_schema_violation);
@@ -268,7 +289,7 @@ TEST(ReceiveAndValidate, IdentityMismatchRejected)
     RavFixture f;
     auto received = wd::receive_and_validate(
         RavFixture::wire_reg(RavFixture::reg_body(), "n-5", /*identity=*/"prod.other.uid9"),
-        f.ctx());
+        f.sock(), f.ctx());
     auto *r = std::get_if<wd::RejectedMessage>(&received);
     ASSERT_NE(r, nullptr);
     EXPECT_EQ(r->code, ag::RejectCode::identity_mismatch);
@@ -278,11 +299,11 @@ TEST(ReceiveAndValidate, ReplayedNonceRejected)
 {
     RavFixture f;
     auto first = wd::receive_and_validate(RavFixture::wire_reg(RavFixture::reg_body(), "n-6"),
-                                          f.ctx());
+                                          f.sock(), f.ctx());
     ASSERT_NE(std::get_if<wd::ValidatedRegReq>(&first), nullptr);
 
     auto replay = wd::receive_and_validate(RavFixture::wire_reg(RavFixture::reg_body(), "n-6"),
-                                           f.ctx());
+                                           f.sock(), f.ctx());
     auto *r = std::get_if<wd::RejectedMessage>(&replay);
     ASSERT_NE(r, nullptr) << "identical nonce must be rejected";
     EXPECT_EQ(r->code, ag::RejectCode::replay_or_skew);
@@ -297,7 +318,7 @@ TEST(ReceiveAndValidate, UnknownMsgTypeYieldsRawControlForErrorReply)
     nlohmann::json body;
     body["anything"] = 1;
     auto frames = WireEnvelope::build_router_send(kUid, "NOT_A_REAL_MSG_TYPE", "cid-rav-2", body);
-    auto received = wd::receive_and_validate(std::move(frames), f.ctx());
+    auto received = wd::receive_and_validate(std::move(frames), f.sock(), f.ctx());
     auto *v = std::get_if<wd::ValidatedRawControl>(&received);
     ASSERT_NE(v, nullptr) << "unknown msg_type must surface as ValidatedRawControl";
     EXPECT_EQ(v->msg_type(), "NOT_A_REAL_MSG_TYPE");

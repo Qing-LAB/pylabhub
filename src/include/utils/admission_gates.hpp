@@ -21,8 +21,10 @@
  *            ▼
  *     ┌─────────────┐   gate 1: env.identity() == body.role_uid()
  *     │ IdentityOk  │           else IDENTITY_MISMATCH
- *     └──────┬──────┘
- *            ▼
+ *     └──────┬──────┘         (a consistency check the broker's reply
+ *            │                 routing depends on — both values are
+ *            │                 client-chosen, so it authenticates nothing;
+ *            ▼                 gate 4 is what decides identity)
  *     ┌─────────────┐   gate 2: grammar (HEP-CORE-0033 §G2.2.0b)
  *     │ GrammarOk   │           else INVALID_REQUEST
  *     └──────┬──────┘
@@ -31,12 +33,19 @@
  *     │ RoleTagOk   │           else INVALID_ROLE_TAG
  *     └──────┬──────┘
  *            ▼
- *     ┌─────────────┐   gate 4: verify_known_role_binding(role_uid, zmq_pubkey)
- *     │  BoundOk    │           else UNKNOWN_ROLE / PUBKEY_MISMATCH
- *     └──────┬──────┘         (PUBKEY_MISMATCH also enforces I-KEY-ROTATION-
- *            │                 VIA-DEREG: a running hub only accepts a role's
- *            │                 pinned known_roles pubkey; rotation = edit
- *            ▼                 config + hard reload — HEP-CORE-0046)
+ *     ┌─────────────┐   gate 4: does this registration belong to the
+ *     │  BoundOk    │           connection that carried it?  The claimed
+ *     └──────┬──────┘           role_uid and announced zmq_pubkey are
+ *            │                  checked against the key the connection
+ *            │                  PROVED at handshake — not against the
+ *            │                  roster alone, which a copied public key
+ *            │                  would satisfy.
+ *            │                  else UNAUTHENTICATED / UNKNOWN_ROLE /
+ *            │                       PUBKEY_MISMATCH / WRONG_PEER_KIND /
+ *            │                       IDENTITY_MISMATCH
+ *            ▼                  (PUBKEY_MISMATCH also enforces I-KEY-
+ *                               ROTATION-VIA-DEREG: rotation = edit config
+ *                               + hard reload — HEP-CORE-0046)
  *     ┌─────────────┐   gate 5: nonce dedup + wall_ts skew
  *     │  ReplayOk   │           else REPLAY_OR_SKEW
  *     └──────┬──────┘
@@ -50,6 +59,7 @@
  */
 
 #include "pylabhub_utils_export.h"
+#include "utils/security/pubkey_origin.hpp" // ClaimVerdict, AttestedKey
 
 #include <cstdint>
 #include <functional>
@@ -78,10 +88,16 @@ enum class RejectCode
     // Identity + binding (gates 1, 2, 4 — identity / grammar / known-role
     // binding; role_tag is gate 3, grouped separately below.  uid_conflict is
     // raised later at state-mutation, not by a gate.)
-    identity_mismatch, ///< I-DEALER-IDENTITY: env.identity != body.role_uid
+    identity_mismatch, ///< Raised by two gates: I-DEALER-IDENTITY
+                       ///< (env.identity != body.role_uid), and
+                       ///< I-PUBKEY-BINDING when the claimed role_uid is not
+                       ///< the subject the proven key belongs to.  The
+                       ///< message distinguishes them.
     invalid_request,   ///< Wire-shape violation: grammar / unknown enum / etc.
-    unknown_role,      ///< I-PUBKEY-BINDING: (uid, pubkey) not in known_roles
-    pubkey_mismatch,   ///< I-PUBKEY-BINDING: uid known, pubkey does not match
+    unknown_role,      ///< I-PUBKEY-BINDING: the key the connection proved is
+                       ///< not one this hub recognises
+    pubkey_mismatch,   ///< I-PUBKEY-BINDING: the announced zmq_pubkey is not
+                       ///< the key the connection proved at handshake
     uid_conflict,      ///< uid already registered (duplicate REG)
 
     // Provenance (added 2026-07-29 with the attested-identity gate).  These
@@ -91,15 +107,15 @@ enum class RejectCode
     // `unknown_role` sends an operator to investigate a role that is
     // configured perfectly well.  A denial has to name what actually
     // happened or it costs more than it saves.
-    unauthenticated,  ///< The connection produced no proof of identity: no
-                      ///< enforced handshake, so there is nothing to check a
-                      ///< claim against.  Registration requires proof.
-    wrong_peer_kind,  ///< The attested key belongs to a federation PEER HUB,
-                      ///< not a local role.  A peer may carry identities
-                      ///< other than its own, but only under the delegation
-                      ///< modes of HEP-CORE-0035 §4.3 — which are not built,
-                      ///< so it is refused on the registration plane rather
-                      ///< than silently permitted.
+    unauthenticated, ///< The connection produced no proof of identity: no
+                     ///< enforced handshake, so there is nothing to check a
+                     ///< claim against.  Registration requires proof.
+    wrong_peer_kind, ///< The attested key belongs to a federation PEER HUB,
+                     ///< not a local role.  A peer may carry identities
+                     ///< other than its own, but only under the delegation
+                     ///< modes of HEP-CORE-0035 §4.3 — which are not built,
+                     ///< so it is refused on the registration plane rather
+                     ///< than silently permitted.
 
     // Anti-replay (gate 5)
     replay_or_skew, ///< I-REPLAY-BOUND: nonce reuse or wall_ts skew
@@ -131,27 +147,32 @@ struct PYLABHUB_UTILS_EXPORT RejectDetail
     [[nodiscard]] std::string_view code_wire() const noexcept { return to_wire_string(code); }
 };
 
-/// Outcome of a known-roles lookup.  Distinguishes "role_uid absent" from
-/// "role_uid present but pubkey differs" so gate 4 (known_role_binding)
-/// can report the correct wire error code.  The pubkey_mismatch result
-/// is also what enforces I-KEY-ROTATION-VIA-DEREG (an on-the-fly re-REG
-/// with a rotated pubkey) — there is no separate key-rotation gate.
-enum class KnownRoleLookup
-{
-    binding_matches, ///< (uid, pubkey) matches known_roles exactly
-    uid_unknown,     ///< role_uid not present in known_roles
-    pubkey_mismatch, ///< role_uid present, pubkey differs from known
-};
-
 /// Callbacks the gates invoke against broker state.  Handler binds these
 /// once at pipeline construction; gates run against them.  Keeps
 /// admission_gates decoupled from HubState / BrokerServiceImpl surface
 /// so gates are unit-testable in isolation from broker state.
 struct AdmissionCallbacks
 {
-    /// Look up (role_uid, zmq_pubkey) in known_roles.
-    std::function<KnownRoleLookup(std::string_view role_uid, std::string_view zmq_pubkey)>
-        lookup_known_role;
+    /// Decide whether a registration claim belongs to the connection it
+    /// arrived on (HEP-CORE-0035 §4.2).
+    ///
+    /// @param attested what the transport proved about this connection —
+    ///        `nullopt` if no enforced handshake produced anything.
+    /// @param role_uid the identity the body CLAIMS.
+    /// @param zmq_pubkey the key the body ANNOUNCES.  Nothing trusts it;
+    ///        it is a declaration cross-checked against @p attested, and
+    ///        every check over it can only deny.
+    ///
+    /// Returns a verdict, never the roster.  The broker binds this to its
+    /// published authority snapshot; the gate learns the outcome and has
+    /// no way to enumerate or inspect who is recognised.  The
+    /// pubkey-disagreement verdict is also what enforces
+    /// I-KEY-ROTATION-VIA-DEREG (an on-the-fly re-REG under a rotated
+    /// key) — there is no separate key-rotation gate.
+    std::function<::pylabhub::utils::security::ClaimVerdict(
+        const std::optional<::pylabhub::utils::security::AttestedKey> &attested,
+        std::string_view role_uid, std::string_view zmq_pubkey)>
+        check_registration;
 
     /// Record the nonce for anti-replay dedup.  Returns true if the
     /// nonce is fresh (accepted) or false if it collided within the
@@ -249,15 +270,33 @@ struct RegFamilyBodyView
 // field).  See DRAFT_reg_wire_alignment_cleanup_2026-07-13.md §10
 // C3.
 
+/// I-DEALER-IDENTITY: the ROUTER-captured routing id must equal the
+/// body's `role_uid`.
+///
+/// This proves NOTHING about authentication — both values are chosen by
+/// the client — and the name it used to carry (`gate_identity_match`)
+/// invited reading it as an identity check.  It is a consistency
+/// requirement the broker depends on mechanically: replies are routed on
+/// the routing id, and it is mixed into `envelope_hash`.  Authentication
+/// is `gate_attested_binding` below.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
-gate_identity_match(const ::pylabhub::wire::WireEnvelope &env,
-                    const RegFamilyBodyView &body) noexcept;
+gate_dealer_identity_consistency(const ::pylabhub::wire::WireEnvelope &env,
+                                 const RegFamilyBodyView &body) noexcept;
 
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
 gate_grammar(const RegFamilyBodyView &body) noexcept;
 
+/// I-PUBKEY-BINDING: the registration must belong to the connection that
+/// carried it (HEP-CORE-0035 §4.2).
+///
+/// Takes the envelope because the deciding fact rides it: the key this
+/// connection PROVED at handshake.  Comparing the body's claimed
+/// `role_uid` and announced `zmq_pubkey` against the roster alone admits
+/// anyone holding a copy of someone else's published key — proof of
+/// possession is what separates the two, and only the envelope carries it.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
-gate_known_role_binding(const RegFamilyBodyView &body, const AdmissionContext &ctx) noexcept;
+gate_attested_binding(const ::pylabhub::wire::WireEnvelope &env, const RegFamilyBodyView &body,
+                      const AdmissionContext &ctx) noexcept;
 
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
 gate_replay_bound(const RegFamilyBodyView &body, const AdmissionContext &ctx) noexcept;
@@ -289,7 +328,7 @@ gate_role_tag_policy(std::string_view msg_type, std::string_view role_uid,
 //   - role_tag_policy (HEP-CORE-0033 §G2.2.0b.8)
 //   - replay_bound (I-REPLAY-BOUND): nonce dedup + wall_ts skew
 //
-// gate_known_role_binding doesn't apply — the role's pubkey was
+// gate_attested_binding does not apply — the role's pubkey was
 // already established by the successful REG_REQ that preceded this
 // message.
 struct AuthenticatedRegFamilyView

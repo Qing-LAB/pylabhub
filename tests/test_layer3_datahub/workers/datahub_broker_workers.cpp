@@ -1159,7 +1159,7 @@ int broker_gate_consumer_reg_req_rejects_producer_tag()
                       "success");
 
             // CONSUMER_REG_REQ with role_uid="prod.x.y" → INVALID_ROLE_TAG.
-            // Wire identity MUST equal body.role_uid or gate_identity_match
+            // Wire identity MUST equal body.role_uid or gate_dealer_identity_consistency
             // (§14.5 first-in-order gate per HEP-CORE-0046) shadows the
             // role-tag policy check.  To exercise HEP-CORE-0033 §G2.2.0b.8
             // (CONSUMER_REG_REQ tag set {cons, proc}), send with the

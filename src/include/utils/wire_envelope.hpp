@@ -28,6 +28,7 @@
 
 #include "pylabhub_utils_export.h"
 #include "utils/json_fwd.hpp"
+#include "utils/security/attested_key.hpp" // AttestedKey (also fwd-declares zmq::socket_t)
 
 #include <cstdint>
 #include <memory>
@@ -133,8 +134,17 @@ class PYLABHUB_UTILS_EXPORT WireEnvelope
     // Returns std::nullopt on any violation with `err_out` populated so
     // the caller can WARN with a specific reason.
 
+    /// @param sock the socket @p msg was received on.  Required, not
+    ///        optional, because the attestation is minted here: the ZAP
+    ///        domain is read off the socket and the proven key off the
+    ///        message, so neither can be named by a caller and the two
+    ///        cannot be mismatched (see `AttestedKey::from_message`).
+    ///        Accepting a caller-minted key instead would reopen exactly
+    ///        that gap.  A socket with no enforced ZAP domain yields no
+    ///        attestation, which is a legitimate state, not an error.
     [[nodiscard]] static std::optional<WireEnvelope>
-    parse_router_recv(zmq::multipart_t &&msg, ParseError *err_out = nullptr);
+    parse_router_recv(zmq::multipart_t &&msg, const zmq::socket_t &sock,
+                      ParseError *err_out = nullptr);
 
     /// DEALER receive path: Frame 0 is not on the wire (libzmq stripped
     /// it during routing).  The DEALER caller supplies its OWN
@@ -153,6 +163,22 @@ class PYLABHUB_UTILS_EXPORT WireEnvelope
     /// I-DEALER-IDENTITY).  On DEALER receive this is the broker's ROUTER
     /// identity as passed to parse_dealer_recv.
     [[nodiscard]] std::string_view identity() const noexcept;
+
+    /// What the transport proved about the sender of this message, if
+    /// anything (HEP-CORE-0035 §4.2.1).
+    ///
+    /// `identity()` above is what the sender CHOSE — its routing id, set
+    /// at connect.  This is what the sender PROVED: the key its CURVE
+    /// handshake demonstrated possession of, stamped by this hub's own
+    /// ZAP handler onto every message from that connection.  Gates that
+    /// decide who someone is read this; nothing else on the envelope
+    /// carries authority.
+    ///
+    /// `nullopt` on a connection with no enforced handshake.  Planes that
+    /// require proof reject on absence; planes that do not, proceed.
+    /// Always `nullopt` on the DEALER receive path, which has no ROUTER
+    /// frame and no ZAP metadata to read.
+    [[nodiscard]] const std::optional<utils::security::AttestedKey> &attestation() const noexcept;
 
     /// Frame 2 — msg_type ASCII string.
     [[nodiscard]] std::string_view msg_type() const noexcept;

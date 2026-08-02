@@ -60,12 +60,18 @@ struct WireEnvelope::Impl
     std::string msg_type_bytes;
     std::string correlation_id_bytes;
     nlohmann::json body_json;
+    std::optional<utils::security::AttestedKey> attestation;
 };
 
 WireEnvelope::WireEnvelope() : pImpl(std::make_unique<Impl>()) {}
 WireEnvelope::~WireEnvelope() = default;
 WireEnvelope::WireEnvelope(WireEnvelope &&) noexcept = default;
 WireEnvelope &WireEnvelope::operator=(WireEnvelope &&) noexcept = default;
+
+const std::optional<utils::security::AttestedKey> &WireEnvelope::attestation() const noexcept
+{
+    return pImpl->attestation;
+}
 
 std::string_view WireEnvelope::identity() const noexcept
 {
@@ -261,6 +267,7 @@ inline std::string_view msg_as_view(const zmq::message_t &m)
 } // namespace
 
 std::optional<WireEnvelope> WireEnvelope::parse_router_recv(zmq::multipart_t &&msg,
+                                                            const zmq::socket_t &sock,
                                                             ParseError *err_out)
 {
     // ROUTER receive: [identity, 'C', msg_type, correlation_id, body]
@@ -290,6 +297,14 @@ std::optional<WireEnvelope> WireEnvelope::parse_router_recv(zmq::multipart_t &&m
     {
         return std::nullopt;
     }
+
+    // HEP-CORE-0035 §4.2.1 — capture what the transport proved about this
+    // sender, so no handler has to re-derive identity.  libzmq stamps the
+    // ZAP metadata on every part; frame 0 is read for it here as it is for
+    // `Peer-Address` on the admin path.  A socket with no enforced ZAP
+    // domain yields nullopt.
+    env.pImpl->attestation = utils::security::AttestedKey::from_message(sock, identity_frame);
+
     return env;
 }
 

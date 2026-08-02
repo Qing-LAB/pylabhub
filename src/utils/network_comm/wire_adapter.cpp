@@ -100,10 +100,11 @@ zmq::multipart_t encode_dealer_send(std::string_view msg_type, const EncodeConte
                                            std::move(payload));
 }
 
-std::optional<DecodedRouterMsg> decode_router_recv(zmq::multipart_t &&msg, ParseError *err_out)
+std::optional<DecodedRouterMsg> decode_router_recv(zmq::multipart_t &&msg,
+                                                   const zmq::socket_t &sock, ParseError *err_out)
 {
     // Parse the 5-frame envelope; validation lives in WireEnvelope::parse_router_recv.
-    auto env_opt = WireEnvelope::parse_router_recv(std::move(msg), err_out);
+    auto env_opt = WireEnvelope::parse_router_recv(std::move(msg), sock, err_out);
     if (!env_opt.has_value())
     {
         return std::nullopt;

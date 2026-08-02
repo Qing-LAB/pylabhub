@@ -572,54 +572,57 @@ that was tried and found wanting.**
    The REG_ACK wire field still carries bare keys; migrating it is the inbox
    slice's protocol change across broker and role.
 
-**Where it lives — DECIDED 2026-08-01.**  Owned by `HubHost`, as a **peer of
-`HubState`, not a member of it**, and published as an atomically-swapped
-immutable snapshot.
+**Where it lives — DECIDED 2026-08-02.**  Owned by `BrokerServiceImpl`, as
+broker-scoped configuration, published as an atomically-swapped immutable
+snapshot.
 
-This section originally specified `HubState`, and the implementation put it on
-`BrokerServiceImpl`.  Both are wrong, for the same reason: they answer
-different questions than the authority does.
+**Not `HubState`.**  `HubState` is what is *happening* — channels, roles, shm
+blocks, access records, instance counters, every entry a consequence of the hub
+running.  The authority is not a consequence of anything: it is loaded from the
+vault before the hub does anything, and does not change because the hub ran.
+Filing it there would make the aggregate mean two things at once, and the next
+contributor would reasonably add an `_on_authority_changed` capability op
+alongside the other `_on_*` mutators — dissolving the immutability the
+`Builder`/`build() &&` split exists to guarantee.  That objection stands
+whatever else is decided, and nothing below weakens it.
 
-- **`HubState` is what is happening.**  Channels, roles, shm blocks, access
-  records, instance counters — every entry is a *consequence* of the hub
-  running.  The authority is not a consequence of anything: it is loaded from
-  the vault before the hub does anything and does not change because the hub
-  ran.  Filing it here would make the aggregate mean two things at once, and
-  the next contributor would reasonably add an `_on_authority_changed`
-  capability op alongside the other `_on_*` mutators — dissolving the
-  immutability the `Builder`/`build() &&` split exists to guarantee.
+**Why the broker, and not one level up.**  The deciding question is who reads
+this structure.  Every consumer is inside the broker:
 
-- **`BrokerServiceImpl` is what the hub does.**  The broker is the hub's
-  behaviour, not a store.  That the object happens to outlive or be outlived
-  by another is a fact about wiring, not a reason.
+| Consumer | Reads the authority? |
+|---|---|
+| Role registration | Yes — the claim check (§4.2.2) |
+| ZAP door admission | Yes — via `zap_allowlist()` |
+| Federation ingress | Yes — `is_federation_peer()` |
+| Admin console | **No.** An operator is not in the roster; the admin plane binds to the key its own handshake verified (§4.2.2) |
+| Role-to-role inbox | **No.** That is a *different* authority, built by the role process from `REG_ACK.known_roles`, and owned there |
 
-The authority is neither: it is **validated identity configuration in
-queryable form** — the answer to "who do I recognise", derived from
-`HubConfig::known_roles()` + `peers` and frozen.  `HubHost` already owns both
-the raw config and the running state, so the authority sits beside them as a
-third thing of its own kind:
+The ZAP door list is not a peer of the authority — it is **derived from it**
+(`peer_authority()->zap_allowlist()`), stored in the broker, read by the
+broker's own ZAP pump thread, under a domain unique per `BrokerService`
+instance.  Roster → door list → ZAP thread is one chain that must never
+disagree with itself.  Moving only the head of that chain to an outer object
+puts a lifetime and ownership boundary in the middle of a derivation, which is
+the divergence hazard §4.2 exists to prevent, not a fix for it.
 
-```
-HubHost
-├── HubConfig        raw operator input
-├── PeerAuthority    validated identity roster   ← peer of HubState
-└── HubState         what is happening now
-```
+**On role/hub unification.**  A role does hold its own authority, so "the
+process owner holds running state and identity roster separately" is a real
+symmetry — but the role's authority is a *distinct instance from a distinct
+source* (`REG_ACK`, not the vault).  The symmetry says each process owns the
+roster it uses; it does not require the hub's roster to sit above the only
+component that uses it.
 
-The broker holds a non-owning pointer, exactly as it already does for
-`HubState`.
+**What would change this.**  A consumer outside the broker.  If a later plane
+needs to resolve a key to a principal without going through the broker, the
+roster belongs one level up and the move is mechanical.  Until such a consumer
+exists, hoisting it buys nothing and costs the derivation chain above.
 
-**This shape is what survives role/hub unification.**  A role needs the same
-pair — its own running state, plus its own authority built from
-`REG_ACK.known_roles` for inbox attribution (§4.2.2).  "The process owner holds
-the running state and the identity roster as separate aggregates" is then one
-rule on both sides, rather than a hub-shaped exception.
-
-**Publication stays replacement-not-mutation.**  `HubHost` owns the snapshot
-pointer; publishing swaps it atomically.  Readers on the ZAP pump thread, the
-broker router thread, and (post-unification) the role process each take a
-`shared_ptr` to a frozen view.  Holding it in an aggregate whose other members
-are edited under a lock must NOT drag the authority into that discipline.
+**Publication stays replacement-not-mutation.**  The owner holds the snapshot
+pointer; publishing swaps it atomically.  Readers on the ZAP pump thread and
+the broker router thread each take a `shared_ptr` to a frozen view.  A roster
+change builds a fresh authority and swaps — there is no writer to exclude, and
+the authority must never be dragged into the mutate-under-lock discipline of an
+aggregate whose other members are edited in place.
 
 **Malformed entries are fatal — DECIDED 2026-08-01.**  The `Builder` is the one
 place operator text becomes a recognised principal, so it is the one place that

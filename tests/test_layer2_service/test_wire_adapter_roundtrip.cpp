@@ -58,6 +58,23 @@ namespace
 /// Encode a payload, then decode it — as if it went over a real ROUTER
 /// hop.  Returns the decoded message; ASSERT_TRUE at the caller if you
 /// want an early exit on decode failure.
+// PURPOSE: give the decoder a socket when this suite assembles the ROUTER
+// hop by hand (see below) instead of receiving over a real connection.
+//
+// BYPASS: no attestation is minted.  `decode_router_recv` derives it from
+// the socket's enforced ZAP domain (HEP-CORE-0035 §4.2.1) and an unarmed
+// socket has none.
+//
+// WHY THIS IS RIGHT HERE: these cases pin encode→decode field fidelity and
+// envelope_hash tamper detection — properties of the bytes, independent of
+// who sent them.  Provenance is pinned against real CURVE handshakes in
+// test_layer2_service/workers/zap_router_workers.cpp.
+struct UnarmedRouterSocket
+{
+    zmq::context_t zctx{1};
+    zmq::socket_t sock{zctx, zmq::socket_type::router};
+};
+
 [[nodiscard]] std::optional<pylabhub::wire::adapter::DecodedRouterMsg>
 roundtrip(std::string_view msg_type, const EncodeContext &ctx, nlohmann::json payload)
 {
@@ -74,7 +91,8 @@ roundtrip(std::string_view msg_type, const EncodeContext &ctx, nlohmann::json pa
         router_view.add(wire.pop());
     }
 
-    return decode_router_recv(std::move(router_view));
+    UnarmedRouterSocket s;
+    return decode_router_recv(std::move(router_view), s.sock);
 }
 
 /// Default EncodeContext for REG-family tests.  All fields non-empty so
@@ -378,7 +396,8 @@ TEST(WireAdapterRoundtrip, DecodeRejectsTamperedEnvelopeHash)
     router_view.addstr(re);
 
     pylabhub::wire::ParseError err{};
-    auto decoded = decode_router_recv(std::move(router_view), &err);
+    UnarmedRouterSocket s;
+    auto decoded = decode_router_recv(std::move(router_view), s.sock, &err);
     EXPECT_FALSE(decoded.has_value())
         << "tampered envelope_hash MUST be rejected by decode_router_recv";
     EXPECT_EQ(err, pylabhub::wire::ParseError::envelope_hash_mismatch);

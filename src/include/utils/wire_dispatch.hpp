@@ -237,8 +237,14 @@ struct PYLABHUB_UTILS_EXPORT AdmissionBinder
 // caller (BrokerServiceImpl at construction).  Missing callbacks produce
 // `broker_internal_error` rejects — the pipeline never silently skips a
 // gate.
-[[nodiscard]] PYLABHUB_UTILS_EXPORT ReceivedMessage receive_and_validate(
-    ::zmq::multipart_t &&raw, const ::pylabhub::admission::AdmissionContext &admission_ctx);
+//
+// `sock` is the socket `raw` arrived on.  The sender's attestation is
+// minted from it at parse (HEP-CORE-0035 §4.2.1) and is what the
+// identity gates decide on — the pipeline cannot check a proven key it
+// was never given.
+[[nodiscard]] PYLABHUB_UTILS_EXPORT ReceivedMessage
+receive_and_validate(::zmq::multipart_t &&raw, const ::zmq::socket_t &sock,
+                     const ::pylabhub::admission::AdmissionContext &admission_ctx);
 
 // ── Dispatch table introspection (test-facing) ───────────────────────────
 //

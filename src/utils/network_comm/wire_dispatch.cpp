@@ -598,11 +598,11 @@ std::size_t dispatch_table_size() noexcept
     return kDispatchTable.size();
 }
 
-ReceivedMessage receive_and_validate(::zmq::multipart_t &&raw,
+ReceivedMessage receive_and_validate(::zmq::multipart_t &&raw, const ::zmq::socket_t &sock,
                                      const ::pylabhub::admission::AdmissionContext &admission_ctx)
 {
     ::pylabhub::wire::ParseError err = {};
-    auto env_opt = ::pylabhub::wire::WireEnvelope::parse_router_recv(std::move(raw), &err);
+    auto env_opt = ::pylabhub::wire::WireEnvelope::parse_router_recv(std::move(raw), sock, &err);
     if (!env_opt.has_value())
     {
         return parse_failure(err);

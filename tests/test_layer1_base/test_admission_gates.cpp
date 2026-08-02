@@ -30,8 +30,13 @@ WireEnvelope build_envelope(std::string_view identity, std::string_view msg_type
 {
     auto frames =
         WireEnvelope::build_router_send(identity, msg_type, correlation_id, std::move(body));
+    // Gate tests drive the gates directly with a hand-built envelope; the
+    // socket carries no enforced ZAP domain, so the envelope arrives with
+    // no attestation.  Cases that need a proven key set it explicitly.
+    zmq::context_t ctx{1};
+    zmq::socket_t unarmed{ctx, zmq::socket_type::router};
     pylabhub::wire::ParseError err{};
-    auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
+    auto env = WireEnvelope::parse_router_recv(std::move(frames), unarmed, &err);
     if (!env)
     {
         throw std::runtime_error("build_envelope: parse failed");
@@ -39,26 +44,47 @@ WireEnvelope build_envelope(std::string_view identity, std::string_view msg_type
     return std::move(*env);
 }
 
-// Callback fixture with in-process state — a single-role known_roles,
-// tunable rotation state, and a nonce dedup set.
+// Callback fixture with in-process state — a scripted claim verdict and a
+// nonce dedup set.
+//
+// The verdict is scripted rather than computed because `AttestedKey` is
+// unforgeable by construction: its only factory reads a proven key off a
+// real ZAP-armed connection, so no L1 test can manufacture one.  That
+// splits the work cleanly and each layer tests what it can actually
+// observe:
+//
+//   this file  — the gate's own logic: every verdict maps to the right
+//                reject code, and the gate forwards the envelope's
+//                attestation plus the body's claimed uid / announced key
+//   L2         — attestation → verdict, driven by four real CURVE
+//                handshakes (workers/zap_router_workers.cpp)
+//   L3/L4      — the whole path, live peer to admission decision
 struct StubCallbacks
 {
-    std::string known_uid;
-    std::string known_pubkey;
+    using ClaimVerdict = pylabhub::utils::security::ClaimVerdict;
+
+    ClaimVerdict verdict{ClaimVerdict::accepted};
     std::unordered_set<std::string> seen_nonces;
     std::uint64_t now_ms{1'000'000ULL};
+
+    // What the gate actually handed the authority on the last call.
+    std::string seen_uid;
+    std::string seen_pubkey;
+    bool seen_attestation{false};
+    int call_count{0};
 
     ag::AdmissionCallbacks make()
     {
         ag::AdmissionCallbacks cb;
-        cb.lookup_known_role = [this](std::string_view uid,
-                                      std::string_view pubkey) -> ag::KnownRoleLookup
+        cb.check_registration =
+            [this](const std::optional<pylabhub::utils::security::AttestedKey> &attested,
+                   std::string_view uid, std::string_view pubkey) -> ClaimVerdict
         {
-            if (uid != known_uid)
-                return ag::KnownRoleLookup::uid_unknown;
-            if (pubkey != known_pubkey)
-                return ag::KnownRoleLookup::pubkey_mismatch;
-            return ag::KnownRoleLookup::binding_matches;
+            seen_uid.assign(uid);
+            seen_pubkey.assign(pubkey);
+            seen_attestation = attested.has_value();
+            ++call_count;
+            return verdict;
         };
         cb.record_and_check_nonce = [this](std::string_view uid, std::string_view nonce)
         {
@@ -80,12 +106,7 @@ struct Fixture
     StubCallbacks stub;
     ag::AdmissionCallbacks cb;
 
-    Fixture()
-    {
-        stub.known_uid = "prod.test.uid1";
-        stub.known_pubkey = "abcdefghij0123456789abcdefghij0123456789";
-        cb = stub.make();
-    }
+    Fixture() { cb = stub.make(); }
 
     ag::AdmissionContext ctx() const
     {
@@ -131,6 +152,8 @@ TEST(AdmissionGates, RejectCodeWireStrings)
     EXPECT_EQ(ag::to_wire_string(ag::RejectCode::unknown_role), "UNKNOWN_ROLE");
     EXPECT_EQ(ag::to_wire_string(ag::RejectCode::pubkey_mismatch), "PUBKEY_MISMATCH");
     EXPECT_EQ(ag::to_wire_string(ag::RejectCode::uid_conflict), "UID_CONFLICT");
+    EXPECT_EQ(ag::to_wire_string(ag::RejectCode::unauthenticated), "UNAUTHENTICATED");
+    EXPECT_EQ(ag::to_wire_string(ag::RejectCode::wrong_peer_kind), "WRONG_PEER_KIND");
     EXPECT_EQ(ag::to_wire_string(ag::RejectCode::replay_or_skew), "REPLAY_OR_SKEW");
     EXPECT_EQ(ag::to_wire_string(ag::RejectCode::invalid_role_tag), "INVALID_ROLE_TAG");
     EXPECT_EQ(ag::to_wire_string(ag::RejectCode::broker_internal_error), "BROKER_INTERNAL_ERROR");
@@ -223,7 +246,7 @@ TEST(AdmissionGate_Identity, MatchPasses)
     nlohmann::json body = nlohmann::json::object();
     auto env = build_envelope("prod.test.uid1", "REG_REQ", "cid-1", std::move(body));
     auto b = f.body();
-    EXPECT_EQ(ag::gate_identity_match(env, b), std::nullopt);
+    EXPECT_EQ(ag::gate_dealer_identity_consistency(env, b), std::nullopt);
 }
 
 TEST(AdmissionGate_Identity, MismatchRejects)
@@ -234,7 +257,7 @@ TEST(AdmissionGate_Identity, MismatchRejects)
     auto b = f.body();
     b.role_uid = "prod.test.uid1"; // body claims prod.test.uid1, but
                                    // envelope carries attacker.uid
-    auto r = ag::gate_identity_match(env, b);
+    auto r = ag::gate_dealer_identity_consistency(env, b);
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r->code, ag::RejectCode::identity_mismatch);
 }
@@ -310,37 +333,115 @@ TEST(AdmissionGate_Grammar, ValidPubkeyWithZ85CharsPassesLengthCheck)
     EXPECT_EQ(ag::gate_grammar(b), std::nullopt);
 }
 
-// ── Gate 5: known-roles binding ───────────────────────────────────────
+// ── Gate 5: attested binding ──────────────────────────────────────────
 
-TEST(AdmissionGate_KnownRole, MatchPasses)
+using ClaimVerdict = pylabhub::utils::security::ClaimVerdict;
+
+TEST(AdmissionGate_AttestedBinding, AcceptedVerdictPasses)
 {
     Fixture f;
-    EXPECT_EQ(ag::gate_known_role_binding(f.body(), f.ctx()), std::nullopt);
+    f.stub.verdict = ClaimVerdict::accepted;
+    auto env = build_envelope("prod.test.uid1", "REG_REQ", "cid-1", nlohmann::json::object());
+    EXPECT_EQ(ag::gate_attested_binding(env, f.body(), f.ctx()), std::nullopt);
 }
 
-TEST(AdmissionGate_KnownRole, UnknownUidRejects)
+// The gate must hand the authority what the BODY claims and what the
+// ENVELOPE proved.  If it forwarded, say, the envelope's routing id in
+// place of the claimed uid, every verdict test above would still pass
+// while the gate decided the wrong question.
+TEST(AdmissionGate_AttestedBinding, ForwardsClaimedUidAnnouncedKeyAndAttestation)
 {
     Fixture f;
-    auto b = f.body("prod.stranger.uid");
-    auto r = ag::gate_known_role_binding(b, f.ctx());
+    auto env = build_envelope("prod.test.uid1", "REG_REQ", "cid-1", nlohmann::json::object());
+    auto b = f.body("prod.test.uid1", "abcdefghij0123456789abcdefghij0123456789");
+
+    (void)ag::gate_attested_binding(env, b, f.ctx());
+
+    EXPECT_EQ(f.stub.call_count, 1) << "gate must consult the authority exactly once";
+    EXPECT_EQ(f.stub.seen_uid, "prod.test.uid1") << "gate must forward the CLAIMED role_uid";
+    EXPECT_EQ(f.stub.seen_pubkey, "abcdefghij0123456789abcdefghij0123456789")
+        << "gate must forward the ANNOUNCED zmq_pubkey";
+    EXPECT_FALSE(f.stub.seen_attestation)
+        << "build_envelope parses off an unarmed socket, so the envelope carries "
+           "no attestation and the gate must pass that absence through rather "
+           "than substituting anything";
+}
+
+// One case per verdict.  A verdict that fell through to `accepted` would
+// admit a registration the authority refused, so every arm is pinned.
+
+TEST(AdmissionGate_AttestedBinding, NoAttestationRejectsUnauthenticated)
+{
+    Fixture f;
+    f.stub.verdict = ClaimVerdict::no_attestation;
+    auto env = build_envelope("prod.test.uid1", "REG_REQ", "cid-1", nlohmann::json::object());
+    auto r = ag::gate_attested_binding(env, f.body(), f.ctx());
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->code, ag::RejectCode::unauthenticated);
+}
+
+TEST(AdmissionGate_AttestedBinding, UnknownKeyRejectsUnknownRole)
+{
+    Fixture f;
+    f.stub.verdict = ClaimVerdict::unknown_key;
+    auto env = build_envelope("prod.test.uid1", "REG_REQ", "cid-1", nlohmann::json::object());
+    auto r = ag::gate_attested_binding(env, f.body(), f.ctx());
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r->code, ag::RejectCode::unknown_role);
 }
 
-TEST(AdmissionGate_KnownRole, PubkeyMismatchRejects)
+TEST(AdmissionGate_AttestedBinding, PubkeyMismatchRejects)
 {
     Fixture f;
-    auto b = f.body("prod.test.uid1", "zzzzzzzzzz0000000000zzzzzzzzzz0000000000");
-    auto r = ag::gate_known_role_binding(b, f.ctx());
+    f.stub.verdict = ClaimVerdict::pubkey_mismatch;
+    auto env = build_envelope("prod.test.uid1", "REG_REQ", "cid-1", nlohmann::json::object());
+    auto r = ag::gate_attested_binding(env, f.body(), f.ctx());
     ASSERT_TRUE(r.has_value());
     EXPECT_EQ(r->code, ag::RejectCode::pubkey_mismatch);
 }
 
+TEST(AdmissionGate_AttestedBinding, FederationPeerRejectsWrongPeerKind)
+{
+    Fixture f;
+    f.stub.verdict = ClaimVerdict::kind_not_permitted;
+    auto env = build_envelope("prod.test.uid1", "REG_REQ", "cid-1", nlohmann::json::object());
+    auto r = ag::gate_attested_binding(env, f.body(), f.ctx());
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->code, ag::RejectCode::wrong_peer_kind);
+}
+
+// THE defect: a peer holding a valid key of its own, proven at handshake,
+// registering under a DIFFERENT role's uid.
+TEST(AdmissionGate_AttestedBinding, ImpersonationRejectsIdentityMismatch)
+{
+    Fixture f;
+    f.stub.verdict = ClaimVerdict::identity_mismatch;
+    auto env = build_envelope("prod.test.uid1", "REG_REQ", "cid-1", nlohmann::json::object());
+    auto r = ag::gate_attested_binding(env, f.body(), f.ctx());
+    ASSERT_TRUE(r.has_value());
+    EXPECT_EQ(r->code, ag::RejectCode::identity_mismatch);
+}
+
+// An unbound callback must reject, never admit.  This is the failure mode
+// that would silently disable the gate for an entire broker.
+TEST(AdmissionGate_AttestedBinding, UnboundCallbackRejectsRatherThanAdmits)
+{
+    Fixture f;
+    ag::AdmissionCallbacks empty;
+    ag::AdmissionContext c;
+    c.cb = &empty;
+    auto env = build_envelope("prod.test.uid1", "REG_REQ", "cid-1", nlohmann::json::object());
+    auto r = ag::gate_attested_binding(env, f.body(), c);
+    ASSERT_TRUE(r.has_value()) << "an unbound authority callback must NOT admit";
+    EXPECT_EQ(r->code, ag::RejectCode::broker_internal_error);
+}
+
 // Key rotation (HEP-0046 I-KEY-ROTATION-VIA-DEREG): there is no
 // separate key-rotation gate.  A role's CURVE pubkey is immutable for
-// the broker's lifetime; an on-the-fly re-REG with a mismatched pubkey
-// is rejected by gate_known_role_binding as PUBKEY_MISMATCH (covered by
-// AdmissionGate_KnownRole.PubkeyMismatchRejects above).
+// the broker's lifetime; an on-the-fly re-REG under a different key
+// cannot match what the connection proved, so it lands as
+// PUBKEY_MISMATCH (covered by
+// AdmissionGate_AttestedBinding.PubkeyMismatchRejects above).
 
 // ── Gate 7: anti-replay ───────────────────────────────────────────────
 

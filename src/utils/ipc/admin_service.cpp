@@ -212,7 +212,7 @@ void AdminService::run()
         }
 
         wire::ParseError perr{};
-        auto env = wire::WireEnvelope::parse_router_recv(std::move(raw), &perr);
+        auto env = wire::WireEnvelope::parse_router_recv(std::move(raw), sock, &perr);
         if (!env)
         {
             LOGGER_WARN("[admin] dropped malformed admin envelope (parse error {})",
@@ -387,8 +387,8 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     // is passed, so the client `ts` (confined to the skew gate) cannot reach the
     // dedup window (see ReplayGuard header).
     const auto gate = [&](std::string_view sid, const std::string &nonce, std::uint64_t ts,
-                          std::string *out_origin = nullptr)
-        -> std::optional<std::pair<std::string, json>>
+                          std::string *out_origin =
+                              nullptr) -> std::optional<std::pair<std::string, json>>
     {
         AdminSessionFacts facts{};
         if (auto rej = session_skew_gate(sid, ts, facts))
@@ -404,8 +404,8 @@ std::pair<std::string, json> AdminService::Impl::dispatch_typed(const wire::Wire
     // Read gate: session + skew only, NO replay nonce (§11.1).  A poll is an
     // idempotent read — nonce dedup buys nothing and would forbid safely
     // retrying a dropped poll (same nonce → rejected as a replay).
-    const auto read_gate =
-        [&](std::string_view sid, std::uint64_t ts) -> std::optional<std::pair<std::string, json>>
+    const auto read_gate = [&](std::string_view sid,
+                               std::uint64_t ts) -> std::optional<std::pair<std::string, json>>
     {
         AdminSessionFacts facts{};
         return session_skew_gate(sid, ts, facts);

@@ -20,6 +20,7 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <optional>
 #include <string>
 
 using pylabhub::wire::is_notify_msg_type;
@@ -51,6 +52,26 @@ nlohmann::json make_reg_req_body()
     body["client_nonce"] = "0123456789abcdef0123456789abcdef";
     body["client_wall_ts"] = static_cast<std::uint64_t>(1234567890000ULL);
     return body;
+}
+
+// PURPOSE: parse frames this file built itself, with no connection behind
+// them, to test envelope FRAMING.
+//
+// BYPASS: no attestation is produced.  `parse_router_recv` mints the
+// sender's attestation from the socket it is handed (HEP-CORE-0035
+// §4.2.1); a socket with no enforced ZAP domain yields none.
+//
+// WHY THIS IS RIGHT HERE: these tests assert frame count, marker byte,
+// correlation policy, and envelope_hash — properties of the bytes, not of
+// the connection.  Supplying a real handshake would add a moving part
+// that none of the assertions read.  Attestation is pinned where real
+// CURVE handshakes run: test_layer2_service/workers/zap_router_workers.cpp
+// drives four of them and reads each key back out of ZAP metadata.
+std::optional<WireEnvelope> parse_frames_only(zmq::multipart_t &&frames, ParseError *err = nullptr)
+{
+    zmq::context_t ctx{1};
+    zmq::socket_t unarmed{ctx, zmq::socket_type::router};
+    return WireEnvelope::parse_router_recv(std::move(frames), unarmed, err);
 }
 
 } // namespace
@@ -97,7 +118,7 @@ TEST(WireEnvelope, RouterRoundTripRecoversAllSkeletonFields)
     ASSERT_EQ(frames.size(), 5U);
 
     ParseError err{};
-    auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
+    auto env = parse_frames_only(std::move(frames), &err);
     ASSERT_TRUE(env.has_value()) << "parse failed: err=" << static_cast<int>(err);
 
     EXPECT_EQ(env->identity(), "prod.test.uid1");
@@ -158,7 +179,7 @@ TEST(WireEnvelope, EmptyCorrelationAllowedOnNotify)
         /*correlation_id=*/"", body);
 
     ParseError err{};
-    auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
+    auto env = parse_frames_only(std::move(frames), &err);
     ASSERT_TRUE(env.has_value()) << "parse failed: err=" << static_cast<int>(err);
     EXPECT_TRUE(env->is_notify());
     EXPECT_EQ(env->correlation_id(), "");
@@ -180,7 +201,7 @@ TEST(WireEnvelope, TamperingIdentityFailsHashCheck)
     frames[0].rebuild(tampered.data(), tampered.size());
 
     ParseError err{};
-    auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
+    auto env = parse_frames_only(std::move(frames), &err);
     EXPECT_FALSE(env.has_value());
     EXPECT_EQ(err, ParseError::envelope_hash_mismatch);
 }
@@ -209,7 +230,7 @@ TEST(WireEnvelope, TamperingBodyFailsHashCheck)
     frames_a[4] = std::move(stolen_body);
 
     ParseError err{};
-    auto env = WireEnvelope::parse_router_recv(std::move(frames_a), &err);
+    auto env = parse_frames_only(std::move(frames_a), &err);
     EXPECT_FALSE(env.has_value());
     EXPECT_EQ(err, ParseError::envelope_hash_mismatch);
 }
@@ -221,7 +242,7 @@ TEST(WireEnvelope, WrongFrameCountRejected)
     zmq::multipart_t frames;
     frames.addstr("only-one-frame");
     ParseError err{};
-    auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
+    auto env = parse_frames_only(std::move(frames), &err);
     EXPECT_FALSE(env.has_value());
     EXPECT_EQ(err, ParseError::frame_count);
 }
@@ -235,7 +256,7 @@ TEST(WireEnvelope, WrongMarkerRejected)
     frames.addstr("cid-1");
     frames.addstr("{}");
     ParseError err{};
-    auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
+    auto env = parse_frames_only(std::move(frames), &err);
     EXPECT_FALSE(env.has_value());
     EXPECT_EQ(err, ParseError::frame_type_marker);
 }
@@ -377,10 +398,9 @@ TEST(WireBodies, ProducerRegReqBodyRejectsWrongTypedOptional)
 TEST(WireBodies, ProducerRegReqBodyParsesInboxSchemaOnce)
 {
     auto b = make_required_only_reg_req_body();
-    b["inbox_schema_json"] =
-        R"({"packing":"packed","fields":[)"
-        R"({"name":"seq","type":"uint64","count":1,"length":0},)"
-        R"({"name":"tag","type":"string","count":1,"length":16}]})";
+    b["inbox_schema_json"] = R"({"packing":"packed","fields":[)"
+                             R"({"name":"seq","type":"uint64","count":1,"length":0},)"
+                             R"({"name":"tag","type":"string","count":1,"length":16}]})";
     pylabhub::wire::ProducerRegReqBody body(std::move(b));
     ASSERT_TRUE(body.has_inbox_schema());
     EXPECT_EQ(body.inbox_schema().packing, "packed");
@@ -420,7 +440,6 @@ TEST(WireBodies, ProducerRegReqBodyRejectsMalformedInboxSchema)
         R"({"packing":"natural","fields":[{"name":"v","type":"float64","count":1,"length":0}]})";
     EXPECT_THROW(pylabhub::wire::ProducerRegReqBody{std::move(b4)}, WireBodyError);
 }
-
 
 namespace
 {
@@ -651,7 +670,7 @@ TEST(WireEnvelope, ParseRejectsCorrelationMissingOnNonNotify)
     frames.addstr("");        // empty correlation_id — illegal here
     frames.addstr("{}");
     ParseError err{};
-    auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
+    auto env = parse_frames_only(std::move(frames), &err);
     EXPECT_FALSE(env.has_value());
     EXPECT_EQ(err, ParseError::correlation_missing);
 }
@@ -668,7 +687,7 @@ TEST(WireEnvelope, ParseRejectsBodyNotJson)
     frames.addstr("cid-1");
     frames.addstr("not-json-at-all-{");
     ParseError err{};
-    auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
+    auto env = parse_frames_only(std::move(frames), &err);
     EXPECT_FALSE(env.has_value());
     EXPECT_EQ(err, ParseError::body_not_json);
 }
@@ -685,7 +704,7 @@ TEST(WireEnvelope, ParseRejectsBodyNotObject)
     frames.addstr("cid-1");
     frames.addstr("[1,2,3]"); // valid JSON but not an object
     ParseError err{};
-    auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
+    auto env = parse_frames_only(std::move(frames), &err);
     EXPECT_FALSE(env.has_value());
     EXPECT_EQ(err, ParseError::body_not_object);
 }
@@ -702,7 +721,7 @@ TEST(WireEnvelope, ParseRejectsEnvelopeHashMissing)
     frames.addstr("cid-1");
     frames.addstr("{\"foo\":\"bar\"}"); // valid object, no envelope_hash
     ParseError err{};
-    auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
+    auto env = parse_frames_only(std::move(frames), &err);
     EXPECT_FALSE(env.has_value());
     EXPECT_EQ(err, ParseError::envelope_hash_missing);
 }
@@ -718,7 +737,7 @@ TEST(WireEnvelope, ParseRejectsMsgTypeEmpty)
     frames.addstr("cid-1");
     frames.addstr("{}");
     ParseError err{};
-    auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
+    auto env = parse_frames_only(std::move(frames), &err);
     EXPECT_FALSE(env.has_value());
     EXPECT_EQ(err, ParseError::msg_type_empty);
 }
@@ -735,7 +754,7 @@ TEST(WireEnvelope, ParseRejectsMsgTypeTooLong)
     frames.addstr("cid-1");
     frames.addstr("{}");
     ParseError err{};
-    auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
+    auto env = parse_frames_only(std::move(frames), &err);
     EXPECT_FALSE(env.has_value());
     EXPECT_EQ(err, ParseError::msg_type_too_long);
 }
@@ -751,7 +770,7 @@ TEST(WireEnvelope, ParseRejectsCorrelationTooLong)
     frames.addstr(std::string(65, 'A')); // 65 chars — exceeds limit
     frames.addstr("{}");
     ParseError err{};
-    auto env = WireEnvelope::parse_router_recv(std::move(frames), &err);
+    auto env = parse_frames_only(std::move(frames), &err);
     EXPECT_FALSE(env.has_value());
     EXPECT_EQ(err, ParseError::correlation_too_long);
 }

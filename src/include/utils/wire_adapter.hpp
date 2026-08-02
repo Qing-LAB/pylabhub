@@ -127,7 +127,11 @@ struct DecodedRouterMsg
 /// so the caller can WARN with a specific reason.  The message is DROPPED —
 /// no reply is sent, because a sender that violated the envelope contract
 /// cannot be reliably identified for a reply.
+/// @param sock the socket @p msg arrived on — forwarded to
+///        `WireEnvelope::parse_router_recv`, which mints the sender's
+///        attestation from it (HEP-CORE-0035 §4.2.1).
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<DecodedRouterMsg>
-decode_router_recv(zmq::multipart_t &&msg, ParseError *err_out = nullptr);
+decode_router_recv(zmq::multipart_t &&msg, const zmq::socket_t &sock,
+                   ParseError *err_out = nullptr);
 
 } // namespace pylabhub::wire::adapter

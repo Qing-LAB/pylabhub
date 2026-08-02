@@ -104,13 +104,19 @@ std::string_view to_wire_string(RejectCode code) noexcept
 // through `abi_fingerprint` at the broker's REG handler per
 // HEP-CORE-0032 §8.
 
-std::optional<RejectDetail> gate_identity_match(const ::pylabhub::wire::WireEnvelope &env,
-                                                const RegFamilyBodyView &body) noexcept
+std::optional<RejectDetail>
+gate_dealer_identity_consistency(const ::pylabhub::wire::WireEnvelope &env,
+                                 const RegFamilyBodyView &body) noexcept
 {
     // I-DEALER-IDENTITY: routing_id captured in Frame 0 must equal the
     // self-declared role_uid.  Bytewise compare — role_uid grammar
     // guarantees ASCII; identity is opaque bytes matching the DEALER's
     // routing_id set at connect().
+    //
+    // Both sides of this comparison are client-chosen, so agreement
+    // proves nothing about who the sender is.  It is required because the
+    // broker routes replies on the routing id and mixes it into
+    // envelope_hash; `gate_attested_binding` is what decides identity.
     if (env.identity() != body.role_uid)
     {
         return make(RejectCode::identity_mismatch, "role_uid",
@@ -156,26 +162,50 @@ std::optional<RejectDetail> gate_grammar(const RegFamilyBodyView &body) noexcept
     return std::nullopt;
 }
 
-std::optional<RejectDetail> gate_known_role_binding(const RegFamilyBodyView &body,
-                                                    const AdmissionContext &ctx) noexcept
+std::optional<RejectDetail> gate_attested_binding(const ::pylabhub::wire::WireEnvelope &env,
+                                                  const RegFamilyBodyView &body,
+                                                  const AdmissionContext &ctx) noexcept
 {
-    if (!ctx.cb || !ctx.cb->lookup_known_role)
+    if (!ctx.cb || !ctx.cb->check_registration)
     {
         // Programmer error: pipeline invoked without callbacks bound.
         return make(RejectCode::broker_internal_error, "",
-                    "internal: known_roles callback not bound");
+                    "internal: registration-claim callback not bound");
     }
-    const auto result = ctx.cb->lookup_known_role(body.role_uid, body.zmq_pubkey);
-    switch (result)
+
+    using ClaimVerdict = ::pylabhub::utils::security::ClaimVerdict;
+    switch (ctx.cb->check_registration(env.attestation(), body.role_uid, body.zmq_pubkey))
     {
-    case KnownRoleLookup::binding_matches:
+    case ClaimVerdict::accepted:
         return std::nullopt;
-    case KnownRoleLookup::uid_unknown:
-        return make(RejectCode::unknown_role, "role_uid", "role_uid not present in known_roles");
-    case KnownRoleLookup::pubkey_mismatch:
+
+    case ClaimVerdict::no_attestation:
+        // Unreachable under Layer-1 enforcement — an unlisted key never
+        // completes a handshake — so this firing is an alarm about the
+        // socket's ZAP arming, not routine client error.
+        return make(RejectCode::unauthenticated, "",
+                    "connection proved no identity: registration requires a "
+                    "completed CURVE handshake");
+
+    case ClaimVerdict::pubkey_mismatch:
         return make(RejectCode::pubkey_mismatch, "zmq_pubkey",
-                    "zmq_pubkey does not match known_roles entry "
-                    "for this role_uid");
+                    "zmq_pubkey does not match the key this connection proved "
+                    "at handshake");
+
+    case ClaimVerdict::unknown_key:
+        return make(RejectCode::unknown_role, "zmq_pubkey",
+                    "the key this connection proved is not one this hub recognises");
+
+    case ClaimVerdict::kind_not_permitted:
+        return make(RejectCode::wrong_peer_kind, "role_uid",
+                    "the proven key belongs to a federation peer hub, not a local "
+                    "role; peers may not register roles (HEP-CORE-0035 §4.3)");
+
+    case ClaimVerdict::identity_mismatch:
+        // THE defect this gate exists to close: a valid key, proven,
+        // claiming a different role's uid.
+        return make(RejectCode::identity_mismatch, "role_uid",
+                    "role_uid is not the role this connection's proven key belongs to");
     }
     return std::nullopt; // unreachable
 }
@@ -374,7 +404,7 @@ std::optional<RejectDetail> run_reg_family_gates(const ::pylabhub::wire::WireEnv
     // WireEnvelope::parse; if we're here, hash is valid.
     // gate_supported_proto retired per C3 — wire-version + ABI via
     // `abi_fingerprint` per HEP-CORE-0032 §8, not this gate.
-    if (auto r = gate_identity_match(env, body))
+    if (auto r = gate_dealer_identity_consistency(env, body))
         return r;
     if (auto r = gate_grammar(body))
         return r;
@@ -383,7 +413,7 @@ std::optional<RejectDetail> run_reg_family_gates(const ::pylabhub::wire::WireEnv
     // CONSUMER_DEREG_REQ (only HEARTBEAT_NOTIFY reads it).
     if (auto r = gate_role_tag_policy(env.msg_type(), body.role_uid, {}))
         return r;
-    if (auto r = gate_known_role_binding(body, ctx))
+    if (auto r = gate_attested_binding(env, body, ctx))
         return r;
     if (auto r = gate_replay_bound(body, ctx))
         return r;
