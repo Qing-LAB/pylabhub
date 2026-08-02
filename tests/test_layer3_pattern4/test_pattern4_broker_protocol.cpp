@@ -1421,7 +1421,6 @@ TEST_F(Pattern4BrokerProtocolTest, BroadcastFanOut_DeliveredToProducerAndAllCons
     auto sender = make_wire_client(ctx, setup, send_uid);
     nlohmann::json bcast;
     bcast["target_channel"] = channel;
-    bcast["sender_uid"] = send_uid;
     bcast["message"] = "hello-fan-out";
     bcast["data"] = "";
     sender.send("CHANNEL_BROADCAST_SEND_NOTIFY", bcast);
@@ -1433,6 +1432,8 @@ TEST_F(Pattern4BrokerProtocolTest, BroadcastFanOut_DeliveredToProducerAndAllCons
         ASSERT_TRUE(n.has_value()) << who << " did not receive CHANNEL_BROADCAST_DELIVER_NOTIFY";
         EXPECT_EQ(n->value("channel_name", std::string{}), channel) << who;
         EXPECT_EQ(n->value("event", std::string{}), "broadcast") << who;
+        // The request never said who was sending.  This name came from the
+        // key the sender's connection proved at handshake.
         EXPECT_EQ(n->value("sender_uid", std::string{}), send_uid) << who;
         EXPECT_EQ(n->value("message", std::string{}), "hello-fan-out") << who;
     };
@@ -1479,7 +1480,6 @@ TEST_F(Pattern4BrokerProtocolTest, BroadcastFanOut_DataPayloadRoundTrip)
     auto sender = make_wire_client(ctx, setup, send_uid);
     nlohmann::json bcast;
     bcast["target_channel"] = channel;
-    bcast["sender_uid"] = send_uid;
     bcast["message"] = msg;
     bcast["data"] = data;
     sender.send("CHANNEL_BROADCAST_SEND_NOTIFY", bcast);
@@ -1526,7 +1526,6 @@ TEST_F(Pattern4BrokerProtocolTest, BroadcastUnknownChannel_NoNotifyDelivered)
     auto sender = make_wire_client(ctx, setup, send_uid);
     nlohmann::json bcast;
     bcast["target_channel"] = unknown; // no such channel
-    bcast["sender_uid"] = send_uid;
     bcast["message"] = "into-the-void";
     bcast["data"] = "";
     sender.send("CHANNEL_BROADCAST_SEND_NOTIFY", bcast);
@@ -1548,6 +1547,243 @@ TEST_F(Pattern4BrokerProtocolTest, BroadcastUnknownChannel_NoNotifyDelivered)
         << "broker stopped servicing requests after unknown-channel broadcast";
     EXPECT_TRUE(pres->value("present", false))
         << "liveness probe: registered other-channel producer should be present";
+
+    broker.signal_quit();
+}
+
+// ─── Broadcast sender attribution (HEP-CORE-0035 §4.2.2) ──────────────────
+//
+// Recipients read a broadcast's `sender_uid` as fact, so it is decided by
+// the broker from the key the connection proved — not announced by the
+// sender.  These two pin the halves of that: the name follows the key and
+// not the routing id, and a body that still declares a sender is refused
+// rather than quietly corrected.
+
+TEST_F(Pattern4BrokerProtocolTest, Broadcast_AttributedToProvenKey_NotRoutingId)
+{
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string channel = "bcastatk.ch" + suffix;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+    const std::string alice = "prod.bcast.alice" + suffix;
+    const std::string bob = "prod.bcast.bob" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_bcast_attrib");
+    const auto setup = make_pattern4_setup({prod_uid, cons_uid, alice, bob});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto prod = make_wire_client(ctx, setup, prod_uid);
+    ASSERT_NO_FATAL_FAILURE(register_producer(prod, setup, channel, prod_uid));
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, prod_uid));
+    auto cons = make_wire_client(ctx, setup, cons_uid);
+    ASSERT_NO_FATAL_FAILURE(register_consumer(cons, setup, channel, cons_uid));
+
+    // Alice's key on the socket, Bob's uid as the routing id — the one
+    // value a client picks for itself.  Both are well-formed and both name
+    // roles this hub knows, so nothing here is malformed; the only thing
+    // separating them is which one was PROVEN.
+    const auto &alice_kp = setup.curve.role(alice);
+    BrokerWireClient::Config c;
+    c.broker_endpoint = setup.broker_endpoint;
+    c.broker_pubkey = setup.curve.hub.public_z85;
+    c.client_pubkey = alice_kp.public_z85;
+    c.client_seckey = alice_kp.secret_z85;
+    c.client_role_uid = bob;
+    BrokerWireClient masquerader(ctx, c);
+
+    nlohmann::json bcast;
+    bcast["target_channel"] = channel;
+    bcast["message"] = "who-sent-this";
+    masquerader.send("CHANNEL_BROADCAST_SEND_NOTIFY", bcast);
+
+    auto n =
+        drain_for(cons, "CHANNEL_BROADCAST_DELIVER_NOTIFY", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(n.has_value()) << "consumer did not receive the broadcast";
+    EXPECT_EQ(n->value("sender_uid", std::string{}), alice)
+        << "the broadcast must be attributed to the key the connection PROVED";
+    EXPECT_NE(n->value("sender_uid", std::string{}), bob)
+        << "attribution followed the client-chosen routing id — anyone could "
+           "then broadcast under any uid; body="
+        << n->dump();
+
+    broker.signal_quit();
+}
+
+TEST_F(Pattern4BrokerProtocolTest, Broadcast_BodyDeclaringSender_Refused)
+{
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string channel = "bcastdecl.ch" + suffix;
+    const std::string prod_uid = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+    const std::string alice = "prod.decl.alice" + suffix;
+    const std::string bob = "prod.decl.bob" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_bcast_declared");
+    const auto setup = make_pattern4_setup({prod_uid, cons_uid, alice, bob});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto prod = make_wire_client(ctx, setup, prod_uid);
+    ASSERT_NO_FATAL_FAILURE(register_producer(prod, setup, channel, prod_uid));
+    ASSERT_NO_FATAL_FAILURE(producer_heartbeat(prod, channel, prod_uid));
+    auto cons = make_wire_client(ctx, setup, cons_uid);
+    ASSERT_NO_FATAL_FAILURE(register_consumer(cons, setup, channel, cons_uid));
+
+    // Alice, under her own identity, declaring Bob as the sender.
+    auto sender = make_wire_client(ctx, setup, alice);
+    nlohmann::json bcast;
+    bcast["target_channel"] = channel;
+    bcast["sender_uid"] = bob; // retired field
+    bcast["message"] = "labelled-as-bob";
+    sender.send("CHANNEL_BROADCAST_SEND_NOTIFY", bcast);
+
+    // The harm first, and unconditionally.  Refused means NOT delivered;
+    // re-attributing the message to Alice and sending it anyway would also
+    // be "safe", and would still be wrong, because Alice addressed it as Bob
+    // and has no way to learn it went out otherwise.  Asserted before the
+    // reply so that a build which accepts the body — and therefore answers
+    // nothing, this being fire-and-forget — still fails HERE, on the
+    // delivery, rather than on a missing error reply.
+    auto leaked = drain_for(cons, "CHANNEL_BROADCAST_DELIVER_NOTIFY",
+                            milliseconds{pylabhub::kShortTimeoutMs});
+    EXPECT_FALSE(leaked.has_value()) << "a broadcast declaring its own sender was delivered; body="
+                                     << (leaked ? leaked->dump() : "");
+
+    auto reply = sender.receive(milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(reply.has_value()) << "broker did not answer the declared-sender broadcast";
+    EXPECT_EQ(reply->first, "ERROR") << "body=" << reply->second.dump();
+    EXPECT_EQ(reply->second.value("error_code", std::string{}), "BODY_SCHEMA_VIOLATION")
+        << "body=" << reply->second.dump();
+    EXPECT_NE(reply->second.value("message", std::string{}).find("sender_uid"), std::string::npos)
+        << "the rejection must name the offending field, or an operator cannot "
+           "tell which of the body's fields the broker refused; body="
+        << reply->second.dump();
+
+    broker.signal_quit();
+}
+
+// ─── Control-tier ownership (HEP-CORE-0035 §4.2) ──────────────────────────
+//
+// A heartbeat holds a role's presence alive, so forging one keeps a DEAD
+// role looking alive.  Note what makes this the sharpest case of the
+// family: the transport refuses a second connection using a routing id
+// already in use, which blocks impersonation of a role that is currently
+// attached — and a heartbeat is only worth forging once the victim is gone
+// and its routing id is free.  The transport contributes nothing here.
+
+TEST_F(Pattern4BrokerProtocolTest, HeartbeatNotify_ProvenKeyClaimingAnotherRole_Rejected)
+{
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string channel = "hbatk.ch" + suffix;
+    const std::string bob = "prod." + channel;
+    const std::string cons_uid = "cons." + channel;
+    const std::string alice = "prod.hb.alice" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_hb_attack");
+    const auto setup = make_pattern4_setup({bob, cons_uid, alice});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+
+    // Bob registers and heartbeats once — enough for the consumer to attach —
+    // then releases the connection, freeing his routing id.
+    {
+        auto victim = make_wire_client(ctx, setup, bob);
+        ASSERT_NO_FATAL_FAILURE(register_producer(victim, setup, channel, bob));
+        ASSERT_NO_FATAL_FAILURE(producer_heartbeat(victim, channel, bob));
+    }
+
+    auto cons = make_wire_client(ctx, setup, cons_uid);
+    ASSERT_NO_FATAL_FAILURE(register_consumer(cons, setup, channel, cons_uid));
+
+    const auto &alice_kp = setup.curve.role(alice);
+    BrokerWireClient::Config c;
+    c.broker_endpoint = setup.broker_endpoint;
+    c.broker_pubkey = setup.curve.hub.public_z85;
+    c.client_pubkey = alice_kp.public_z85;
+    c.client_seckey = alice_kp.secret_z85;
+    c.client_role_uid = bob;
+
+    // Metrics ride the heartbeat, which gives the forgery an observable
+    // footprint in broker state: if the heartbeat lands, this marker is
+    // readable back through METRICS_REQ under Bob's presence.
+    nlohmann::json hb;
+    hb["channel_name"] = channel;
+    hb["role_uid"] = bob;
+    hb["role_type"] = "producer";
+    hb["metrics"] = nlohmann::json{{"forged_marker", 1}};
+
+    // Bob's routing id is released asynchronously after his disconnect, and
+    // until it is, the broker's ROUTER drops this client's frames.  Wait for
+    // a connection that is actually being serviced, using a query whose
+    // reply is unconditional — NOT the heartbeat, whose whole point is that
+    // it draws no reply when accepted.  Polling on the heartbeat's reply
+    // would make "the gate is missing" indistinguishable from "the id is
+    // still held", and the test would spend its budget proving neither.  The
+    // winning client is kept: dropping it would release the id and put the
+    // next one back at the start of the same wait.
+    std::unique_ptr<BrokerWireClient> attacker;
+    ASSERT_TRUE(pylabhub::tests::helper::poll_until(
+        [&]
+        {
+            auto probe = std::make_unique<BrokerWireClient>(ctx, c);
+            nlohmann::json q;
+            q["role_uid"] = bob;
+            if (!probe
+                     ->request("ROLE_PRESENCE_REQ", q, "ROLE_PRESENCE_ACK",
+                               milliseconds{pylabhub::kShortTimeoutMs})
+                     .has_value())
+                return false;
+            attacker = std::move(probe);
+            return true;
+        },
+        milliseconds{pylabhub::kLongTimeoutMs}))
+        << "no connection under Bob's routing id was ever serviced";
+
+    attacker->send("HEARTBEAT_NOTIFY", hb);
+    auto reply = attacker->receive(milliseconds{pylabhub::kMidTimeoutMs});
+    EXPECT_TRUE(reply.has_value()) << "Alice's key MUST NOT hold Bob's presence alive — the "
+                                      "forged heartbeat drew no rejection at all";
+    if (reply.has_value())
+    {
+        EXPECT_EQ(reply->first, "ERROR") << "body=" << reply->second.dump();
+        EXPECT_EQ(reply->second.value("error_code", std::string{}), "IDENTITY_MISMATCH")
+            << "body=" << reply->second.dump();
+    }
+
+    // Side effect, not just the reply.  A gate that answered ERROR while the
+    // handler still refreshed the presence would satisfy the assertions above
+    // and leave a dead producer looking alive.
+    nlohmann::json mreq;
+    mreq["channel_name"] = channel;
+    mreq["role_uid"] = cons_uid;
+    auto metrics =
+        cons.request("METRICS_REQ", mreq, "METRICS_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(metrics.has_value()) << "METRICS_REQ timed out";
+    EXPECT_EQ(metrics->value("metrics", nlohmann::json::object()).dump().find("forged_marker"),
+              std::string::npos)
+        << "the forged heartbeat was applied to Bob's presence despite the "
+           "rejection; metrics="
+        << metrics->value("metrics", nlohmann::json::object()).dump();
 
     broker.signal_quit();
 }
