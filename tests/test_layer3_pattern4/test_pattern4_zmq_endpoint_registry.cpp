@@ -509,7 +509,6 @@ TEST_F(Pattern4ZmqEndpointRegistryTest, ReqShapeNoUnmatchedRepliesForFireAndForg
 
     nlohmann::json bcast;
     bcast["target_channel"] = channel;
-    bcast["sender_uid"] = uid;
     bcast["message"] = "test-broadcast";
     bcast["data"] = "test-data";
     prod.send("CHANNEL_BROADCAST_SEND_NOTIFY", bcast);

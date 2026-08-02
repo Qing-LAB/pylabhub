@@ -938,7 +938,25 @@ class BrokerServiceImpl
 
     // CHANNEL_NOTIFY_REQ handler removed — audit R3.6 (2026-05-17).
 
-    void handle_channel_broadcast_req(zmq::socket_t &socket, const nlohmann::json &req);
+    /// A channel broadcast, once the broker has established who sent it.
+    ///
+    /// `sender_uid` is not a field of the request and never was one to
+    /// trust: recipients read it as fact, so establishing it is the
+    /// caller's job — from the key the connection proved, on the wire
+    /// path, or from the hub's own identity for a broadcast raised inside
+    /// the hub.  Both origins fill this in before the fan-out, which
+    /// therefore parses nothing.
+    struct ChannelBroadcast
+    {
+        std::string target_channel;
+        std::string message;
+        std::string data; ///< optional application payload, forwarded as-is
+        std::string sender_uid;
+    };
+
+    /// Fan a broadcast out to a channel's producers and consumers, then to
+    /// any federation peer subscribed to that channel.
+    void handle_channel_broadcast_req(zmq::socket_t &socket, const ChannelBroadcast &bc);
 
     nlohmann::json handle_channel_list_req(const nlohmann::json &req);
 
@@ -1330,22 +1348,21 @@ void BrokerServiceImpl::run()
             }
             for (const auto &br : pending_broadcasts)
             {
-                // Build a synthetic CHANNEL_BROADCAST_SEND_NOTIFY payload and
-                // delegate.  §11.0.5 provenance: an operator-triggered broadcast
-                // carries the issuing session's `origin_uid` as `sender_uid`;
-                // script / hub-internal broadcasts fall back to `self_hub_uid`
-                // (or "hub" before identity is wired).
-                const std::string sender =
+                // §11.0.5 provenance: an operator-triggered broadcast carries
+                // the issuing session's `origin_uid` as `sender_uid`; script /
+                // hub-internal broadcasts fall back to `self_hub_uid` (or
+                // "hub" before identity is wired).  These originate inside the
+                // hub, so the hub is the authority on who sent them — the wire
+                // path instead derives its sender from the proven key.
+                ChannelBroadcast bc;
+                bc.target_channel = br.channel;
+                bc.message = br.message;
+                bc.data = br.data;
+                bc.sender_uid =
                     !br.origin_uid.empty()
                         ? br.origin_uid
                         : (cfg.self_hub_uid.empty() ? std::string("hub") : cfg.self_hub_uid);
-                nlohmann::json req;
-                req["target_channel"] = br.channel;
-                req["sender_uid"] = sender;
-                req["message"] = br.message;
-                if (!br.data.empty())
-                    req["data"] = br.data;
-                handle_channel_broadcast_req(router, req);
+                handle_channel_broadcast_req(router, bc);
                 // HEP-CORE-0033 §11.0.4: report the completion to the operator
                 // console when this broadcast came from an admin command.
                 if (!br.request_id.empty())
@@ -1559,6 +1576,20 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
                                     e.what());
                     }
                 }
+            }
+            else if constexpr (std::is_same_v<T, wd::ValidatedChannelBroadcastSend>)
+            {
+                // The sender rides the validated message: admission named it
+                // from the key this connection proved, and refused the
+                // broadcast outright if it could not.  Nothing here re-reads
+                // the body for an identity, because the body no longer
+                // carries one.
+                ChannelBroadcast bc;
+                bc.target_channel = v.body.target_channel();
+                bc.message = v.body.message();
+                bc.data = v.body.data();
+                bc.sender_uid = std::move(v.attributed_sender);
+                handle_channel_broadcast_req(socket, bc);
             }
             else if constexpr (std::is_same_v<T, wd::ValidatedRawControl>)
             {
@@ -1863,11 +1894,12 @@ void BrokerServiceImpl::process_message(zmq::socket_t &socket, const zmq::messag
         // BRC::send_notify (no caller), and federation peer-relay uses
         // HUB_RELAY_MSG (broker↔broker), not CHANNEL_NOTIFY_REQ.  Old
         // clients receive UNKNOWN_MSG_TYPE via the dispatch fall-through.
-        else if (msg_type == "CHANNEL_BROADCAST_SEND_NOTIFY")
-        {
-            // Fire-and-forget: fan out broadcast to ALL members of a channel.
-            handle_channel_broadcast_req(socket, payload);
-        }
+        // CHANNEL_BROADCAST_SEND_NOTIFY retired from process_message — it now
+        // dispatches typed from `dispatch_received`; it always arrives as
+        // `ValidatedChannelBroadcastSend`, carrying the sender admission
+        // derived from the connection, so this branch was unreachable.  It
+        // could not be kept as a fallback either: `payload` here has no
+        // sender for the handler to attribute the fan-out to.
         else if (msg_type == "CHANNEL_LIST_REQ")
         {
             // Synchronous: return list of registered channels.
@@ -6508,11 +6540,9 @@ void BrokerServiceImpl::handle_checksum_error_report(zmq::socket_t &socket,
 // ============================================================================
 
 void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t &socket,
-                                                     const nlohmann::json &req)
+                                                     const ChannelBroadcast &bc)
 {
-    const auto target_channel = req.value("target_channel", std::string{});
-    const auto sender_uid = req.value("sender_uid", std::string{});
-    const auto message = req.value("message", std::string{});
+    const std::string &target_channel = bc.target_channel;
 
     if (target_channel.empty())
     {
@@ -6532,10 +6562,10 @@ void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t &socket,
     nlohmann::json fwd;
     fwd["channel_name"] = target_channel;
     fwd["event"] = "broadcast";
-    fwd["sender_uid"] = sender_uid;
-    fwd["message"] = message;
-    if (req.contains("data") && req["data"].is_string())
-        fwd["data"] = req["data"];
+    fwd["sender_uid"] = bc.sender_uid;
+    fwd["message"] = bc.message;
+    if (!bc.data.empty())
+        fwd["data"] = bc.data;
 
     // Fan out to ALL consumers.
     for (const auto &consumer : entry->consumers)
@@ -6572,16 +6602,13 @@ void BrokerServiceImpl::handle_channel_broadcast_req(zmq::socket_t &socket,
 
     LOGGER_DEBUG(
         "Broker: CHANNEL_BROADCAST_SEND_NOTIFY '{}' msg='{}' ->{} consumers + {} producer(s)",
-        target_channel, message, entry->consumers.size(), entry->producers.size());
+        target_channel, bc.message, entry->consumers.size(), entry->producers.size());
 
     // HEP-CORE-0022: relay to federation peers subscribed to this channel.
     // [BR6] Use fixed event name "broadcast" and put the message in the payload field,
     // consistent with how CHANNEL_EVENT_NOTIFY delivers local broadcast events.
-    const std::string data_str = req.contains("data") && req["data"].is_string()
-                                     ? req["data"].get<std::string>()
-                                     : std::string{};
-    const std::string relay_payload = data_str.empty() ? message : message + "|" + data_str;
-    relay_notify_to_peers(socket, target_channel, "broadcast", sender_uid, relay_payload);
+    const std::string relay_payload = bc.data.empty() ? bc.message : bc.message + "|" + bc.data;
+    relay_notify_to_peers(socket, target_channel, "broadcast", bc.sender_uid, relay_payload);
 }
 
 // ============================================================================
@@ -6989,6 +7016,15 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState &state)
             [impl](const std::optional<::pylabhub::utils::security::AttestedKey> &attested,
                    std::string_view uid) -> ::pylabhub::utils::security::ClaimVerdict
         { return impl->peer_authority()->check_role_ownership(attested, uid); };
+
+        // And the attribution form, for the broadcast whose sender the
+        // broker stamps instead of the client declaring it.  Same snapshot
+        // again: a connection cannot be refused as a claimant here and
+        // accepted as an author there.
+        impl->admission_binder_.callbacks.attribute_sender =
+            [impl](const std::optional<::pylabhub::utils::security::AttestedKey> &attested)
+            -> ::pylabhub::utils::security::AttributedSender
+        { return impl->peer_authority()->attribute_sender(attested); };
 
         // I-KEY-ROTATION-VIA-DEREG (HEP-0046): a role's CURVE pubkey is
         // immutable for the broker's lifetime.  Rotation is edit-config

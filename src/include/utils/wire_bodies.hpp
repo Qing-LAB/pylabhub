@@ -104,6 +104,15 @@ PYLABHUB_UTILS_EXPORT void require_security_triple(const nlohmann::json &body);
 /// Validate envelope_hash presence + string type on every body.
 PYLABHUB_UTILS_EXPORT void require_envelope_hash(const nlohmann::json &body);
 
+/// Refuse a field this msg_type must NOT carry, naming @p why in the error.
+///
+/// Ignoring an unwanted field is the softer option and the wrong one where
+/// the field asserts something the broker decides for itself: the client
+/// goes on believing it set that value, and its message travels under a
+/// different one.  Refusing says so plainly, at the wire boundary.
+PYLABHUB_UTILS_EXPORT void refuse_field(const nlohmann::json &body, const char *field,
+                                        const char *why);
+
 } // namespace detail
 
 // ── Per-msg_type body classes ────────────────────────────────────────
@@ -790,6 +799,33 @@ public:
 [[nodiscard]] bool has_metrics() const
 {
     return body_.contains("metrics") && body_.at("metrics").is_object();
+}
+}
+;
+
+// **ChannelBroadcastSendBody** — a member's broadcast to everyone on a
+// data channel (HEP-CORE-0007 §"Broker Notifications", HEP-CORE-0030 §9.1).
+//
+// It carries no sender.  Recipients read the sender of the fan-out as fact,
+// so it is decided from the key the connection proved at handshake and
+// stamped by the broker — never announced by the sender.  A body still
+// carrying the retired `sender_uid` is refused rather than re-attributed,
+// so an old client learns its label was not honoured instead of watching
+// its message go out under a name it did not choose.
+PLH_WIRE_BODY_CLASS(ChannelBroadcastSendBody)
+public:
+[[nodiscard]] std::string target_channel() const
+{
+    return detail::read_string(body_, "target_channel");
+}
+[[nodiscard]] std::string message() const
+{
+    return detail::read_string_or_empty(body_, "message");
+}
+// Optional opaque application payload, forwarded byte-for-byte.
+[[nodiscard]] std::string data() const
+{
+    return detail::read_string_or_empty(body_, "data");
 }
 }
 ;

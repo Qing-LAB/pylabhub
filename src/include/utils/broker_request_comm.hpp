@@ -187,8 +187,12 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     // anywhere.  The matching CHANNEL_NOTIFY_REQ broker handler is
     // kept for HEP-CORE-0022 federation peer-relay traffic.  See
     // HEP-CORE-0030 §9.1 for the channel-bound family coexistence.
-    void send_broadcast(const std::string &target, const std::string &sender_uid,
-                        const std::string &msg, const std::string &data);
+    /// Broadcast to everyone registered on a data channel.
+    ///
+    /// There is no sender parameter: the broker attributes the fan-out to
+    /// the role whose key this connection proved at handshake, so a caller
+    /// cannot send under another role's name — or misreport its own.
+    void send_broadcast(const std::string &target, const std::string &msg, const std::string &data);
     void send_checksum_error(const nlohmann::json &report);
 
     /// Update a producer's endpoint registration on the broker.

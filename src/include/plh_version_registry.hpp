@@ -225,7 +225,29 @@ inline constexpr uint8_t kShmMinor = 0;
 //     Bidirectional D3 confirmation with instance_id guard
 //     (HEP-CORE-0042 §5.5.2).  Handler stub in this bump; full impl
 //     lands in Phase 2.2+.
-inline constexpr uint8_t kBrokerProtoMajor = 7;
+// broker_proto 7 → 8 (HEP-CORE-0035 §4.2.2, 2026-08-02, task #96):
+//   - REMOVED from CHANNEL_BROADCAST_SEND_NOTIFY's request body:
+//       sender_uid
+//     Nothing checked it, so any peer that completed a handshake could
+//     broadcast under any uid and every recipient read the result as
+//     authentic.  The broker now stamps the fan-out's `sender_uid` from
+//     the key the sending connection proved; a request still carrying
+//     the field is rejected with BODY_SCHEMA_VIOLATION rather than
+//     re-attributed, because silently relabelling a message leaves its
+//     sender believing a label that was not used.  The field is
+//     unchanged on the DELIVER side, where it is broker-authored.
+//     Role-side `BrokerRequestComm::send_broadcast` loses its
+//     `sender_uid` parameter — a caller can no longer name itself.
+//   - MINOR shape change on the DELIVER side: an EMPTY `data` is now
+//     omitted rather than forwarded as `""`.  Recipients that read it
+//     with `value("data", "")` see no difference; only a
+//     `contains("data")` test would, and none exists.
+//   - No wire-literal changes; the control tier additionally binds
+//     `role_uid` to the proven key on every message that claims to BE
+//     that role (heartbeat, band join/leave/broadcast, and the rest of
+//     the caller's-own-uid tier).  Bodies are unchanged; previously
+//     accepted forgeries now draw IDENTITY_MISMATCH.
+inline constexpr uint8_t kBrokerProtoMajor = 8;
 inline constexpr uint8_t kBrokerProtoMinor = 0;
 inline constexpr uint8_t kZmqFrameMajor = 1;
 inline constexpr uint8_t kZmqFrameMinor = 0;

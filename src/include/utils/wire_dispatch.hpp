@@ -50,11 +50,14 @@
  *     pubkey fails known-role binding (rotation = edit known_roles +
  *     DEREG/re-REG; see admission_gates.hpp).
  *
- *   Tier `Control`: envelope + body class + identity match (only when the
- *     body carries role_uid).  Applied to non-mutating REQs
- *     (HEARTBEAT_REQ, GET_CHANNEL_AUTH_REQ, CHECK_PEER_READY_REQ, etc.).
- *     No replay check — repeat is allowed by design (no admission state
- *     changes on a re-query).
+ *   Tier `Control`: envelope + body class + identity match + attested
+ *     ownership (all only when the body carries role_uid, where it names
+ *     the CALLER).  No replay check — these change no ADMISSION state, so
+ *     a repeat is harmless there.  That is the only sense in which the
+ *     tier is "non-mutating", and an earlier revision of this comment said
+ *     it flatly: HEARTBEAT_NOTIFY holds a presence alive and BAND_JOIN_REQ
+ *     changes who receives a band's traffic.  Both need the ownership
+ *     check for the same reason the REG family does.
  *
  *   Tier `EnvelopeOnly`: envelope only (body kept as raw JSON).  Applied
  *     to msg_types that don't yet have a typed body class but still need
@@ -160,13 +163,40 @@ PLH_WIRE_VALIDATED(ValidatedDiscReq, ::pylabhub::wire::DiscReqBody);
 
 #undef PLH_WIRE_VALIDATED
 
+// CHANNEL_BROADCAST_SEND_NOTIFY — the one validated message carrying a fact
+// the broker DERIVED rather than the client sent.
+//
+// `attributed_sender` is the uid of the role whose key this connection
+// proved at handshake.  It cannot be empty by the time a handler sees one of
+// these: the admission gate refuses the message when the connection cannot
+// be named.  It rides the validated message instead of being recomputed
+// downstream so that exactly one place decides who sent a broadcast, and so
+// the handler has no second source to disagree with.
+struct PYLABHUB_UTILS_EXPORT ValidatedChannelBroadcastSend
+{
+    ::pylabhub::wire::WireEnvelope env;
+    ::pylabhub::wire::ChannelBroadcastSendBody body;
+    std::string attributed_sender;
+    ValidatedChannelBroadcastSend(::pylabhub::wire::WireEnvelope e,
+                                  ::pylabhub::wire::ChannelBroadcastSendBody b,
+                                  std::string sender) noexcept
+        : env(std::move(e)), body(std::move(b)), attributed_sender(std::move(sender))
+    {
+    }
+    ValidatedChannelBroadcastSend(ValidatedChannelBroadcastSend &&) noexcept = default;
+    ValidatedChannelBroadcastSend &operator=(ValidatedChannelBroadcastSend &&) noexcept = default;
+    ValidatedChannelBroadcastSend(const ValidatedChannelBroadcastSend &) = delete;
+    ValidatedChannelBroadcastSend &operator=(const ValidatedChannelBroadcastSend &) = delete;
+    [[nodiscard]] std::string identity() const { return std::string(env.identity()); }
+    [[nodiscard]] std::string correlation_id() const { return std::string(env.correlation_id()); }
+};
+
 // ── EnvelopeOnly fallback ────────────────────────────────────────────────
 //
 // For msg_types that don't yet have a typed body class (BAND_*_REQ,
 // ROLE_*_REQ, METRICS_REQ, SCHEMA_REQ, CHANNEL_LIST_REQ,
-// CHANNEL_BROADCAST_SEND_NOTIFY, BAND_BROADCAST_SEND_NOTIFY,
-// SHM_BLOCK_QUERY_REQ, CHECK_PEER_READY_REQ, legacy
-// CONSUMER_ATTACH_REQ_ZMQ/SHM).  Envelope hash IS validated.
+// BAND_BROADCAST_SEND_NOTIFY, SHM_BLOCK_QUERY_REQ, CHECK_PEER_READY_REQ,
+// legacy CONSUMER_ATTACH_REQ_ZMQ/SHM).  Envelope hash IS validated.
 // Body is raw JSON — handler reads via `body.value(...)` until a typed
 // body class replaces this fallback per msg_type (independent commits).
 //
@@ -192,10 +222,12 @@ struct PYLABHUB_UTILS_EXPORT ValidatedRawControl
 
 // ── The full variant ─────────────────────────────────────────────────────
 
-using ReceivedMessage = std::variant<
-    ValidatedRegReq, ValidatedConsumerRegReq, ValidatedDeregReq, ValidatedConsumerDeregReq,
-    ValidatedEndpointUpdateReq, ValidatedChannelAuthAppliedReq, ValidatedHeartbeatNotify,
-    ValidatedGetChannelAuthReq, ValidatedDiscReq, ValidatedRawControl, RejectedMessage>;
+using ReceivedMessage =
+    std::variant<ValidatedRegReq, ValidatedConsumerRegReq, ValidatedDeregReq,
+                 ValidatedConsumerDeregReq, ValidatedEndpointUpdateReq,
+                 ValidatedChannelAuthAppliedReq, ValidatedHeartbeatNotify,
+                 ValidatedGetChannelAuthReq, ValidatedDiscReq, ValidatedChannelBroadcastSend,
+                 ValidatedRawControl, RejectedMessage>;
 
 // ── Admission binder ─────────────────────────────────────────────────────
 //

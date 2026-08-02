@@ -60,14 +60,18 @@ const std::unordered_map<std::string_view, std::string_view> kExpectedTiers = {
     {"ROLE_PRESENCE_REQ", "Control_EnvelopeWithQueryRoleUid"},
     {"ROLE_INFO_REQ", "Control_EnvelopeWithQueryRoleUid"},
 
-    // EnvelopeOnly tier — body has no identity fields (or
-    // CHANNEL_BROADCAST_SEND_NOTIFY's legacy `sender_uid` naming).
+    // Control_ChannelBroadcastSend — the body names no sender at all; the
+    // broker stamps the fan-out from the key the connection proved.  A row
+    // slipping back to EnvelopeOnly would accept whatever sender the body
+    // claimed and forge message origin, so this pin is load-bearing.
+    {"CHANNEL_BROADCAST_SEND_NOTIFY", "Control_ChannelBroadcastSend"},
+
+    // EnvelopeOnly tier — body has no identity fields.
     {"SCHEMA_REQ", "Control_EnvelopeWithRoleUid"},
     {"CHANNEL_LIST_REQ", "EnvelopeOnly"},
     {"METRICS_REQ", "Control_EnvelopeWithRoleUid"},
     {"SHM_BLOCK_QUERY_REQ", "EnvelopeOnly"},
     {"BAND_MEMBERS_REQ", "EnvelopeOnly"},
-    {"CHANNEL_BROADCAST_SEND_NOTIFY", "EnvelopeOnly"},
 };
 
 } // namespace

@@ -374,6 +374,7 @@ int authority_answers_questions_about_attested_keys(const char * /*tmpdir*/)
     return run_gtest_worker(
         [&]()
         {
+            using pylabhub::utils::security::ClaimVerdict;
             using pylabhub::utils::security::PeerAuthority;
             using pylabhub::utils::security::RosterEntry;
 
@@ -415,7 +416,9 @@ int authority_answers_questions_about_attested_keys(const char * /*tmpdir*/)
             // state, not an invitation to admit everyone.
             {
                 const PeerAuthority empty = PeerAuthority::Builder{}.build();
-                EXPECT_FALSE(empty.local_role_uid(*role_att).has_value());
+                EXPECT_EQ(empty.attribute_sender(role_att).verdict, ClaimVerdict::unknown_key);
+                EXPECT_TRUE(empty.attribute_sender(role_att).uid.empty())
+                    << "a refused attribution must carry no name to stamp";
                 EXPECT_FALSE(empty.is_federation_peer(*role_att));
                 EXPECT_TRUE(empty.local_role_roster().empty());
                 EXPECT_TRUE(empty.zap_allowlist().is_deny_all())
@@ -435,25 +438,37 @@ int authority_answers_questions_about_attested_keys(const char * /*tmpdir*/)
             builder.add_federation_peer(peer_uid, peer_pub);
             const PeerAuthority authority = std::move(builder).build();
 
-            // Attribution: a local role's key yields its uid — the datum the
-            // inbox needs to name a sender, key replay tracking and hold
-            // per-sender sequence state (HEP-CORE-0035 §4.2.2).
-            EXPECT_EQ(authority.local_role_uid(*role_att), std::optional<std::string>(role_uid));
+            // Attribution: a local role's key yields its uid — the datum a
+            // broadcast is stamped with, and the one the inbox needs to name
+            // a sender, key replay tracking and hold per-sender sequence
+            // state (HEP-CORE-0035 §4.2.2).
+            {
+                const auto sender = authority.attribute_sender(role_att);
+                EXPECT_EQ(sender.verdict, ClaimVerdict::accepted);
+                EXPECT_EQ(sender.uid, role_uid);
+            }
             EXPECT_FALSE(authority.is_federation_peer(*role_att));
 
             // A peer hub is NOT a local role.  Attribution refuses it rather
             // than returning its uid, because a peer relays identities other
             // than its own — treating it as a sender would attribute every
             // relayed message to the link.
-            EXPECT_FALSE(authority.local_role_uid(*peer_att).has_value())
+            EXPECT_EQ(authority.attribute_sender(peer_att).verdict,
+                      ClaimVerdict::kind_not_permitted)
                 << "a federation peer must not be attributed as a local sender";
             EXPECT_TRUE(authority.is_federation_peer(*peer_att));
 
             // Attested but unknown.  With ZAP enforcing this is unreachable
             // on a live connection, so a caller seeing this is looking at a
             // mid-flight config change or a gate that is not doing its job.
-            EXPECT_FALSE(authority.local_role_uid(*stranger_att).has_value());
+            EXPECT_EQ(authority.attribute_sender(stranger_att).verdict, ClaimVerdict::unknown_key);
             EXPECT_FALSE(authority.is_federation_peer(*stranger_att));
+
+            // No handshake, no name.  The verdicts are distinct because an
+            // operator reading one has to tell an unarmed socket from a
+            // stranger that got through.
+            EXPECT_EQ(authority.attribute_sender(std::nullopt).verdict,
+                      ClaimVerdict::no_attestation);
 
             // The roster carries the uid WITH the key.  A bare-key roster is
             // what makes the inbox unable to attribute a sender at all.

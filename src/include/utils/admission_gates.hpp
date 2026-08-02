@@ -187,6 +187,17 @@ struct AdmissionCallbacks
         std::string_view role_uid)>
         check_role_ownership;
 
+    /// Who is this connection, for a message whose sender the broker STAMPS
+    /// rather than the client declares?
+    ///
+    /// Bound to the same authority snapshot as the two checks above, so a
+    /// principal cannot be refused as a claimant and accepted as an author.
+    /// The answer carries the name and the verdict together; the name is
+    /// empty on anything but acceptance.
+    std::function<::pylabhub::utils::security::AttributedSender(
+        const std::optional<::pylabhub::utils::security::AttestedKey> &attested)>
+        attribute_sender;
+
     /// Record the nonce for anti-replay dedup.  Returns true if the
     /// nonce is fresh (accepted) or false if it collided within the
     /// sliding window.  The underlying `ReplayGuard` prunes entries older
@@ -326,6 +337,22 @@ gate_attested_binding(const ::pylabhub::wire::WireEnvelope &env, const RegFamily
 gate_attested_role_ownership(const ::pylabhub::wire::WireEnvelope &env, std::string_view role_uid,
                              const AdmissionContext &ctx) noexcept;
 
+/// Name the sender of a message the broker attributes on the client's
+/// behalf, and refuse the message if it cannot.
+///
+/// Not a claim check — these bodies carry no identity, so there is nothing
+/// to compare.  The refusal exists because recipients read the stamped
+/// sender as fact: a message the broker cannot attribute must not be
+/// delivered under a blank or guessed name.
+///
+/// @param out_sender_uid receives the proven name on success; untouched on
+///        rejection.  A gate that also yields a value is the exception
+///        here, and it is why this one is not folded into a runner: the
+///        pipeline has to carry the name forward to the handler.
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
+gate_attributed_sender(const ::pylabhub::wire::WireEnvelope &env, const AdmissionContext &ctx,
+                       std::string &out_sender_uid) noexcept;
+
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
 gate_replay_bound(const RegFamilyBodyView &body, const AdmissionContext &ctx) noexcept;
 
@@ -381,14 +408,28 @@ run_authenticated_reg_family_gates(const ::pylabhub::wire::WireEnvelope &env,
 
 // ── Control-tier view + gate runner ───────────────────────────────────
 //
-// Non-mutating control REQs (HEARTBEAT_REQ, GET_CHANNEL_AUTH_REQ,
-// CHECK_PEER_READY_REQ, DISC_REQ, BAND_*_REQ, ROLE_*_REQ, etc.) don't
-// mutate admission state so I-REPLAY-BOUND doesn't require nonce dedup.
-// The only universal check is I-DEALER-IDENTITY when the body carries
-// `role_uid` — the identity claim must match the socket identity.
+// Control messages don't mutate ADMISSION state — no role is registered or
+// deregistered here — so I-REPLAY-BOUND doesn't require nonce dedup.  That
+// is the whole of what this tier has in common; several of its members
+// (HEARTBEAT_NOTIFY, BAND_JOIN_REQ, BAND_LEAVE_REQ,
+// BAND_BROADCAST_SEND_NOTIFY) mutate presence or membership and are in no
+// sense read-only.  An earlier revision of this comment called the tier
+// "non-mutating control REQs", which is how they went years without an
+// identity binding.
+//
+// When the body carries `role_uid`, this tier's contract is that the field
+// names the CALLER — "I am this role".  Two checks follow from that and
+// both are required: I-DEALER-IDENTITY (the claim agrees with the socket
+// identity, which the broker depends on mechanically for routing) and
+// I-PUBKEY-BINDING (the claim is true, which is the only one of the two
+// that authenticates anything — see `gate_attested_role_ownership`).
+//
+// Messages whose `role_uid` names the SUBJECT of a query rather than the
+// caller (ROLE_PRESENCE_REQ, ROLE_INFO_REQ) do not come through here; a
+// probe may legitimately ask about any uid.
 //
 // Bodies without role_uid (DISC_REQ, CHANNEL_LIST_REQ) get envelope-only
-// enforcement — identity check is skipped when role_uid is empty.
+// enforcement — both identity checks are skipped when role_uid is empty.
 struct ControlBodyView
 {
     std::string_view role_uid;     ///< empty if the body doesn't carry it
@@ -400,9 +441,10 @@ struct ControlBodyView
                                    ///< Empty for other control msg_types.
 };
 
-/// Runs identity_match if `role_uid` non-empty; grammar on role_uid /
-/// channel_name if non-empty; no replay check.  Returns nullopt if all
-/// checks pass (or no checks applied).
+/// Runs, when `role_uid` is non-empty: identity consistency → grammar →
+/// role-tag policy → attested ownership.  Grammar on `channel_name` when
+/// that is non-empty.  No replay check.  Returns nullopt if all checks
+/// pass (or no checks applied).
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
 run_control_gates(const ::pylabhub::wire::WireEnvelope &env, const ControlBodyView &body,
                   const AdmissionContext &ctx) noexcept;

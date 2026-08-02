@@ -357,6 +357,34 @@ ReceivedMessage validate_disc_req(::pylabhub::wire::WireEnvelope env, ::nlohmann
     }
 }
 
+// CHANNEL_BROADCAST_SEND_NOTIFY — the body says what to broadcast and to
+// which channel; who is broadcasting comes from the connection.  The gate
+// names the sender or refuses the message, so the handler downstream never
+// has to decide what an unattributable broadcast means.
+ReceivedMessage validate_channel_broadcast_send(::pylabhub::wire::WireEnvelope env,
+                                                ::nlohmann::json body_json,
+                                                const AdmissionContext &ctx)
+{
+    try
+    {
+        ::pylabhub::wire::ChannelBroadcastSendBody typed(std::move(body_json));
+        std::string sender;
+        if (auto r = ::pylabhub::admission::gate_attributed_sender(env, ctx, sender))
+        {
+            return rejection_with_envelope(env, std::move(*r));
+        }
+        return ValidatedChannelBroadcastSend{std::move(env), std::move(typed), std::move(sender)};
+    }
+    catch (const ::pylabhub::wire::WireBodyError &e)
+    {
+        RejectDetail d;
+        d.code = RejectCode::body_schema_violation;
+        d.field = "";
+        d.message = e.what();
+        return rejection_with_envelope(env, std::move(d));
+    }
+}
+
 // EnvelopeOnly fallback — typed body class doesn't exist yet for this
 // msg_type.  Envelope hash IS validated (by parse), so the sender's
 // header cannot be spliced.  Body is passed through as-is; downstream
@@ -466,6 +494,8 @@ enum class Tier
                                       // (identity_match + grammar + tag)
     Control_EnvelopeWithQueryRoleUid, // body role_uid = queried subject
                                       // (grammar + tag; NO identity_match)
+    Control_ChannelBroadcastSend,     // no sender in the body — the broker
+                                      // stamps it from the proven key
     EnvelopeOnly,                     // msg_type known, body has no identity fields
     // (unknown msg_type → EnvelopeOnly variant + broker rejects at handler)
 };
@@ -524,10 +554,14 @@ constexpr std::array<DispatchRow, 21> kDispatchTable = {{
     {"ROLE_PRESENCE_REQ", Tier::Control_EnvelopeWithQueryRoleUid},
     {"ROLE_INFO_REQ", Tier::Control_EnvelopeWithQueryRoleUid},
 
-    // EnvelopeOnly — body has no identity fields the broker can check
-    // (or, for CHANNEL_BROADCAST_SEND_NOTIFY, the sender field is
-    // still named `sender_uid` under legacy naming — tracked as a
-    // follow-up rename to unify on `role_uid`).
+    // Control_ChannelBroadcastSend — the body names a channel and a
+    // payload and nobody at all.  Recipients read the fan-out's sender as
+    // fact, so it is derived from the proven key rather than accepted from
+    // the sender; a body still carrying the retired `sender_uid` is
+    // refused by the body class.
+    {"CHANNEL_BROADCAST_SEND_NOTIFY", Tier::Control_ChannelBroadcastSend},
+
+    // EnvelopeOnly — body has no identity fields the broker can check.
     // SCHEMA_REQ / METRICS_REQ moved EnvelopeOnly → EnvelopeWithRoleUid
     // (schema/metrics integration, 2026-07-26): `role_uid` is the
     // CALLER's authenticated uid (identity_match), so the handlers can
@@ -537,7 +571,6 @@ constexpr std::array<DispatchRow, 21> kDispatchTable = {{
     {"METRICS_REQ", Tier::Control_EnvelopeWithRoleUid},
     {"SHM_BLOCK_QUERY_REQ", Tier::EnvelopeOnly},
     {"BAND_MEMBERS_REQ", Tier::EnvelopeOnly},
-    {"CHANNEL_BROADCAST_SEND_NOTIFY", Tier::EnvelopeOnly},
 }};
 
 std::optional<Tier> lookup_tier(std::string_view msg_type) noexcept
@@ -576,6 +609,8 @@ std::string_view tier_name(Tier t) noexcept
         return "Control_EnvelopeWithRoleUid";
     case Tier::Control_EnvelopeWithQueryRoleUid:
         return "Control_EnvelopeWithQueryRoleUid";
+    case Tier::Control_ChannelBroadcastSend:
+        return "Control_ChannelBroadcastSend";
     case Tier::EnvelopeOnly:
         return "EnvelopeOnly";
     }
@@ -656,6 +691,8 @@ ReceivedMessage receive_and_validate(::zmq::multipart_t &&raw, const ::zmq::sock
         return envelope_with_role_uid(std::move(env), std::move(body_copy), admission_ctx);
     case Tier::Control_EnvelopeWithQueryRoleUid:
         return envelope_with_query_role_uid(std::move(env), std::move(body_copy), admission_ctx);
+    case Tier::Control_ChannelBroadcastSend:
+        return validate_channel_broadcast_send(std::move(env), std::move(body_copy), admission_ctx);
     case Tier::EnvelopeOnly:
         return envelope_only(std::move(env), std::move(body_copy));
     }

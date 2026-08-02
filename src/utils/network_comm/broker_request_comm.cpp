@@ -1132,12 +1132,11 @@ void BrokerRequestComm::send_heartbeat(const std::string &channel, const std::st
 // `CHANNEL_NOTIFY_REQ` on the wire (relay path).  See HEP-CORE-0030
 // §9.1 for the channel-bound-vs-band-bound coexistence rationale.
 
-void BrokerRequestComm::send_broadcast(const std::string &target, const std::string &sender_uid,
-                                       const std::string &msg, const std::string &data)
+void BrokerRequestComm::send_broadcast(const std::string &target, const std::string &msg,
+                                       const std::string &data)
 {
     nlohmann::json payload;
     payload["target_channel"] = target;
-    payload["sender_uid"] = sender_uid;
     payload["message"] = msg;
     payload["data"] = data;
     SendCmd cmd;

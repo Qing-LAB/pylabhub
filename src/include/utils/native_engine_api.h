@@ -781,13 +781,20 @@ extern "C"
  *   HEARTBEAT_REQ cross-checks role_type against tag).  Old clients
  *   using legacy keys get INVALID_REQUEST / INVALID_ROLE_TAG.
  *   Federation peer-context `sender_uid` (HUB_TARGETED_MSG /
- *   CHANNEL_BROADCAST_SEND_NOTIFY from hubs) preserved (peer.uid, not
- *   role.uid).  Inbox-message `sender_uid` (PyInboxMsg /
- *   plh_inbox_msg_t / msg.sender_uid in Lua) preserved (authoring
- *   producer of an inbox payload — semantically distinct from local
- *   role.uid).
+ *   HUB_RELAY_MSG) preserved (peer.uid, not role.uid).  Inbox-message
+ *   `sender_uid` (PyInboxMsg / plh_inbox_msg_t / msg.sender_uid in Lua)
+ *   preserved (authoring producer of an inbox payload — semantically
+ *   distinct from local role.uid).
+ * 7 -> 8 (2026-08-02): CHANNEL_BROADCAST_SEND_NOTIFY's request body no
+ *   longer carries `sender_uid` — the broker stamps the fan-out's sender
+ *   from the key the connection proved (HEP-CORE-0035 §4.2.2), and a
+ *   request still carrying the field is rejected BODY_SCHEMA_VIOLATION.
+ *   The DELIVER side is unchanged.  Control-tier messages that claim a
+ *   `role_uid` are additionally bound to that proven key; bodies
+ *   unchanged, but a claim that is not the connection's own now draws
+ *   IDENTITY_MISMATCH.
  * Keep in sync with `src/include/plh_version_registry.hpp` constants. */
-#define PLH_COMPONENT_BROKER_PROTO_MAJOR 7
+#define PLH_COMPONENT_BROKER_PROTO_MAJOR 8
 #define PLH_COMPONENT_BROKER_PROTO_MINOR 0
 #define PLH_COMPONENT_ZMQ_FRAME_MAJOR 1
 #define PLH_COMPONENT_ZMQ_FRAME_MINOR 0

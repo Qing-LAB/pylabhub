@@ -104,6 +104,19 @@ enum class ClaimVerdict
 /// Human-readable name, for logs and reject details.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::string_view to_string(ClaimVerdict v) noexcept;
 
+/// Who a connection is, for messages the broker must ATTRIBUTE rather than
+/// merely admit.
+///
+/// `uid` is non-empty exactly when `verdict == accepted`; on every other
+/// verdict there is no name and the verdict says why.  Carrying both in one
+/// value is what stops a caller from attributing a message to an unnamed
+/// sender by forgetting to test the verdict — there is nothing to stamp.
+struct PYLABHUB_UTILS_EXPORT AttributedSender
+{
+    ClaimVerdict verdict{ClaimVerdict::no_attestation};
+    std::string uid;
+};
+
 /// One local role as the roster carries it: the uid AND the key.
 ///
 /// A bare key is not enough for the receiving side. A role that gets only
@@ -174,8 +187,8 @@ struct PYLABHUB_UTILS_EXPORT RosterEntry
 /// question returns a `ClaimVerdict`, so there are no per-call-site
 /// comparisons to get subtly wrong — a forgotten kind test, a laxer string
 /// rule, a missing absent-case — and adding a plane cannot silently skip a
-/// check it does not perform. The one exception is `local_role_uid`, which
-/// exists because the inbox genuinely needs a NAME (see `RosterEntry`); it
+/// check it does not perform. The one exception is `attribute_sender`, which
+/// exists because attribution genuinely needs a NAME (see `RosterEntry`); it
 /// returns the uid alone, by value, and only for a local role.
 class PYLABHUB_UTILS_EXPORT PeerAuthority
 {
@@ -244,15 +257,24 @@ class PYLABHUB_UTILS_EXPORT PeerAuthority
     [[nodiscard]] ClaimVerdict check_role_ownership(const std::optional<AttestedKey> &attested,
                                                     std::string_view claimed_uid) const;
 
-    /// The uid of the local role this key belongs to, for message
-    /// ATTRIBUTION (inbox sender, replay key, per-sender sequence state —
-    /// HEP-CORE-0035 §4.2.2).  `nullopt` for an unknown key or a federation
-    /// peer.
+    /// Name the local role this connection proved, or say why it cannot be
+    /// named — for message ATTRIBUTION (HEP-CORE-0035 §4.2.2).
     ///
-    /// The only query that returns an identity rather than a decision,
+    /// The counterpart to `check_role_ownership`: that one is asked "is this
+    /// claim true?" and answers yes or no; this one is asked "who is this?"
+    /// and answers with a name.  Both resolve the same key through the same
+    /// table, so a principal cannot be refused as a claimant and accepted as
+    /// an author, or the reverse.
+    ///
+    /// The only query that returns an identity rather than a decision alone,
     /// because attribution genuinely needs a name. It returns the uid by
     /// value and nothing else — not the kind, not a pointer into the table.
-    [[nodiscard]] std::optional<std::string> local_role_uid(const AttestedKey &attested) const;
+    /// Its users are the messages whose sender the broker DECIDES rather
+    /// than the client declares: the channel-broadcast fan-out stamps the
+    /// name it returns, and the inbox plane needs the same name for its
+    /// sender field, replay key, and per-sender sequence state.
+    [[nodiscard]] AttributedSender
+    attribute_sender(const std::optional<AttestedKey> &attested) const;
 
     /// Is this key a federation peer hub rather than a local role?
     ///

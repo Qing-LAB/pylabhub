@@ -114,29 +114,45 @@ std::string_view to_string(ClaimVerdict v) noexcept
     return "unknown";
 }
 
-ClaimVerdict PeerAuthority::check_role_ownership(const std::optional<AttestedKey> &attested,
-                                                 std::string_view claimed_uid) const
+AttributedSender PeerAuthority::attribute_sender(const std::optional<AttestedKey> &attested) const
 {
-    // Acting as a role requires proof.  A connection that produced no
+    // The root question the other two are built on: which local role, if
+    // any, does this connection belong to?
+    //
+    // Acting as a role at all requires proof.  A connection that produced no
     // attestation reached us without an enforced handshake, so there is
-    // nothing to check the claim against.
+    // nothing to resolve.
     if (!attested.has_value())
-        return ClaimVerdict::no_attestation;
+        return {ClaimVerdict::no_attestation, {}};
 
     const PubkeyOrigin *origin = resolve_(*attested);
     if (origin == nullptr)
-        return ClaimVerdict::unknown_key;
+        return {ClaimVerdict::unknown_key, {}};
 
     // Kind before uid, deliberately.  A federation peer whose subject_uid
-    // coincided with a role's would pass a uid comparison; only the kind
-    // test refuses it.
+    // coincided with a role's would pass the uid comparison callers make on
+    // top of this; only the kind test refuses it.
     if (origin->kind != PubkeyOrigin::Kind::LocalRole)
-        return ClaimVerdict::kind_not_permitted;
+        return {ClaimVerdict::kind_not_permitted, {}};
 
-    if (claimed_uid != origin->subject_uid)
-        return ClaimVerdict::identity_mismatch;
+    return {ClaimVerdict::accepted, origin->subject_uid};
+}
 
-    return ClaimVerdict::accepted;
+ClaimVerdict PeerAuthority::check_role_ownership(const std::optional<AttestedKey> &attested,
+                                                 std::string_view claimed_uid) const
+{
+    // Checking a claim is naming the connection and then comparing.  Every
+    // refusal below the comparison — no proof, unknown key, a federation
+    // peer acting as a role — is a refusal to NAME it, so it belongs to
+    // `attribute_sender` and is answered there once.  Two copies of that
+    // resolution would agree only on the day they were written, and the
+    // kind-before-uid ordering is exactly the kind of detail one copy
+    // eventually loses.
+    const AttributedSender who = attribute_sender(attested);
+    if (who.verdict != ClaimVerdict::accepted)
+        return who.verdict;
+
+    return claimed_uid == who.uid ? ClaimVerdict::accepted : ClaimVerdict::identity_mismatch;
 }
 
 ClaimVerdict PeerAuthority::check_registration_claim(const std::optional<AttestedKey> &attested,
@@ -169,14 +185,6 @@ ClaimVerdict PeerAuthority::check_registration_claim(const std::optional<Atteste
 
 namespace pylabhub::utils::security
 {
-
-std::optional<std::string> PeerAuthority::local_role_uid(const AttestedKey &attested) const
-{
-    const PubkeyOrigin *origin = resolve_(attested);
-    if (origin == nullptr || origin->kind != PubkeyOrigin::Kind::LocalRole)
-        return std::nullopt;
-    return origin->subject_uid;
-}
 
 bool PeerAuthority::is_federation_peer(const AttestedKey &attested) const
 {

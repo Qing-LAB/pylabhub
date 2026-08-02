@@ -160,6 +160,14 @@ void require_envelope_hash(const nlohmann::json &body)
     require(body, "envelope_hash", JsonKind::String);
 }
 
+void refuse_field(const nlohmann::json &body, const char *field, const char *why)
+{
+    if (body.find(field) != body.end())
+    {
+        throw WireBodyError(mkerr(field, why));
+    }
+}
+
 void require_security_triple(const nlohmann::json &body)
 {
     require_envelope_hash(body);
@@ -443,6 +451,16 @@ HeartbeatNotifyBody::HeartbeatNotifyBody(nlohmann::json body)
     d::require(body_, "role_type", d::JsonKind::String);
     d::validate_if_present(body_, "producer_pid", d::JsonKind::U64);
     d::validate_if_present(body_, "metrics", d::JsonKind::Object);
+    d::require_envelope_hash(body_);
+}
+
+ChannelBroadcastSendBody::ChannelBroadcastSendBody(nlohmann::json body)
+{
+    body_ = std::move(body);
+    d::require(body_, "target_channel", d::JsonKind::String);
+    d::refuse_field(body_, "sender_uid",
+                    "is not carried by this message: the broker stamps the sender "
+                    "from the key the connection proved (HEP-CORE-0035 §4.2.2)");
     d::require_envelope_hash(body_);
 }
 

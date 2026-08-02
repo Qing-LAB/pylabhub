@@ -233,6 +233,23 @@ std::optional<RejectDetail> gate_attested_role_ownership(const ::pylabhub::wire:
     return reject_for_claim(ctx.cb->check_role_ownership(env.attestation(), role_uid));
 }
 
+std::optional<RejectDetail> gate_attributed_sender(const ::pylabhub::wire::WireEnvelope &env,
+                                                   const AdmissionContext &ctx,
+                                                   std::string &out_sender_uid) noexcept
+{
+    if (!ctx.cb || !ctx.cb->attribute_sender)
+    {
+        // Programmer error: pipeline invoked without callbacks bound.
+        return make(RejectCode::broker_internal_error, "",
+                    "internal: sender-attribution callback not bound");
+    }
+    auto sender = ctx.cb->attribute_sender(env.attestation());
+    if (auto r = reject_for_claim(sender.verdict))
+        return r;
+    out_sender_uid = std::move(sender.uid);
+    return std::nullopt;
+}
+
 // Shared I-REPLAY-BOUND check (wall-clock skew + nonce dedup).  ONE
 // implementation, called by `gate_replay_bound` (REG_REQ / CONSUMER_REG_REQ
 // path) AND by `run_authenticated_reg_family_gates` (DEREG / CONSUMER_DEREG /
@@ -515,7 +532,7 @@ run_authenticated_reg_family_gates(const ::pylabhub::wire::WireEnvelope &env,
 // only assurance for those.
 std::optional<RejectDetail> run_control_gates(const ::pylabhub::wire::WireEnvelope &env,
                                               const ControlBodyView &body,
-                                              const AdmissionContext & /*ctx*/) noexcept
+                                              const AdmissionContext &ctx) noexcept
 {
     if (!body.role_uid.empty())
     {
@@ -541,6 +558,15 @@ std::optional<RejectDetail> run_control_gates(const ::pylabhub::wire::WireEnvelo
         // body.role_type to derive its allowed tag; other control
         // msg_types fall through to the universal set.
         if (auto r = gate_role_tag_policy(env.msg_type(), body.role_uid, body.role_type))
+            return r;
+        // I-PUBKEY-BINDING.  Everything above this line compares values the
+        // client chose against each other; this compares the claim against
+        // what the client PROVED.  It is the only check here that can tell a
+        // role from someone using its name — and the control tier needs it
+        // as much as the REG family does, because a heartbeat holds a
+        // presence alive and a band join changes who receives a band's
+        // traffic.
+        if (auto r = gate_attested_role_ownership(env, body.role_uid, ctx))
             return r;
     }
     if (!body.channel_name.empty() && !grammar_ok(body.channel_name))
