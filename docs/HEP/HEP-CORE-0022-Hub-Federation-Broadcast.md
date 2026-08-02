@@ -463,7 +463,13 @@ def on_hub_message(channel: str, payload: str, source_hub_uid: str, api):
 ```python
 # Broadcast to local subscribers + all federated hub peers on this channel:
 api.broadcast_channel("lab.bridge.status", "calibration", '{"value": 1.0}')
-# (sends CHANNEL_BROADCAST_SEND_NOTIFY — broker adds relay transparently)
+# Hub-script API: does NOT send CHANNEL_BROADCAST_SEND_NOTIFY.  It queues the
+# broadcast inside the broker, which fans it out and relays it on the same
+# path a role's wire request takes.  The difference that matters is the
+# attributed sender: a broadcast raised inside the hub is stamped with the
+# operator's origin_uid or the hub's own uid, because the hub is the
+# authority on who asked; one arriving on the wire is stamped from the key
+# that connection proved (HEP-CORE-0035 §4.2.2).
 
 # Hub-targeted message to a direct neighbor only (HUB_TARGETED_MSG):
 # NOTE (2026-07-17): no script-level API currently sends HUB_TARGETED_MSG —

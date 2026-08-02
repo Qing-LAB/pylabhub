@@ -73,6 +73,10 @@ struct StubCallbacks
     bool seen_attestation{false};
     int call_count{0};
 
+    // The name the scripted authority resolves a connection to, when the
+    // verdict accepts one.
+    std::string attributed_uid{"prod.test.uid1"};
+
     ag::AdmissionCallbacks make()
     {
         ag::AdmissionCallbacks cb;
@@ -94,6 +98,20 @@ struct StubCallbacks
             seen_attestation = attested.has_value();
             ++call_count;
             return verdict;
+        };
+        cb.attribute_sender =
+            [this](const std::optional<pylabhub::utils::security::AttestedKey> &attested)
+            -> pylabhub::utils::security::AttributedSender
+        {
+            seen_attestation = attested.has_value();
+            ++call_count;
+            // Mirrors the authority's own contract: a name exists only when
+            // the verdict accepted one.  A stub that returned a name anyway
+            // would let a gate pass its out-param through on a refusal and
+            // still look correct here.
+            if (verdict != ClaimVerdict::accepted)
+                return {verdict, {}};
+            return {verdict, attributed_uid};
         };
         cb.record_and_check_nonce = [this](std::string_view uid, std::string_view nonce)
         {
@@ -497,6 +515,125 @@ TEST(AdmissionGate_AttestedOwnership, UnboundCallbackRejectsRatherThanAdmits)
     auto r = ag::gate_attested_role_ownership(env, "prod.test.uid1", c);
     ASSERT_TRUE(r.has_value()) << "an unbound ownership callback must NOT admit";
     EXPECT_EQ(r->code, ag::RejectCode::broker_internal_error);
+}
+
+// ── Gate 5c: attributed sender (channel broadcast) ────────────────────
+//
+// The broadcast body names nobody, so there is no claim to check — the
+// gate's job is to NAME the connection or refuse the message.  The verdict
+// → reject mapping is shared with the two gates above and pinned there;
+// what these add is that a name only ever escapes on acceptance.
+
+TEST(AdmissionGate_AttributedSender, AcceptedVerdictYieldsTheProvenName)
+{
+    Fixture f;
+    f.stub.verdict = ClaimVerdict::accepted;
+    f.stub.attributed_uid = "prod.alice.uid1";
+    auto env = build_envelope("prod.someone.else", "CHANNEL_BROADCAST_SEND_NOTIFY", "cid-1",
+                              nlohmann::json::object());
+
+    std::string sender = "untouched";
+    EXPECT_EQ(ag::gate_attributed_sender(env, f.ctx(), sender), std::nullopt);
+    EXPECT_EQ(sender, "prod.alice.uid1")
+        << "the gate must yield the name the authority resolved, not the "
+           "routing id the client chose";
+}
+
+TEST(AdmissionGate_AttributedSender, UnknownKeyRejectsAndLeavesNoName)
+{
+    Fixture f;
+    f.stub.verdict = ClaimVerdict::unknown_key;
+    auto env = build_envelope("prod.test.uid1", "CHANNEL_BROADCAST_SEND_NOTIFY", "cid-1",
+                              nlohmann::json::object());
+
+    std::string sender = "untouched";
+    auto r = ag::gate_attributed_sender(env, f.ctx(), sender);
+    ASSERT_TRUE(r.has_value()) << "a connection this hub cannot name must not broadcast";
+    EXPECT_EQ(r->code, ag::RejectCode::unknown_role);
+    EXPECT_EQ(sender, "untouched")
+        << "a refused attribution must not write an out-param — a caller that "
+           "ignored the rejection would then stamp an empty sender";
+}
+
+TEST(AdmissionGate_AttributedSender, FederationPeerRejectsWrongPeerKind)
+{
+    Fixture f;
+    f.stub.verdict = ClaimVerdict::kind_not_permitted;
+    auto env = build_envelope("hub.peer.uid1", "CHANNEL_BROADCAST_SEND_NOTIFY", "cid-1",
+                              nlohmann::json::object());
+
+    std::string sender;
+    auto r = ag::gate_attributed_sender(env, f.ctx(), sender);
+    ASSERT_TRUE(r.has_value()) << "a peer hub relays identities other than its own and is "
+                                  "never a local author";
+    EXPECT_EQ(r->code, ag::RejectCode::wrong_peer_kind);
+}
+
+TEST(AdmissionGate_AttributedSender, UnboundCallbackRejectsRatherThanAdmits)
+{
+    ag::AdmissionCallbacks empty;
+    ag::AdmissionContext c;
+    c.cb = &empty;
+    auto env = build_envelope("prod.test.uid1", "CHANNEL_BROADCAST_SEND_NOTIFY", "cid-1",
+                              nlohmann::json::object());
+
+    std::string sender;
+    auto r = ag::gate_attributed_sender(env, c, sender);
+    ASSERT_TRUE(r.has_value()) << "an unbound attribution callback must NOT admit";
+    EXPECT_EQ(r->code, ag::RejectCode::broker_internal_error);
+}
+
+// ── Control-tier runner: the claim must be OWNED, not merely consistent ──
+//
+// The runner's other checks compare values the client chose against each
+// other.  These pin that it also reaches the authority — the difference
+// between "your two strings agree" and "that role is you".
+
+TEST(AdmissionRunner_ControlTier, ConsistentButUnownedRoleUidRejects)
+{
+    Fixture f;
+    f.stub.verdict = ClaimVerdict::identity_mismatch;
+    // Routing id and body role_uid AGREE, and both name the victim.  This is
+    // the shape the identity-consistency check cannot see through, and it is
+    // what a forged heartbeat or band join looks like on the wire.
+    auto env =
+        build_envelope("prod.victim.uid", "HEARTBEAT_NOTIFY", "cid-1", nlohmann::json::object());
+    ag::ControlBodyView v;
+    v.role_uid = "prod.victim.uid";
+    v.role_type = "producer";
+
+    auto r = ag::run_control_gates(env, v, f.ctx());
+    ASSERT_TRUE(r.has_value()) << "a control message may not act under a role the connection "
+                                  "does not own";
+    EXPECT_EQ(r->code, ag::RejectCode::identity_mismatch);
+}
+
+TEST(AdmissionRunner_ControlTier, OwnedRoleUidPasses)
+{
+    Fixture f;
+    f.stub.verdict = ClaimVerdict::accepted;
+    auto env =
+        build_envelope("prod.test.uid1", "HEARTBEAT_NOTIFY", "cid-1", nlohmann::json::object());
+    ag::ControlBodyView v;
+    v.role_uid = "prod.test.uid1";
+    v.role_type = "producer";
+
+    EXPECT_EQ(ag::run_control_gates(env, v, f.ctx()), std::nullopt);
+    EXPECT_EQ(f.stub.seen_uid, "prod.test.uid1")
+        << "the runner must ask about the body's role_uid, not the routing id";
+}
+
+TEST(AdmissionRunner_ControlTier, EmptyRoleUidAsksTheAuthorityNothing)
+{
+    Fixture f;
+    f.stub.verdict = ClaimVerdict::identity_mismatch; // would reject if consulted
+    auto env = build_envelope("prod.test.uid1", "DISC_REQ", "cid-1", nlohmann::json::object());
+    ag::ControlBodyView v;
+    v.channel_name = "lab.test.channel";
+
+    EXPECT_EQ(ag::run_control_gates(env, v, f.ctx()), std::nullopt)
+        << "a body carrying no role_uid claims nothing, so there is nothing to own";
+    EXPECT_EQ(f.stub.call_count, 0) << "the authority must not be consulted about an absent claim";
 }
 
 // Key rotation (HEP-0046 I-KEY-ROTATION-VIA-DEREG): there is no

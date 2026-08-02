@@ -5421,10 +5421,14 @@ void BrokerServiceImpl::fire_channel_count_notify(zmq::socket_t &socket, const s
 // trusts the shared guards and does NOT re-implement them):
 //
 //   1. `run_control_gates` (admission_gates.cpp) runs in `receive_and_validate`
-//      BEFORE this handler and REJECTS any non-empty-but-invalid field:
-//      identity mismatch, role_uid grammar, the side-aware role_uid↔tag policy,
-//      and channel_name grammar.  Pinned by the L1 `AdmissionGate_HeartbeatNotify*`
-//      tests.  It intentionally SKIPS empty fields (`if (!field.empty())`).
+//      BEFORE this handler and rejects a non-empty-but-invalid `role_uid` or
+//      `channel_name` — including a `role_uid` this connection does not own,
+//      which is what stops a forged heartbeat holding a dead role's presence
+//      alive.  The gate list itself is documented at that function and is
+//      deliberately NOT repeated here; a second copy would be one more thing
+//      to update when the tier changes, and would say something false the
+//      day it was missed.  Note it intentionally SKIPS empty fields
+//      (`if (!field.empty())`).
 //
 //   2. `HubState::_on_heartbeat` (hub_state.cpp) is the AUTHORITATIVE state
 //      guard: it no-ops on invalid-grammar channel/role_uid (bumping the
@@ -7924,13 +7928,13 @@ nlohmann::json BrokerServiceImpl::handle_band_join_req(const nlohmann::json &req
     // validator error so the role-side response matcher routes the
     // rejection to the right pending `do_request` (other gates were
     // already doing this; this one was missed).
-    // Grammar + identity match + role-tag policy ran at the wire
-    // dispatch pipeline: BAND_JOIN_REQ is in Tier::
-    // Control_EnvelopeWithRoleUid → run_control_gates
-    // → gate_role_tag_policy universal {prod,cons,proc}.  The
-    // band-name grammar check below is still handler-local because
-    // the wire pipeline only checks `role_uid` + `channel_name`, not
-    // `band`.
+    // BAND_JOIN_REQ is in Tier::Control_EnvelopeWithRoleUid, so
+    // `run_control_gates` has already vetted `role_uid` — including
+    // that this connection owns it, without which one role could join
+    // a band under another's name.  What that runner covers is
+    // documented there, not restated here.  What it does NOT cover is
+    // the reason for the checks below: the pipeline validates
+    // `role_uid` and `channel_name`, never `band` or `role_name`.
     if (!role_name.empty() &&
         !pylabhub::hub::is_valid_identifier(role_name, pylabhub::hub::IdentifierKind::RoleName))
     {
@@ -8020,9 +8024,11 @@ nlohmann::json BrokerServiceImpl::handle_band_leave_req(const nlohmann::json &re
     // the membership loop and skip the LEAVE log.
     // Audit B1 (2026-05-20): corr_id is now threaded through (was
     // empty, response matcher couldn't route).
-    // Grammar + identity match + role-tag policy ran at the wire
-    // dispatch pipeline: BAND_LEAVE_REQ mirrors BAND_JOIN_REQ in
-    // Tier::Control_EnvelopeWithRoleUid → run_control_gates.
+    // BAND_LEAVE_REQ mirrors BAND_JOIN_REQ in
+    // Tier::Control_EnvelopeWithRoleUid, so `run_control_gates` has
+    // already vetted `role_uid` — ownership included, without which one
+    // role could remove another from a band.  Same division as the join
+    // handler: `band` is not a field that pipeline looks at.
 
     // Wave M3 step 5f (2026-05-11): BAND_LEAVE_NOTIFY fanout is
     // handler-driven via `subscribe_band_left` wired in run().  The

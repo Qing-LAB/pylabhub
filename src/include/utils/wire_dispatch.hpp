@@ -187,8 +187,10 @@ struct PYLABHUB_UTILS_EXPORT ValidatedChannelBroadcastSend
     ValidatedChannelBroadcastSend &operator=(ValidatedChannelBroadcastSend &&) noexcept = default;
     ValidatedChannelBroadcastSend(const ValidatedChannelBroadcastSend &) = delete;
     ValidatedChannelBroadcastSend &operator=(const ValidatedChannelBroadcastSend &) = delete;
-    [[nodiscard]] std::string identity() const { return std::string(env.identity()); }
-    [[nodiscard]] std::string correlation_id() const { return std::string(env.correlation_id()); }
+    // No `identity()` / `correlation_id()` mirrors, unlike the macro-built
+    // variants: this message is fire-and-forget, so nothing echoes a
+    // correlation id, and the routing id is exactly the value that must NOT
+    // be read here.  `env` is public for anyone who needs either anyway.
 };
 
 // ── EnvelopeOnly fallback ────────────────────────────────────────────────
