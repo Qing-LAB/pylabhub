@@ -11,7 +11,9 @@
 #include "utils/admin_service.hpp"
 #include "utils/broker_service.hpp"
 #include "utils/config/hub_config.hpp"
+#include "utils/debug_info.hpp" // kTraceEntryBytes + trace_mark_dirty (~HubHost detach gate)
 #include "utils/hub_state.hpp"
+#include "utils/lifecycle.hpp"  // LifecycleManager::critical_report (~HubHost detach gate)
 #include "utils/logger.hpp"
 #include "utils/script_engine.hpp"        // ScriptEngine + InvokeResponse
 #include "utils/security/known_roles.hpp" // HEP-CORE-0035 §4.8 + Phase B
@@ -20,11 +22,13 @@
 #include "utils/zmq_context.hpp"
 
 #include <atomic>
+#include <chrono> // detach-safety grace window (~HubHost)
 #include <condition_variable>
 #include <future>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread> // sleep_for during the detach grace poll (~HubHost)
 
 namespace pylabhub::hub_host
 {
@@ -133,6 +137,100 @@ HubHost::~HubHost()
             // logs detached threads if any.
         }
     }
+    // Detach-safety gate — HEP-CORE-0031 §4.2.3, the same shape
+    // `EngineHost::shutdown_()` uses and the recipe in the
+    // `all_detached_done()` docstring.
+    //
+    // The drain in shutdown() detaches any thread that missed its bounded
+    // join.  The broker slot's body holds a raw `BrokerService*` into
+    // `impl_->broker`, and the broker holds a `HubState&` into
+    // `impl_->state`; destroying impl_ under a still-running broker thread
+    // frees both out from under it.  §4.1.7 is explicit that a site
+    // destroying state a thread was touching must first observe that the
+    // thread is gone.
+    //
+    // drain() retains each detached slot's `done` flag, so poll for a
+    // bounded grace first: a runaway that returns in time costs only the
+    // wait and we destroy normally.  If one is still live when the grace
+    // expires, release ownership instead — the OS reaps the thread and its
+    // allocations at process exit, which is strictly better than a
+    // deterministic use-after-free on the way out.
+    //
+    // Reported through the last-resort trace, not the Logger: the Logger is
+    // asynchronous AND is itself a module that gets torn down, and ~HubHost
+    // is not a lifecycle module so it can run after the Logger is gone.  A
+    // record that only exists in the log queue dies with a wedged teardown —
+    // exactly the case this record describes (HEP-CORE-0048; same reasoning
+    // ThreadManager states at its own detach site).
+    //
+    // Guarded for the same reason the shutdown() call above is: this is a
+    // destructor, so anything escaping is std::terminate — and that would
+    // lose the very record this block exists to leave behind.
+    bool leaked = false;
+    try
+    {
+        if (impl_ && impl_->thread_mgr && impl_->thread_mgr->detached_count_last_drain() > 0)
+        {
+            // Grace = kShortTimeoutMs (1s).  The broker polls on a 100ms
+            // timeout and checks its stop flag at the top of each iteration,
+            // and drain() has already spent kMidTimeoutMs (5s) — fifty poll
+            // cycles — waiting.  A thread still alive after that is not
+            // between poll cycles; it is blocked in a handler or a socket
+            // call, and no plausible wait fixes that.  So this covers only
+            // the narrow case of a thread that was one cycle from returning
+            // when drain's deadline expired, and it keeps the destructor from
+            // stalling on a thread that is genuinely wedged.
+            constexpr auto kDetachGrace = std::chrono::milliseconds{pylabhub::kShortTimeoutMs};
+            const auto deadline = std::chrono::steady_clock::now() + kDetachGrace;
+            while (!impl_->thread_mgr->all_detached_done() &&
+                   std::chrono::steady_clock::now() < deadline)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{50});
+            }
+
+            if (!impl_->thread_mgr->all_detached_done())
+            {
+                leaked = true;
+
+                // Declare the unclean exit from HERE rather than relying on
+                // the drain having done it.  The latch is what decides
+                // whether the report is emitted at all — a clean report
+                // prints nothing in a Release build — and HEP-CORE-0048 makes
+                // every reporter that knows it is in trouble set it, so
+                // emission never depends on a distant call site staying the
+                // way it is today.
+                pylabhub::debug::trace_mark_dirty();
+
+                char line[pylabhub::debug::kTraceEntryBytes];
+                const auto res = fmt::format_to_n(
+                    line, sizeof(line),
+                    "module=HubHost op=detach-gate outcome=leaked detached={} grace_ms={}",
+                    impl_->thread_mgr->detached_count_last_drain(), kDetachGrace.count());
+                utils::LifecycleManager::critical_report(
+                    std::string_view(line, res.size < sizeof(line) ? res.size : sizeof(line)));
+            }
+
+            // Recovery is deliberately NOT reported.  The last-resort trace
+            // holds steps on pathways known to go wrong, so a reader lands on
+            // the right part of the code; every entry that did not matter
+            // dilutes the ones that did.  When every runaway returned,
+            // teardown proceeds normally and the drain's own record already
+            // names the detach.
+        }
+    }
+    catch (...)
+    {
+        // Swallow — see the note above.  `leaked` keeps whatever it was set
+        // to before the throw, so a failure mid-report still takes the safe
+        // branch rather than destroying under a live thread.
+    }
+
+    if (leaked)
+    {
+        (void)impl_.release(); // drop ownership without running ~Impl
+        return;
+    }
+
     // impl_ destructor runs:
     //   1. thread_mgr_ dtor → drains tracked threads (bounded join)
     //   2. broker_ dtor (broker already stopped above)
