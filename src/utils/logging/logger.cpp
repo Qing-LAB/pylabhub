@@ -151,7 +151,19 @@ class CallbackDispatcher
     void shutdown()
     {
         PLH_DEBUG("CallbackDispatcher::shutdown ENTER");
-        if (shutdown_requested_.exchange(true))
+        bool first_call = false;
+        {
+            // Publish the stop under `mutex_`.  `run()` holds that lock from
+            // its predicate check until `cv_.wait` atomically releases it, so
+            // a flag set outside the lock can land in the gap between the two
+            // — `notify_one` then reaches an empty wait queue and the worker
+            // sleeps forever on a predicate that is already true.  Taking the
+            // lock forces this store to happen either before the check or
+            // after the thread is genuinely waiting.
+            std::lock_guard<std::mutex> lock_guard(mutex_);
+            first_call = !shutdown_requested_.exchange(true);
+        }
+        if (!first_call)
         {
             PLH_DEBUG("CallbackDispatcher::shutdown REENTRY no-op");
             return;
@@ -816,7 +828,20 @@ void Logger::Impl::shutdown()
     pylabhub::debug::trace_add("module=Logger op=shutdown phase=enter");
     PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] ENTER tid={}", since_t0(),
               static_cast<unsigned long long>(pylabhub::platform::get_native_thread_id()));
-    if (shutdown_completed_.load() || shutdown_requested_.exchange(true))
+    bool first_call = false;
+    {
+        // Publish the stop under `queue_mutex_`.  worker_loop() holds that
+        // lock from its predicate check until `cv_.wait` atomically releases
+        // it, so a flag set outside the lock can land in the gap between the
+        // two — the notify below then reaches an empty wait queue and the
+        // worker sleeps forever on a predicate that is already true.
+        //
+        // Nothing but the flag may go inside this scope: a LOGGER_* call here
+        // would re-enter enqueue_command, which takes this same mutex.
+        std::lock_guard<std::mutex> lock_guard(queue_mutex_);
+        first_call = !shutdown_completed_.load() && !shutdown_requested_.exchange(true);
+    }
+    if (!first_call)
     {
         PLH_DEBUG("Logger::Impl::shutdown [+{:.3f}ms] REENTRY no-op "
                   "(completed={}, req_was_true={})",

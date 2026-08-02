@@ -2306,9 +2306,24 @@ void ZmqQueue::stop()
     if (!pImpl->running_.exchange(false, std::memory_order_acq_rel))
         return;
 
-    // Signal all background threads to exit.
-    pImpl->recv_stop_.store(true, std::memory_order_release);
-    pImpl->send_stop_.store(true, std::memory_order_release);
+    // Signal all background threads to exit.  Each stop flag is published
+    // under the mutex its waiters hold: a waiter owns that lock from its
+    // predicate check until `wait`/`wait_for` atomically releases it, so a
+    // flag stored outside the lock can land in the gap between the two and
+    // the notify below reaches an empty wait queue.  For send_thread_, whose
+    // wait is unbounded, that is a permanent sleep and stop() then blocks in
+    // the join.
+    //
+    // The two locks are taken in separate scopes and never both held, so they
+    // impose no acquisition order on each other.
+    {
+        std::lock_guard<std::mutex> lk(pImpl->recv_mu_);
+        pImpl->recv_stop_.store(true, std::memory_order_release);
+    }
+    {
+        std::lock_guard<std::mutex> lk(pImpl->send_mu_);
+        pImpl->send_stop_.store(true, std::memory_order_release);
+    }
     // HR-06: recv_cv_.notify_all() wakes any thread blocked in read_acquire() so it
     // can observe the stopping condition and return nullptr.  It does NOT wake the
     // recv_thread_ itself (which polls on its own ZMQ_RCVTIMEO interval).
