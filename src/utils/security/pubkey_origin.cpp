@@ -38,8 +38,8 @@ void PeerAuthority::Builder::insert_(std::string_view pubkey_z85, PubkeyOrigin o
     catch (const std::invalid_argument &e)
     {
         throw std::runtime_error("pubkey origin index: " + std::string(kind_label(origin.kind)) +
-                                 " '" + origin.subject_uid + "' has an invalid CURVE key: " +
-                                 e.what());
+                                 " '" + origin.subject_uid +
+                                 "' has an invalid CURVE key: " + e.what());
     }
 
     const auto it = by_pubkey_.find(key);
@@ -71,7 +71,7 @@ void PeerAuthority::Builder::add_local_role(const ::pylabhub::broker::KnownRole 
 }
 
 void PeerAuthority::Builder::add_federation_peer(std::string_view peer_uid,
-                                            std::string_view pubkey_z85)
+                                                 std::string_view pubkey_z85)
 {
     insert_(pubkey_z85, PubkeyOrigin{PubkeyOrigin::Kind::FederationPeer, std::string(peer_uid)});
 }
@@ -88,7 +88,6 @@ const PubkeyOrigin *PeerAuthority::resolve_(const AttestedKey &attested) const
         return nullptr;
     return &it->second;
 }
-
 
 } // namespace pylabhub::utils::security
 
@@ -115,21 +114,14 @@ std::string_view to_string(ClaimVerdict v) noexcept
     return "unknown";
 }
 
-ClaimVerdict PeerAuthority::check_registration_claim(
-    const std::optional<AttestedKey> &attested, std::string_view claimed_uid,
-    std::string_view announced_pubkey) const
+ClaimVerdict PeerAuthority::check_role_ownership(const std::optional<AttestedKey> &attested,
+                                                 std::string_view claimed_uid) const
 {
-    // Registration requires proof.  A connection that produced no
+    // Acting as a role requires proof.  A connection that produced no
     // attestation reached us without an enforced handshake, so there is
     // nothing to check the claim against.
     if (!attested.has_value())
         return ClaimVerdict::no_attestation;
-
-    // The body's declared key must agree with what the transport proved.
-    // This is what makes the declaration a cross-check rather than
-    // decoration: it can only ever deny.
-    if (announced_pubkey != attested->key().view())
-        return ClaimVerdict::pubkey_mismatch;
 
     const PubkeyOrigin *origin = resolve_(*attested);
     if (origin == nullptr)
@@ -145,6 +137,32 @@ ClaimVerdict PeerAuthority::check_registration_claim(
         return ClaimVerdict::identity_mismatch;
 
     return ClaimVerdict::accepted;
+}
+
+ClaimVerdict PeerAuthority::check_registration_claim(const std::optional<AttestedKey> &attested,
+                                                     std::string_view claimed_uid,
+                                                     std::string_view announced_pubkey) const
+{
+    // Registration is ownership plus one extra obligation: the body
+    // DECLARES a key, and that declaration must agree with what the
+    // transport proved.  This is what makes the declaration a cross-check
+    // rather than decoration — it can only ever deny.
+    //
+    // The attestation check is repeated ahead of the comparison because
+    // reading `attested->key()` requires it; `check_role_ownership` then
+    // re-tests it rather than taking a bare key, so neither entry point
+    // depends on the other having already looked.
+    if (!attested.has_value())
+        return ClaimVerdict::no_attestation;
+
+    if (announced_pubkey != attested->key().view())
+        return ClaimVerdict::pubkey_mismatch;
+
+    // Everything past the declaration is the same question every other
+    // REG-family message asks: does this proven key own the claimed uid?
+    // One rule, one implementation — two copies would agree only on the
+    // day they were written.
+    return check_role_ownership(attested, claimed_uid);
 }
 
 } // namespace pylabhub::utils::security

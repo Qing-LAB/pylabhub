@@ -174,6 +174,19 @@ struct AdmissionCallbacks
         std::string_view role_uid, std::string_view zmq_pubkey)>
         check_registration;
 
+    /// Does the connection's proven key own @p role_uid?
+    ///
+    /// The post-registration form of the question above, for bodies that
+    /// carry no `zmq_pubkey` (DEREG / ENDPOINT_UPDATE / CHANNEL_AUTH_
+    /// APPLIED — the key was bound to the role at REG time).  Bound to the
+    /// same authority snapshot and returns the same verdicts, so a caller
+    /// cannot get a different answer to the same question by asking a
+    /// different way.
+    std::function<::pylabhub::utils::security::ClaimVerdict(
+        const std::optional<::pylabhub::utils::security::AttestedKey> &attested,
+        std::string_view role_uid)>
+        check_role_ownership;
+
     /// Record the nonce for anti-replay dedup.  Returns true if the
     /// nonce is fresh (accepted) or false if it collided within the
     /// sliding window.  The underlying `ReplayGuard` prunes entries older
@@ -298,6 +311,21 @@ gate_grammar(const RegFamilyBodyView &body) noexcept;
 gate_attested_binding(const ::pylabhub::wire::WireEnvelope &env, const RegFamilyBodyView &body,
                       const AdmissionContext &ctx) noexcept;
 
+/// I-PUBKEY-BINDING for messages that act on an ALREADY-registered role:
+/// the connection must own @p role_uid (HEP-CORE-0035 §4.2).
+///
+/// Same question as `gate_attested_binding` minus the declared-key
+/// cross-check, because these bodies carry no `zmq_pubkey` — the key was
+/// bound to the role at REG time.
+///
+/// Do not mistake `gate_dealer_identity_consistency` for this.  That gate
+/// compares two values the client chose; this one compares against what
+/// the client PROVED.  A peer that sets both its routing id and its body
+/// `role_uid` to a victim's uid satisfies the former and is refused here.
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
+gate_attested_role_ownership(const ::pylabhub::wire::WireEnvelope &env, std::string_view role_uid,
+                             const AdmissionContext &ctx) noexcept;
+
 [[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<RejectDetail>
 gate_replay_bound(const RegFamilyBodyView &body, const AdmissionContext &ctx) noexcept;
 
@@ -323,14 +351,19 @@ gate_role_tag_policy(std::string_view msg_type, std::string_view role_uid,
 // security triple (client_nonce + client_wall_ts) and identity, so the
 // applicable gates are:
 //
-//   - identity_match (I-DEALER-IDENTITY): env.identity() == body.role_uid
+//   - dealer_identity_consistency: env.identity() == body.role_uid
 //   - grammar (universal fields only): role_uid + channel_name
 //   - role_tag_policy (HEP-CORE-0033 §G2.2.0b.8)
+//   - attested_role_ownership (I-PUBKEY-BINDING): the connection's PROVEN
+//     key must own role_uid
 //   - replay_bound (I-REPLAY-BOUND): nonce dedup + wall_ts skew
 //
-// gate_attested_binding does not apply — the role's pubkey was
-// already established by the successful REG_REQ that preceded this
-// message.
+// `gate_attested_binding` itself does not apply — there is no announced
+// `zmq_pubkey` on these bodies to cross-check, because the key was bound
+// to the role at REG time.  That is NOT a reason to skip the ownership
+// half: "the key was already established" says which key belongs to the
+// role, not that THIS connection is holding it.  Establishing the binding
+// once at REG_REQ says nothing about who sends the DEREG_REQ afterwards.
 struct AuthenticatedRegFamilyView
 {
     std::string_view role_uid;

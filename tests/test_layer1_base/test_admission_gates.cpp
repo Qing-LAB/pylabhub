@@ -86,6 +86,15 @@ struct StubCallbacks
             ++call_count;
             return verdict;
         };
+        cb.check_role_ownership =
+            [this](const std::optional<pylabhub::utils::security::AttestedKey> &attested,
+                   std::string_view uid) -> ClaimVerdict
+        {
+            seen_uid.assign(uid);
+            seen_attestation = attested.has_value();
+            ++call_count;
+            return verdict;
+        };
         cb.record_and_check_nonce = [this](std::string_view uid, std::string_view nonce)
         {
             std::string key{uid};
@@ -433,6 +442,60 @@ TEST(AdmissionGate_AttestedBinding, UnboundCallbackRejectsRatherThanAdmits)
     auto env = build_envelope("prod.test.uid1", "REG_REQ", "cid-1", nlohmann::json::object());
     auto r = ag::gate_attested_binding(env, f.body(), c);
     ASSERT_TRUE(r.has_value()) << "an unbound authority callback must NOT admit";
+    EXPECT_EQ(r->code, ag::RejectCode::broker_internal_error);
+}
+
+// ── Gate 5b: attested role ownership (post-registration family) ───────
+//
+// DEREG / ENDPOINT_UPDATE / CHANNEL_AUTH_APPLIED bodies carry no announced
+// key, so this asks ownership alone.  The verdict → reject mapping is
+// shared with gate_attested_binding and pinned above; what these cases add
+// is that this gate reaches it, forwards the right arguments, and fails
+// CLOSED when unbound.
+
+TEST(AdmissionGate_AttestedOwnership, AcceptedVerdictPasses)
+{
+    Fixture f;
+    f.stub.verdict = ClaimVerdict::accepted;
+    auto env = build_envelope("prod.test.uid1", "DEREG_REQ", "cid-1", nlohmann::json::object());
+    EXPECT_EQ(ag::gate_attested_role_ownership(env, "prod.test.uid1", f.ctx()), std::nullopt);
+}
+
+// The channel-teardown attack: any admitted principal naming a victim's
+// uid in both the routing id and the body.  The consistency gate cannot
+// see it — both values are the attacker's — so this gate must.
+TEST(AdmissionGate_AttestedOwnership, ForeignRoleRejectsIdentityMismatch)
+{
+    Fixture f;
+    f.stub.verdict = ClaimVerdict::identity_mismatch;
+    auto env = build_envelope("prod.victim.uid", "DEREG_REQ", "cid-1", nlohmann::json::object());
+    auto r = ag::gate_attested_role_ownership(env, "prod.victim.uid", f.ctx());
+    ASSERT_TRUE(r.has_value()) << "a peer must not act on a role its key does not own";
+    EXPECT_EQ(r->code, ag::RejectCode::identity_mismatch);
+}
+
+TEST(AdmissionGate_AttestedOwnership, ForwardsTargetUidAndAttestation)
+{
+    Fixture f;
+    auto env = build_envelope("prod.test.uid1", "DEREG_REQ", "cid-1", nlohmann::json::object());
+
+    (void)ag::gate_attested_role_ownership(env, "prod.test.uid1", f.ctx());
+
+    EXPECT_EQ(f.stub.call_count, 1) << "gate must consult the authority exactly once";
+    EXPECT_EQ(f.stub.seen_uid, "prod.test.uid1") << "gate must forward the role being acted on";
+    EXPECT_FALSE(f.stub.seen_attestation)
+        << "build_envelope parses off an unarmed socket, so the gate must pass "
+           "that absence through rather than substituting anything";
+}
+
+TEST(AdmissionGate_AttestedOwnership, UnboundCallbackRejectsRatherThanAdmits)
+{
+    ag::AdmissionCallbacks empty;
+    ag::AdmissionContext c;
+    c.cb = &empty;
+    auto env = build_envelope("prod.test.uid1", "DEREG_REQ", "cid-1", nlohmann::json::object());
+    auto r = ag::gate_attested_role_ownership(env, "prod.test.uid1", c);
+    ASSERT_TRUE(r.has_value()) << "an unbound ownership callback must NOT admit";
     EXPECT_EQ(r->code, ag::RejectCode::broker_internal_error);
 }
 

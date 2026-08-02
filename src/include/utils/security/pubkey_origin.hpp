@@ -73,7 +73,7 @@ struct PYLABHUB_UTILS_EXPORT PubkeyOrigin
     };
 
     Kind kind{Kind::LocalRole};
-    std::string subject_uid;  ///< Role uid, or peer hub uid.
+    std::string subject_uid; ///< Role uid, or peer hub uid.
 };
 
 /// Key → subject. Built once from the operator's configured roles and
@@ -222,9 +222,27 @@ class PYLABHUB_UTILS_EXPORT PeerAuthority
     /// holes ship. Note this tests the KIND, not just the uid string: a peer
     /// whose subject_uid happened to match would otherwise slip through a
     /// string comparison.
-    [[nodiscard]] ClaimVerdict check_registration_claim(
-        const std::optional<AttestedKey> &attested, std::string_view claimed_uid,
-        std::string_view announced_pubkey) const;
+    [[nodiscard]] ClaimVerdict check_registration_claim(const std::optional<AttestedKey> &attested,
+                                                        std::string_view claimed_uid,
+                                                        std::string_view announced_pubkey) const;
+
+    /// Does the connection's proven key own @p claimed_uid?
+    ///
+    /// The question every REG-family message asks AFTER registration —
+    /// deregistration, endpoint update, applied-auth — where the body
+    /// carries no `zmq_pubkey` to cross-check because the key was bound to
+    /// the role at REG time.
+    ///
+    /// This is the tail of `check_registration_claim`, shared rather than
+    /// copied: registration is this check plus the declared-key
+    /// comparison.  The federation rule and the kind-before-uid ordering
+    /// documented above therefore apply identically here.
+    ///
+    /// A caller must NOT substitute "the routing id equals the body's
+    /// role_uid" for this.  Both of those are chosen by the client, so
+    /// their agreement proves nothing about who is asking.
+    [[nodiscard]] ClaimVerdict check_role_ownership(const std::optional<AttestedKey> &attested,
+                                                    std::string_view claimed_uid) const;
 
     /// The uid of the local role this key belongs to, for message
     /// ATTRIBUTION (inbox sender, replay key, per-sender sequence state —

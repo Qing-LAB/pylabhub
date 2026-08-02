@@ -162,6 +162,50 @@ std::optional<RejectDetail> gate_grammar(const RegFamilyBodyView &body) noexcept
     return std::nullopt;
 }
 
+// Verdict → wire rejection.  ONE mapping, shared by every gate that asks
+// the authority a question, because the reject code a verdict deserves is
+// a property of the verdict and not of which gate happened to ask.  Two
+// copies would agree on the day they were written.
+static std::optional<RejectDetail>
+reject_for_claim(::pylabhub::utils::security::ClaimVerdict verdict) noexcept
+{
+    using ClaimVerdict = ::pylabhub::utils::security::ClaimVerdict;
+    switch (verdict)
+    {
+    case ClaimVerdict::accepted:
+        return std::nullopt;
+
+    case ClaimVerdict::no_attestation:
+        // Unreachable under Layer-1 enforcement — an unlisted key never
+        // completes a handshake — so this firing is an alarm about the
+        // socket's ZAP arming, not routine client error.
+        return make(RejectCode::unauthenticated, "",
+                    "connection proved no identity: this request requires a "
+                    "completed CURVE handshake");
+
+    case ClaimVerdict::pubkey_mismatch:
+        return make(RejectCode::pubkey_mismatch, "zmq_pubkey",
+                    "zmq_pubkey does not match the key this connection proved "
+                    "at handshake");
+
+    case ClaimVerdict::unknown_key:
+        return make(RejectCode::unknown_role, "",
+                    "the key this connection proved is not one this hub recognises");
+
+    case ClaimVerdict::kind_not_permitted:
+        return make(RejectCode::wrong_peer_kind, "role_uid",
+                    "the proven key belongs to a federation peer hub, not a local "
+                    "role; peers may not act as roles (HEP-CORE-0035 §4.3)");
+
+    case ClaimVerdict::identity_mismatch:
+        // THE defect these gates exist to close: a valid key, proven,
+        // acting under a different role's uid.
+        return make(RejectCode::identity_mismatch, "role_uid",
+                    "role_uid is not the role this connection's proven key belongs to");
+    }
+    return std::nullopt; // unreachable
+}
+
 std::optional<RejectDetail> gate_attested_binding(const ::pylabhub::wire::WireEnvelope &env,
                                                   const RegFamilyBodyView &body,
                                                   const AdmissionContext &ctx) noexcept
@@ -172,42 +216,21 @@ std::optional<RejectDetail> gate_attested_binding(const ::pylabhub::wire::WireEn
         return make(RejectCode::broker_internal_error, "",
                     "internal: registration-claim callback not bound");
     }
+    return reject_for_claim(
+        ctx.cb->check_registration(env.attestation(), body.role_uid, body.zmq_pubkey));
+}
 
-    using ClaimVerdict = ::pylabhub::utils::security::ClaimVerdict;
-    switch (ctx.cb->check_registration(env.attestation(), body.role_uid, body.zmq_pubkey))
+std::optional<RejectDetail> gate_attested_role_ownership(const ::pylabhub::wire::WireEnvelope &env,
+                                                         std::string_view role_uid,
+                                                         const AdmissionContext &ctx) noexcept
+{
+    if (!ctx.cb || !ctx.cb->check_role_ownership)
     {
-    case ClaimVerdict::accepted:
-        return std::nullopt;
-
-    case ClaimVerdict::no_attestation:
-        // Unreachable under Layer-1 enforcement — an unlisted key never
-        // completes a handshake — so this firing is an alarm about the
-        // socket's ZAP arming, not routine client error.
-        return make(RejectCode::unauthenticated, "",
-                    "connection proved no identity: registration requires a "
-                    "completed CURVE handshake");
-
-    case ClaimVerdict::pubkey_mismatch:
-        return make(RejectCode::pubkey_mismatch, "zmq_pubkey",
-                    "zmq_pubkey does not match the key this connection proved "
-                    "at handshake");
-
-    case ClaimVerdict::unknown_key:
-        return make(RejectCode::unknown_role, "zmq_pubkey",
-                    "the key this connection proved is not one this hub recognises");
-
-    case ClaimVerdict::kind_not_permitted:
-        return make(RejectCode::wrong_peer_kind, "role_uid",
-                    "the proven key belongs to a federation peer hub, not a local "
-                    "role; peers may not register roles (HEP-CORE-0035 §4.3)");
-
-    case ClaimVerdict::identity_mismatch:
-        // THE defect this gate exists to close: a valid key, proven,
-        // claiming a different role's uid.
-        return make(RejectCode::identity_mismatch, "role_uid",
-                    "role_uid is not the role this connection's proven key belongs to");
+        // Programmer error: pipeline invoked without callbacks bound.
+        return make(RejectCode::broker_internal_error, "",
+                    "internal: role-ownership callback not bound");
     }
-    return std::nullopt; // unreachable
+    return reject_for_claim(ctx.cb->check_role_ownership(env.attestation(), role_uid));
 }
 
 // Shared I-REPLAY-BOUND check (wall-clock skew + nonce dedup).  ONE
@@ -461,6 +484,20 @@ run_authenticated_reg_family_gates(const ::pylabhub::wire::WireEnvelope &env,
     // just as it does to REG_REQ.  No role_type field on these bodies
     // (universal set for non-HEARTBEAT msg_types).
     if (auto r = gate_role_tag_policy(env.msg_type(), body.role_uid, {}))
+        return r;
+
+    // I-PUBKEY-BINDING for the post-registration family: the connection
+    // must own the role it is acting on.  These bodies carry no
+    // `zmq_pubkey` — the key was bound at REG time — so the question is
+    // ownership alone, not a declared-key cross-check.
+    //
+    // The identity check above does NOT cover this.  It compares the
+    // routing id to the body's role_uid, and the client picks both, so a
+    // peer that sets them to a victim's uid satisfies it while proving
+    // nothing.  Without this gate any admitted principal could deregister
+    // another role's producer and, on a last-producer leave, tear down the
+    // channel for every consumer attached to it.
+    if (auto r = gate_attested_role_ownership(env, body.role_uid, ctx))
         return r;
 
     // Replay-bound — I-REPLAY-BOUND (nonce dedup + wall-clock skew).

@@ -1837,6 +1837,103 @@ TEST_F(Pattern4BrokerProtocolTest, RegReq_ProvenKeyClaimingAnotherRolesUid_Rejec
     broker.signal_quit();
 }
 
+TEST_F(Pattern4BrokerProtocolTest, DeregReq_ProvenKeyTargetingAnotherRole_Rejected)
+{
+    // The post-registration half of the same defect.  Bob registers
+    // legitimately.  Alice — a perfectly valid role, admitted by ZAP with her
+    // own key — then sends DEREG_REQ naming Bob, with her routing id set to
+    // Bob's uid so the dealer-identity consistency check is satisfied.
+    //
+    // Before the ownership gate this succeeded: the handler resolved its
+    // target by role_uid alone, and on a last-producer leave that tears the
+    // channel down for every consumer attached to it.  Nothing about it
+    // required a stolen key — only a valid one.
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string alice = "prod.deregatk.alice" + suffix;
+    const std::string bob = "prod.deregatk.bob" + suffix;
+    const std::string querier = "QUERIER-deregatk" + suffix;
+    const std::string channel = "deregatk.ch" + suffix;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_dereg_attack");
+    const auto setup = make_pattern4_setup({alice, bob, querier});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+
+    // Bob registers for real, then RELEASES the connection.  A ROUTER
+    // refuses a second peer presenting a routing id already in use, so the
+    // attacker below — which must present Bob's uid as its routing id to
+    // reach the gate under test — cannot connect while Bob is attached.
+    // Registration outlives the connection ("disconnect is terminal" is not
+    // enforced today; see #93), which is precisely what makes the attack
+    // worth defending against.
+    {
+        auto victim = make_wire_client(ctx, setup, bob);
+        auto ack = victim.request("REG_REQ", producer_reg_body(setup, channel, bob, /*shm=*/false),
+                                  "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+        ASSERT_TRUE(ack.has_value()) << "victim REG_REQ timed out";
+        ASSERT_EQ(ack->value("status", std::string{}), "success") << "body=" << ack->dump();
+    }
+
+    // Independent observer, on its own identity — the tier that may
+    // legitimately ask about another role.  Used twice: to establish that
+    // Bob is registered before the attack, and to check he survived it.
+    auto observer = make_wire_client(ctx, setup, querier);
+    const auto bob_is_present = [&]() -> bool
+    {
+        nlohmann::json q;
+        q["role_uid"] = bob;
+        auto resp = observer.request("ROLE_PRESENCE_REQ", q, "ROLE_PRESENCE_ACK",
+                                     milliseconds{pylabhub::kLongTimeoutMs});
+        EXPECT_TRUE(resp.has_value()) << "ROLE_PRESENCE_REQ timed out";
+        return resp.has_value() && resp->value("present", false);
+    };
+
+    // Premise — and the round trip that lets the broker's ROUTER observe
+    // Bob's disconnect before the attacker claims his routing id.
+    ASSERT_TRUE(bob_is_present()) << "Bob must be registered, or the attack below proves nothing";
+
+    // Alice's key on the socket; Bob's uid everywhere the client controls.
+    const auto &alice_kp = setup.curve.role(alice);
+    BrokerWireClient::Config c;
+    c.broker_endpoint = setup.broker_endpoint;
+    c.broker_pubkey = setup.curve.hub.public_z85;
+    c.client_pubkey = alice_kp.public_z85;
+    c.client_seckey = alice_kp.secret_z85;
+    c.client_role_uid = bob;
+
+    {
+        BrokerWireClient attacker(ctx, c);
+        nlohmann::json dereg;
+        dereg["channel_name"] = channel;
+        dereg["role_uid"] = bob;
+
+        attacker.send("DEREG_REQ", dereg);
+        auto reply = attacker.receive(milliseconds{pylabhub::kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value()) << "no reply to hostile DEREG_REQ";
+        EXPECT_EQ(reply->first, "ERROR")
+            << "Alice's key MUST NOT deregister Bob; got msg_type=" << reply->first
+            << " body=" << reply->second.dump();
+        EXPECT_EQ(reply->second.value("error_code", std::string{}), "IDENTITY_MISMATCH")
+            << "body=" << reply->second.dump();
+    }
+
+    // Side effect, not just the reply.  A gate that returned an error while
+    // the handler still dropped the producer would satisfy the assertion
+    // above and lose the channel anyway.
+    EXPECT_TRUE(bob_is_present())
+        << "Bob's registration must have SURVIVED the hostile DEREG — if he is "
+           "gone, the rejection was cosmetic and the channel was torn down";
+
+    broker.signal_quit();
+}
+
 TEST_F(Pattern4BrokerProtocolTest, RegReq_StaleTimestamp_RejectedReplayOrSkew)
 {
     using namespace std::chrono;

@@ -3090,9 +3090,14 @@ nlohmann::json BrokerServiceImpl::handle_dereg_req(const ::pylabhub::wire::WireE
     // producer key (HEP-CORE-0023 §2.1.1 + same-uid-restart-replace: a channel
     // never holds two producer-presences under one role_uid).  A PID is NOT read
     // here — it is debug/record only, machine-local, and never a validation
-    // input (HEP-CORE-0023 "A PID is debug/record only").  Grammar + tag policy
-    // and the identity gate (env.identity() == role_uid) already ran in
-    // receive_and_validate, so a role can only present its OWN role_uid.
+    // input (HEP-CORE-0023 "A PID is debug/record only").
+    //
+    // Resolving by uid alone is safe because `receive_and_validate` ran
+    // `gate_attested_role_ownership`: the connection PROVED a key the hub
+    // resolves to this role_uid.  Note what does NOT establish that — the
+    // routing-id-equals-role_uid check is a consistency requirement over
+    // two client-chosen values, so on its own it would let any admitted
+    // peer name a victim in both places and drop that role's producer.
 
     // HEP-CORE-0023 §2.1.1 atomic-teardown contract, owner-bound per
     // HEP-CORE-0017 §4.7.0.2 T2: channel teardown fires only when the LAST
@@ -6973,6 +6978,14 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState &state)
                    std::string_view uid,
                    std::string_view pubkey) -> ::pylabhub::utils::security::ClaimVerdict
         { return impl->peer_authority()->check_registration_claim(attested, uid, pubkey); };
+
+        // The same question for messages acting on an already-registered
+        // role (DEREG / ENDPOINT_UPDATE / CHANNEL_AUTH_APPLIED), whose
+        // bodies carry no announced key.  Same snapshot, same verdicts.
+        impl->admission_binder_.callbacks.check_role_ownership =
+            [impl](const std::optional<::pylabhub::utils::security::AttestedKey> &attested,
+                   std::string_view uid) -> ::pylabhub::utils::security::ClaimVerdict
+        { return impl->peer_authority()->check_role_ownership(attested, uid); };
 
         // I-KEY-ROTATION-VIA-DEREG (HEP-0046): a role's CURVE pubkey is
         // immutable for the broker's lifetime.  Rotation is edit-config
