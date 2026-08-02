@@ -6921,54 +6921,33 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState &state)
 
     // HEP-CORE-0035 §4.2 — build the pubkey origin index from the
     // operator's configured roster.  This is the config-ingestion
-    // boundary: entries that cannot carry an identity are dropped here,
-    // with a WARN naming each one, so the index above this line holds
-    // only well-formed mappings and callers never re-filter.  A silent
-    // skip is what this replaces — the previous inline projections
-    // dropped empty-pubkey entries with no trace, so an operator whose
-    // roster entry was ignored had no way to find out.
+    // boundary: the one place operator text becomes a recognised
+    // principal, and therefore the one place that can refuse.
+    //
+    // A malformed entry aborts startup, named: the Builder throws and
+    // nothing here catches.  Skipping one instead would leave the hub
+    // green while a role it was configured to recognise has lost its
+    // identity — surfacing later as that device failing to connect.
+    //
     // Built as a local, then PUBLISHED as an immutable snapshot.  The same
     // routine is what a roster reload re-runs: build a complete new index
     // and swap it, never edit a published one (which `const` forbids).
     {
         pylabhub::utils::security::PeerAuthority::Builder authority;
         for (const auto &kr : pImpl->cfg.known_roles)
-        {
-            try
-            {
-                authority.add_local_role(kr);
-            }
-            catch (const std::exception &e)
-            {
-                // Rejected, not fatal.  An unusable entry fails CLOSED — it can
-                // never admit anyone — so refusing to start would only turn one
-                // bad value in an operator file into everyone else's outage.
-                // The config belongs to the operator; enforcing it as written
-                // is this code's whole job.
-                LOGGER_ERROR("[broker] known_roles entry '{}' rejected: {}", kr.uid, e.what());
-            }
-        }
+            authority.add_local_role(kr);
+
         for (const auto &peer : pImpl->cfg.peers)
         {
             // An EMPTY peer pubkey is legitimate configuration, not an
             // error: `FederationPeer::pubkey_z85` documents empty as
             // "no CURVE" for that peer.  Such a peer has no key, so it
-            // has no entry in a key→subject index and no warning is
-            // owed.  A non-empty but malformed key is a different
-            // matter — that is an operator typo that would silently
-            // cost the peer its identity, so it is named.
+            // has no entry in a key→subject index and nothing is owed.
+            // A non-empty but malformed key is an operator typo that
+            // would cost the peer its identity — that one is fatal.
             if (peer.pubkey_z85.empty())
                 continue;
-            try
-            {
-                authority.add_federation_peer(peer.hub_uid, peer.pubkey_z85);
-            }
-            catch (const std::exception &e)
-            {
-                // Neither empty (a defined value meaning "no CURVE", skipped
-                // above) nor valid.
-                LOGGER_ERROR("[broker] federation peer '{}' rejected: {}", peer.hub_uid, e.what());
-            }
+            authority.add_federation_peer(peer.hub_uid, peer.pubkey_z85);
         }
         pImpl->publish_peer_authority(std::move(authority).build());
     }
