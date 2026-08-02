@@ -4054,9 +4054,12 @@ BrokerServiceImpl::handle_consumer_dereg_req(const ::pylabhub::wire::WireEnvelop
     // Target resolution is by `role_uid` ALONE — the authoritative unique
     // consumer key (HEP-CORE-0023 §2.1.1).  A PID is NOT read here — it is
     // debug/record only, machine-local, and never a validation input
-    // (HEP-CORE-0023 "A PID is debug/record only").  Grammar + tag policy and
-    // the identity gate (env.identity() == role_uid) already ran in
-    // receive_and_validate, so a role can only present its OWN role_uid.
+    // (HEP-CORE-0023 "A PID is debug/record only").
+    //
+    // Resolving by uid alone is safe because `receive_and_validate` ran
+    // `gate_attested_role_ownership`: the connection PROVED a key the hub
+    // resolves to this role_uid.  The routing-id-equals-role_uid check is
+    // NOT what establishes that — both of those values are client-chosen.
 
     // Fetch consumer entry BEFORE removal so the cleanup hook can read
     // role_uid — and the whole pre-drop ChannelEntry, because under
