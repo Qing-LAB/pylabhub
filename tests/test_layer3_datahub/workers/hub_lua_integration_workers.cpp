@@ -238,16 +238,25 @@ void remove_tree(const fs::path &p)
 ///
 ///   A test that NEVER opens a `BrokerRequestComm` ("BRC-less" — only
 ///   exercises in-process HubHost / script lifecycle / admin paths)
-///   passes `make_curve_setup({})` to seed `hub_identity` only.
-///   No roles are seeded; `known_roles.json` is not written.  Nothing
-///   ever triggers Layer-1 ZAP admission, so an empty admission file
-///   is correct.
+///   passes `make_curve_setup({})` and gets its hub identity from a
+///   vault: `provision_hub_vault` writes it, `load_hub_keypair_fresh`
+///   reads it back through the production `HubConfig::load_keypair`.
+///   Those are the two steps a real hub boot takes (`--keygen`, then
+///   load), so a test asserting that `HubHost::startup()` succeeds is
+///   asserting it against the sequence a deployed hub actually runs
+///   (HEP-CORE-0035 §4.8).  No ROLES are seeded; `known_roles.json` is
+///   not written.  Nothing ever triggers Layer-1 ZAP admission, so an
+///   empty admission file is correct.
 ///
 ///   A test that DOES open a BRC and tries to register must:
 ///     1. List every BRC uid in `make_curve_setup({uid1, uid2, ...})`
-///        so `seed_curve_identities()` seeds the per-role seckey under
+///        so `seed_role_identities()` seeds the per-role seckey under
 ///        `role.<uid>` (HEP-CORE-0040 §172).  The BRC reads it via
-///        `keystore_name`.
+///        `keystore_name`.  Use `seed_role_identities` here, not
+///        `seed_curve_identities`: the latter seeds `hub_identity` too,
+///        which the vault already owns in this file, and `KeyStore::add`
+///        throws on the duplicate.  (`seed_curve_identities` is the right
+///        call in harnesses that own `hub_identity` themselves.)
 ///     2. Set `bcfg.keystore_name = role_keystore_name(uid)` on each
 ///        `BrokerRequestComm::Config` before `connect()`.  Default is
 ///        `"role_identity"` which the fixture does NOT seed.
@@ -305,13 +314,13 @@ int real_lua_script_on_init_on_stop_fire_and_log()
             const std::string expected_uid = cfg.identity().uid;
             ASSERT_FALSE(expected_uid.empty()) << "init_directory must have generated a hub uid";
 
-            // BRC-less path — see `write_known_roles` doc-block above
-            // for the contract.  This test only exercises in-process
-            // HubHost + script lifecycle; no client ever opens a BRC,
-            // so empty `{}` is correct and `known_roles.json` is not
-            // written.  Per-worker RAII; one fixture per subprocess.
+            // BRC-less path — see `write_known_roles` doc-block above for
+            // the contract.  No BRC client, so no roles; the hub identity
+            // comes from the vault through `load_keypair`.
+            // Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::seed_curve_identities(ks_curve_);
+            pylabhub::tests::provision_hub_vault(cfg, ks_curve_);
+            pylabhub::tests::load_hub_keypair_fresh(cfg);
 
             HubHost host(std::move(cfg));
 
@@ -394,7 +403,8 @@ int real_lua_script_admin_console_print()
             const std::string expected_uid = cfg.identity().uid;
 
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::seed_curve_identities(ks_curve_);
+            pylabhub::tests::provision_hub_vault(cfg, ks_curve_);
+            pylabhub::tests::load_hub_keypair_fresh(cfg);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
@@ -452,13 +462,13 @@ int script_syntax_error_startup_throws()
             const fs::path dir = make_lua_hub_dir("syntax", broken_lua);
 
             auto cfg = HubConfig::load_from_directory(dir.string());
-            // BRC-less path — see `write_known_roles` doc-block above
-            // for the contract.  This test only exercises in-process
-            // HubHost + script lifecycle; no client ever opens a BRC,
-            // so empty `{}` is correct and `known_roles.json` is not
-            // written.  Per-worker RAII; one fixture per subprocess.
+            // BRC-less path — see `write_known_roles` doc-block above for
+            // the contract.  No BRC client, so no roles; the hub identity
+            // comes from the vault through `load_keypair`.
+            // Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::seed_curve_identities(ks_curve_);
+            pylabhub::tests::provision_hub_vault(cfg, ks_curve_);
+            pylabhub::tests::load_hub_keypair_fresh(cfg);
 
             HubHost host(std::move(cfg));
 
@@ -512,13 +522,13 @@ int on_tick_fires_periodically_when_idle()
 
             auto cfg = HubConfig::load_from_directory(dir.string());
 
-            // BRC-less path — see `write_known_roles` doc-block above
-            // for the contract.  This test only exercises in-process
-            // HubHost + script lifecycle; no client ever opens a BRC,
-            // so empty `{}` is correct and `known_roles.json` is not
-            // written.  Per-worker RAII; one fixture per subprocess.
+            // BRC-less path — see `write_known_roles` doc-block above for
+            // the contract.  No BRC client, so no roles; the hub identity
+            // comes from the vault through `load_keypair`.
+            // Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::seed_curve_identities(ks_curve_);
+            pylabhub::tests::provision_hub_vault(cfg, ks_curve_);
+            pylabhub::tests::load_hub_keypair_fresh(cfg);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
@@ -594,13 +604,13 @@ int on_tick_catch_up_fixed_rate_with_compensation()
 
             auto cfg = HubConfig::load_from_directory(dir.string());
 
-            // BRC-less path — see `write_known_roles` doc-block above
-            // for the contract.  This test only exercises in-process
-            // HubHost + script lifecycle; no client ever opens a BRC,
-            // so empty `{}` is correct and `known_roles.json` is not
-            // written.  Per-worker RAII; one fixture per subprocess.
+            // BRC-less path — see `write_known_roles` doc-block above for
+            // the contract.  No BRC client, so no roles; the hub identity
+            // comes from the vault through `load_keypair`.
+            // Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::seed_curve_identities(ks_curve_);
+            pylabhub::tests::provision_hub_vault(cfg, ks_curve_);
+            pylabhub::tests::load_hub_keypair_fresh(cfg);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
@@ -718,13 +728,13 @@ end
             const fs::path dir = make_lua_hub_dir("read_accessors", lua_body);
 
             auto cfg = HubConfig::load_from_directory(dir.string());
-            // BRC-less path — see `write_known_roles` doc-block above
-            // for the contract.  This test only exercises in-process
-            // HubHost + script lifecycle; no client ever opens a BRC,
-            // so empty `{}` is correct and `known_roles.json` is not
-            // written.  Per-worker RAII; one fixture per subprocess.
+            // BRC-less path — see `write_known_roles` doc-block above for
+            // the contract.  No BRC client, so no roles; the hub identity
+            // comes from the vault through `load_keypair`.
+            // Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::seed_curve_identities(ks_curve_);
+            pylabhub::tests::provision_hub_vault(cfg, ks_curve_);
+            pylabhub::tests::load_hub_keypair_fresh(cfg);
 
             HubHost host(std::move(cfg));
 
@@ -790,13 +800,13 @@ end
             const fs::path dir = make_lua_hub_dir("request_shutdown", lua_body);
 
             auto cfg = HubConfig::load_from_directory(dir.string());
-            // BRC-less path — see `write_known_roles` doc-block above
-            // for the contract.  This test only exercises in-process
-            // HubHost + script lifecycle; no client ever opens a BRC,
-            // so empty `{}` is correct and `known_roles.json` is not
-            // written.  Per-worker RAII; one fixture per subprocess.
+            // BRC-less path — see `write_known_roles` doc-block above for
+            // the contract.  No BRC client, so no roles; the hub identity
+            // comes from the vault through `load_keypair`.
+            // Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::seed_curve_identities(ks_curve_);
+            pylabhub::tests::provision_hub_vault(cfg, ks_curve_);
+            pylabhub::tests::load_hub_keypair_fresh(cfg);
 
             HubHost host(std::move(cfg));
 
@@ -1066,13 +1076,13 @@ end
 )LUA";
             const fs::path dir = make_lua_hub_dir("post_event", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
-            // BRC-less path — see `write_known_roles` doc-block above
-            // for the contract.  This test only exercises in-process
-            // HubHost + script lifecycle; no client ever opens a BRC,
-            // so empty `{}` is correct and `known_roles.json` is not
-            // written.  Per-worker RAII; one fixture per subprocess.
+            // BRC-less path — see `write_known_roles` doc-block above for
+            // the contract.  No BRC client, so no roles; the hub identity
+            // comes from the vault through `load_keypair`.
+            // Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::seed_curve_identities(ks_curve_);
+            pylabhub::tests::provision_hub_vault(cfg, ks_curve_);
+            pylabhub::tests::load_hub_keypair_fresh(cfg);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
@@ -1125,13 +1135,13 @@ end
 )LUA";
             const fs::path dir = make_lua_hub_dir("augment_qm", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
-            // BRC-less path — see `write_known_roles` doc-block above
-            // for the contract.  This test only exercises in-process
-            // HubHost + script lifecycle; no client ever opens a BRC,
-            // so empty `{}` is correct and `known_roles.json` is not
-            // written.  Per-worker RAII; one fixture per subprocess.
+            // BRC-less path — see `write_known_roles` doc-block above for
+            // the contract.  No BRC client, so no roles; the hub identity
+            // comes from the vault through `load_keypair`.
+            // Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::seed_curve_identities(ks_curve_);
+            pylabhub::tests::provision_hub_vault(cfg, ks_curve_);
+            pylabhub::tests::load_hub_keypair_fresh(cfg);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());
@@ -1200,13 +1210,13 @@ end
 )LUA";
             const fs::path dir = make_lua_hub_dir("augment_nil", lua_body, "fixed_rate", 100);
             auto cfg = HubConfig::load_from_directory(dir.string());
-            // BRC-less path — see `write_known_roles` doc-block above
-            // for the contract.  This test only exercises in-process
-            // HubHost + script lifecycle; no client ever opens a BRC,
-            // so empty `{}` is correct and `known_roles.json` is not
-            // written.  Per-worker RAII; one fixture per subprocess.
+            // BRC-less path — see `write_known_roles` doc-block above for
+            // the contract.  No BRC client, so no roles; the hub identity
+            // comes from the vault through `load_keypair`.
+            // Per-worker RAII; one fixture per subprocess.
             auto ks_curve_ = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::seed_curve_identities(ks_curve_);
+            pylabhub::tests::provision_hub_vault(cfg, ks_curve_);
+            pylabhub::tests::load_hub_keypair_fresh(cfg);
 
             HubHost host(std::move(cfg));
             ASSERT_NO_THROW(host.startup());

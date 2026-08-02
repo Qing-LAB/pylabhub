@@ -21,6 +21,7 @@
 #include "../../src/scripting/python_interpreter_module.hpp"
 
 #include "curve_test_setup.h"
+#include "hub_vault_test_seed.h" // provision_hub_vault + load_hub_keypair_fresh (HEP-0035 §4.8)
 #include "log_capture_fixture.h"
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
@@ -188,17 +189,16 @@ def on_stop(api):
             const std::string expected_uid = cfg.identity().uid;
             ASSERT_FALSE(expected_uid.empty()) << "init_directory must have generated a hub uid";
 
-            // HEP-CORE-0040 §172 + HEP-CORE-0035 §4.6.5 bypass: seed
-            // the process KeyStore with a fresh hub identity before
-            // HubHost::startup() constructs BrokerService, which
-            // requires secure().keys().has("hub_identity").  The on-disk
-            // vault round-trip (Argon2id) is intentionally skipped per
-            // §4.6.5 — the L2 vault layer is covered by
-            // test_hub_config; this test exercises the broker bind +
-            // CURVE wire from KeyStore-seeded state onward.  No roles
-            // needed: this test does not drive a BRC client.
+            // Hub identity comes from a vault: `provision_hub_vault` writes
+            // it, `load_hub_keypair_fresh` reads it back through the
+            // production `HubConfig::load_keypair`.  Those are the two steps
+            // a real hub boot takes, and this test asserts that
+            // `HubHost::startup()` succeeds and binds — so it must assert it
+            // against the sequence a deployed hub runs (HEP-CORE-0040 §172,
+            // HEP-CORE-0035 §4.8).  No roles: this test drives no BRC client.
             auto curve = pylabhub::tests::make_curve_setup({});
-            pylabhub::tests::seed_curve_identities(curve);
+            pylabhub::tests::provision_hub_vault(cfg, curve);
+            pylabhub::tests::load_hub_keypair_fresh(cfg);
 
             HubHost host(std::move(cfg));
 

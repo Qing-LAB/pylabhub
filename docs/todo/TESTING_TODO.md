@@ -224,11 +224,10 @@ tests).
 Pattern-4, L2, `role_api_flexzone`, and hub_lua/hub_python **Cat-A** (`HubHost` booted
 with `make_curve_setup({})` and NO vault).
 
-**Follow-up (task #66):** Cat-A HubHost tests still fake `hub_identity` via
-`seed_curve_identities` without a vault (hub_lua ×9, `hub_python:202`) — same
-anti-pattern, larger blast radius (each would need a provisioned vault + `load_keypair`
-+ the ACL gate; reuse the #65 helpers `provision_hub_vault` / `load_hub_keypair_fresh` /
-`seed_role_identities`).  Left for a dedicated pass.
+**Follow-up (task #66): ✅ DONE 2026-08-01.** Cat-A HubHost tests now take the
+production path — `provision_hub_vault(cfg, setup)` then `load_hub_keypair_fresh(cfg)`
+— instead of pre-seeding `hub_identity`.  11 sites, not the 9 estimated here:
+hub_lua ×10, `hub_python:202`.  Verified Debug 2740/2740 + Release 2737/2737.
 
 ### ✅ `sleep_for`-ordering audit in test_hub_zmq_queue.cpp (RESOLVED 2026-07-18)
 
