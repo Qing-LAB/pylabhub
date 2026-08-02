@@ -895,6 +895,49 @@ Note the property this leans on: a registration outlives the connection
 that made it (again #93).  That is exactly what the attack exploits, so
 a test of the defence is entitled to rely on it.
 
+**When the message under test is fire-and-forget, poll on something
+else.**  The loop above waits for a reply to the hostile message, which
+works only because a REQ is answered either way.  A NOTIFY is not: it
+draws an ERROR when rejected and *silence* when accepted, so polling on
+its reply cannot distinguish "the routing id is still held" from "the
+gate is missing and the forgery went through" — and the test spends its
+whole budget proving neither.  Poll on a query that is answered in both
+outcomes (`ROLE_PRESENCE_REQ` serves), then send the message under test
+on that same client.  Keep the client that succeeded: destroying it
+releases the routing id and puts the next one back at the start of the
+same wait.
+
+#### Testing a rejection: assert the harm before the answer
+
+A test that a hostile message is refused has two things it can look at —
+the error the broker sends back, and the damage the message would have
+done.  Assert the damage FIRST, and unconditionally.
+
+The reply is the weaker of the two on its own (a gate that answers ERROR
+while the handler mutates anyway passes it), and it is actively
+misleading for fire-and-forget messages: when the defence is removed, the
+message is accepted, no reply is sent, and a test built around
+`ASSERT_TRUE(reply.has_value())` aborts there — reporting a timeout while
+the real outcome was a forged broadcast delivered to every consumer.  The
+failure names the wrong thing, and it takes the full timeout to say it.
+
+```cpp
+// Harm first: this must hold whether or not a reply ever arrives.
+auto leaked = drain_for(cons, "CHANNEL_BROADCAST_DELIVER_NOTIFY", short_budget);
+EXPECT_FALSE(leaked.has_value()) << "the refused broadcast was delivered anyway";
+
+// Then the answer, so a missing reply does not mask the assertion above.
+auto reply = sender.receive(budget);
+EXPECT_TRUE(reply.has_value());
+if (reply) EXPECT_EQ(reply->second.value("error_code", std::string{}), "...");
+```
+
+Worked examples: `Broadcast_BodyDeclaringSender_Refused` and
+`HeartbeatNotify_ProvenKeyClaimingAnotherRole_Rejected`.  Both were
+written reply-first, and the mutation check is what exposed it — which is
+the other half of the rule: a security test that has only ever passed has
+told you nothing.
+
 #### Coordination between subprocesses
 
 **The only coordination channel between subprocesses is the

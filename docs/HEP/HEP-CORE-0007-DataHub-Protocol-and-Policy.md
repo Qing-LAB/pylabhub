@@ -2145,18 +2145,32 @@ not retired:
 ```
 Direction:  Sender → broker (SEND); broker → producer + ALL consumers of the
             channel (DELIVER).
+SEND body:  { target_channel, message, data? }
+DELIVER:    { channel_name, event:"broadcast", sender_uid, message, data? }
 Trigger:    Application calls HubAPI::broadcast_channel (Lua/Python
             `broadcast_channel`), AdminService::handle_broadcast_channel, or the
-            in-process BrokerService::request_broadcast_channel; federation
-            relays a peer broadcast.
+            in-process BrokerService::request_broadcast_channel; a role calls
+            BrokerRequestComm::send_broadcast.
 Effect:     "Tell everyone working with this data channel that X happened"
             (e.g. message="start"/"stop" + optional data payload).  Distinct
             from BAND_BROADCAST_SEND_NOTIFY, which targets band membership.
-Handler:    handle_channel_broadcast_req (broker_service.cpp:6197), dispatched
-            from process_message at :1826; fans out
-            CHANNEL_BROADCAST_DELIVER_NOTIFY at :6234 (consumers) / :6250
-            (producer).
+Handler:    handle_channel_broadcast_req, dispatched from dispatch_received as
+            ValidatedChannelBroadcastSend; fans out
+            CHANNEL_BROADCAST_DELIVER_NOTIFY to consumers, then producers.
 ```
+
+**Who sent it is not in the request.**  `sender_uid` appears on the DELIVER
+side only, and the broker decides it — from the key the sending connection
+proved at handshake for a role's broadcast, or from the hub's own identity
+(operator `origin_uid`, else `self_hub_uid`) for one raised inside the hub.
+
+The field was on the SEND body until 2026-08-02 and nothing checked it, so
+any peer that completed a handshake could broadcast under any uid it liked
+and every recipient would read the result as authentic.  A SEND body that
+still carries `sender_uid` is now refused with `BODY_SCHEMA_VIOLATION`
+rather than corrected: silently re-attributing a message leaves the sender
+believing a label that was not used.  Attribution rules: HEP-CORE-0035
+§4.2.2.
 
 See HEP-CORE-0030 §9.1 for the channel-bound vs band-bound coexistence model.
 

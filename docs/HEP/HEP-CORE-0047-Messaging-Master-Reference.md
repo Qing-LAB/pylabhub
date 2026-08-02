@@ -183,8 +183,8 @@ future format/type expansion has exactly one place to change per surface.
 
 | Message | Dir | Cat | Primary HEP | Code anchor |
 |---|---|---|---|---|
-| `CHANNEL_BROADCAST_SEND_NOTIFY` (was `CHANNEL_BROADCAST_REQ`) | →B | FF | HEP-CORE-0007 / -0030 §9.1 | `handle_channel_broadcast_req` (`:6197`, dispatched `:1826`) |
-| `CHANNEL_BROADCAST_DELIVER_NOTIFY` (was `CHANNEL_BROADCAST_NOTIFY`) | B→ | FF | HEP-CORE-0007 / -0030 §9.1 | fan-out at `:6234` (consumers) / `:6250` (producer) |
+| `CHANNEL_BROADCAST_SEND_NOTIFY` (was `CHANNEL_BROADCAST_REQ`) — body `{target_channel, message, data?}`, **no sender field** | →B | FF | HEP-CORE-0007 / -0030 §9.1 / -0035 §4.2.2 | `validate_channel_broadcast_send` → `handle_channel_broadcast_req` |
+| `CHANNEL_BROADCAST_DELIVER_NOTIFY` (was `CHANNEL_BROADCAST_NOTIFY`) — carries `sender_uid`, stamped by the broker | B→ | FF | HEP-CORE-0007 / -0030 §9.1 | fan-out to consumers, then producers |
 
 ### 3.6 Broadcast — band-bound (pub/sub, HEP-CORE-0030)
 

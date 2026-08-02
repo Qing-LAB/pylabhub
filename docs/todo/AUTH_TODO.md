@@ -36,16 +36,21 @@ checklist is superseded → archived `transient-2026-07-22`). Per-operator
 sweep tests (`close_channel` ×2, `broadcast_hub_queue`) off their L3 RATIONALE
 stubs now that the admin CURVE socket + console client have landed.
 
-**🔴 OPEN — Verified peer identity (task #83, design ratified in doc
-2026-07-27; no code yet).**
-The CURVE handshake proves which key is on a connection, but nothing above
-the socket reads it: registration checks the claimed `(role_uid, zmq_pubkey)`
-pair against the vault without comparing it to the connection's verified key,
-and the inbox keys replay defence, per-sender sequence state, and
-application-visible sender attribution on the client-chosen routing id.  Net
-effect: any holder of any vault key can register, deregister, or re-endpoint
-any other role.  Data confidentiality is unaffected — the data plane is
-separately keyed — so the exposure is control-plane integrity/availability.
+**🟡 PARTLY CLOSED — Verified peer identity (task #83; design ratified
+2026-07-27).**
+The CURVE handshake proves which key is on a connection, and the broker
+control plane now reads it.  **Closed on the broker plane (2026-08-02):**
+registration decides on the proven key (#83), every post-registration
+REG-family message is bound to it (#95), and the control tier plus the
+channel broadcast are bound and attributed from it (#96 — broker_proto 7→8,
+the broadcast request no longer carries a sender).  **Still open:** the inbox
+plane, which keys replay defence, per-sender sequence state and
+application-visible sender attribution on the client-chosen routing id, and
+the roster wire shape that slice needs (`{uid, pubkey}` pairs on REG_ACK
+instead of bare keys).  Original net effect, for the record: any holder of
+any vault key could register, deregister, or re-endpoint any other role.
+Data confidentiality was unaffected — the data plane is separately keyed —
+so the exposure was control-plane integrity/availability.
 
 This is **not new design**: HEP-CORE-0035 §4.2 already specifies
 `PubkeyOrigin` / `pubkey_to_origin` as "the single structure that answers what

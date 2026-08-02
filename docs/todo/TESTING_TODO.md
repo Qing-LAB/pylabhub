@@ -91,7 +91,41 @@ guarantee.
 When proposing a future retirement: update this table FIRST, then
 update the destination task's description, then delete the test.
 
+- **🟠 #97 — `BackoffStrategyTest.NoBackoff_IsNoOp` asserts absolute wall-clock
+  overhead.**  `test_backoff_strategy.cpp:239` requires every one of 100
+  iterations to measure under 10 µs around a no-op call.  One scheduler
+  preemption between the two timestamps blows it, and this repo's workflow
+  runs ctest while cmake compiles on the other cores — so the "quiet
+  workstation" its comment assumes is not the normal condition.  Observed
+  2026-08-02: 12 µs vs the 10 µs ceiling during a sweep, green on an idle
+  re-run.  `ci_upper()` relaxes it 10× but only under `PYLABHUB_CI_BUILD`.
+  What the test means is "NoBackoff does not sleep", which is a relative
+  claim; see the task for the three candidate shapes.  `NoBackoff_
+  IgnoresIteration` (line 245) has the same exposure.
+
 ## Recent Completions
+
+- **2026-08-02 — #96 broadcast-forgery and heartbeat-forgery pinned; the
+  mutation check rewrote both tests.**  Three Pattern-4 cases:
+  `Broadcast_AttributedToProvenKey_NotRoutingId` (a peer proving Alice's key
+  under Bob's routing id is fanned out as Alice),
+  `Broadcast_BodyDeclaringSender_Refused`, and
+  `HeartbeatNotify_ProvenKeyClaimingAnotherRole_Rejected`.
+  **The lesson is about fire-and-forget rejection tests.**  Both new cases were
+  first written to wait for the ERROR reply and assert on it.  Under mutation
+  they did fail — but on "no reply arrived", after burning the full 60 s
+  budget, because a message that is ACCEPTED draws no reply at all.  The test
+  reported a timeout while the real outcome was a forged broadcast delivered
+  and forged metrics stored on the victim's presence.  Rewritten to assert the
+  HARM first and unconditionally (was it delivered? did the state change?),
+  with the reply checked afterwards under `EXPECT`, both now fail in seconds
+  and name what actually went wrong.  Rule: when the accepted path is silent,
+  never gate a rejection test on the rejection message — the assertion order
+  decides whether a failure is legible.
+  Second, smaller: `poll_until` for a connection whose routing id is still
+  being released must poll on something answered in BOTH outcomes (a query),
+  never on the message under test; and the winning client has to be kept —
+  dropping it releases the id and the next attempt starts the wait over.
 
 - **2026-08-02 — #95 channel-teardown attack pinned, side effect and all.**
   `DeregReq_ProvenKeyTargetingAnotherRole_Rejected` drives a valid role using

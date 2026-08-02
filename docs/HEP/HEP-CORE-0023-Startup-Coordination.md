@@ -737,9 +737,12 @@ inside the uid value per HEP-CORE-0033 §G2.2.0b — flavor-specific
 field names (`consumer_uid`, `sender_uid` on band-broadcast, bare
 `uid` on heartbeat) are redundant and were retired in broker_proto
 4→5.  Federation peer-context `sender_uid` (HUB_TARGETED_MSG,
-hub-emitted CHANNEL_BROADCAST_SEND_NOTIFY) carries a `peer.uid` (=
-`hub.<name>.<unique>`) and is a separate axis; that field name is
-preserved.  Inbox-message `sender_uid` (`PyInboxMsg.sender_uid`,
+HUB_RELAY_MSG) carries a `peer.uid` (= `hub.<name>.<unique>`) and is a
+separate axis; that field name is preserved.  This once also listed
+"hub-emitted CHANNEL_BROADCAST_SEND_NOTIFY", which no hub has ever
+sent — hub-to-hub broadcast travels as HUB_RELAY_MSG (HEP-CORE-0022
+§6.2), and that message's request form now carries no sender at all
+(HEP-CORE-0035 §4.2.2).  Inbox-message `sender_uid` (`PyInboxMsg.sender_uid`,
 `plh_inbox_msg_t.sender_uid`, Lua `msg.sender_uid`) identifies the
 authoring producer of an inbox payload — semantically distinct
 from the local role's `role_uid` — and is also preserved.

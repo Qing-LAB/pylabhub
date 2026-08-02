@@ -561,9 +561,10 @@ that was tried and found wanting.**
    principal so it can compare for itself invites every call site to compare
    slightly differently — a forgotten kind test, a laxer string rule, a missing
    absent-case — and it returned a pointer into a snapshot the caller had to
-   remember to keep alive.  `local_role_uid` is the one query returning an
-   identity, because attribution genuinely needs a name (§4.2.2, inbox row);
-   it returns the uid by value and nothing else.
+   remember to keep alive.  `attribute_sender` is the one query returning an
+   identity, because attribution genuinely needs a name (§4.2.2); it returns
+   the uid by value and nothing else, alongside the verdict that says whether
+   there is a name at all.
 
 4. **The roster carries `{uid, pubkey}` pairs, not bare keys.**  A role that
    receives only keys can see that a message came from some key and has no way
@@ -697,15 +698,30 @@ extends naturally to identity.
 
 #### 4.2.2 What each plane does with the principal
 
-One mechanism, four consumers.  The point of the index is that these
-stop being four different notions of "who sent this."
+One mechanism, five consumers.  The point of the index is that these
+stop being five different notions of "who sent this."
 
 | Plane | Uses the principal for |
 |---|---|
 | Role registration | The claimed `role_uid` must be the principal's own subject; the principal's key is what gets recorded on the role's entry and mirrored into the per-channel allowlist |
+| Post-registration control | Every message acting under a role's name — deregistration, endpoint update, applied-auth, heartbeat, band join/leave/broadcast — must come from the connection that owns that name |
+| Message attribution | The name the broker STAMPS on a message it forwards, where nobody claimed one: the channel-broadcast fan-out's `sender_uid` |
 | Inbox messaging | The sender identity delivered to the application, the replay-guard key, and the per-sender sequence state (HEP-CORE-0027 §3.6, §8) |
 | Admin console | The *captured key only* — the admin plane is deliberately not key-gated, so an operator resolves to no index entry.  The session binds to the connection's verified key at establishment, and later commands must present the same one (HEP-CORE-0033 §11) |
 | Federation ingress | Classification of the link as `FederationPeer`, which is the precondition for any delegated identity (§4.3) |
+
+**Claiming and attributing are the same question asked two ways.**  A
+message that names its sender is asking "is this claim true?" and gets a
+verdict; a message that names nobody is asking "who is this?" and gets a
+name.  Both resolve the same key through the same table
+(`check_role_ownership` / `attribute_sender`), so a principal cannot be
+refused as a claimant and accepted as an author, or the reverse.
+
+**A message the broker cannot attribute is refused, not sent anonymously.**
+Recipients read a stamped sender as fact.  An unnameable connection —
+unattested, unknown key, or a federation peer, which relays identities other
+than its own and so is never a local author — yields no name, and no name
+means no delivery.
 
 **Threading.** Read from the ZAP pump and from the handler paths.  It is
 never mutated after publication: a roster change builds a fresh authority and

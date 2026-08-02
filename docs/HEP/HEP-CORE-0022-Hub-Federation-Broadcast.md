@@ -261,7 +261,13 @@ Frame: HUB_RELAY_MSG
   originator_uid    string   UID of the hub that originated the broadcast
   msg_id            string   "<originator_uid>:<sequence>" — dedup key
   event             string   Original event string (from CHANNEL_BROADCAST_SEND_NOTIFY)
-  sender_uid        string   Role UID that sent the original notification
+  sender_uid        string   Role UID that sent the original notification, as
+                             established by the ORIGINATING hub from that
+                             sender's proven key (HEP-CORE-0035 §4.2.2).  The
+                             receiving hub inherits this name on the
+                             originator's word — which is what makes a peer
+                             link a delegation of identity, and why a peer is
+                             a distinct principal kind (§4.3)
   payload           bytes    Original payload (if any)
 ```
 
@@ -323,7 +329,8 @@ sequenceDiagram
 
     Note over HA,HB: Hub B has connected to Hub A<br/>channel "lab.bridge.raw" is in relay list
 
-    C->>HA: CHANNEL_BROADCAST_SEND_NOTIFY {channel, sender_uid, event, data}
+    C->>HA: CHANNEL_BROADCAST_SEND_NOTIFY {channel, message, data}
+    HA->>HA: sender_uid := the role whose key C proved<br/>(HEP-CORE-0035 §4.2.2 — never taken from the body)
     HA->>PA: CHANNEL_EVENT_NOTIFY {event, sender_uid, data}<br/>(local delivery)
     HA->>HA: Is "lab.bridge.raw" in Hub B's relay_channels?  YES
     HA->>HB: HUB_RELAY_MSG {relay=true, msg_id="HUB-A:1",<br/>channel, event, sender_uid, data}
