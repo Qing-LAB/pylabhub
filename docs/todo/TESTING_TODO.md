@@ -93,6 +93,28 @@ update the destination task's description, then delete the test.
 
 ## Recent Completions
 
+- **2026-08-02 — #83 attested-identity coverage gap closed, and a mutation
+  check to prove it.**  Two Pattern-4 cases in
+  `test_pattern4_broker_protocol.cpp` drive a live peer that completes a real
+  CURVE handshake with Alice's key and then registers as Bob: announcing
+  Bob's key rejects `PUBKEY_MISMATCH`, announcing Alice's own rejects
+  `IDENTITY_MISMATCH`.  Both roles sit in the roster, so neither rejection can
+  come from an unknown key — the only thing separating them is which key the
+  connection proved.  A positive control (Alice admitted as Alice) makes the
+  rejection specific rather than blanket.
+  **The tests were verified by mutation, not by passing.**  Reverting the gate
+  to the old roster lookup makes both fail, and the failure output is the
+  broker answering `REG_ACK … "Producer registered successfully"` to the
+  impersonator.  Worth repeating for any security test: a green run proves
+  nothing until the test has been seen to fail against the defect.
+  L1 gate tests were re-shaped to match what each layer can observe —
+  `AttestedKey` is unforgeable by construction (its only factory reads a
+  proven key off a live ZAP-armed socket), so L1 scripts the verdict and pins
+  the verdict→reject mapping plus argument forwarding, L2 drives real
+  handshakes, L3 drives the whole path.  Frame-shape suites hand parse an
+  unarmed socket through one documented helper rather than repeating the
+  justification at each call site.
+
 - **2026-07-26 — #74 objective peer counts (L4 e2e + regression re-pin).**
   Extended `ZmqE2E_MultiProducer_TwoAuthorized` (fan-in 3P→1C) to assert every
   role — the consumer AND both DIALING producers — reads `producer_count=2
