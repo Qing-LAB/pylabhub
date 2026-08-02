@@ -1882,8 +1882,7 @@ TEST_F(Pattern4BrokerProtocolTest, DeregReq_ProvenKeyTargetingAnotherRole_Reject
     }
 
     // Independent observer, on its own identity — the tier that may
-    // legitimately ask about another role.  Used twice: to establish that
-    // Bob is registered before the attack, and to check he survived it.
+    // legitimately ask about another role.
     auto observer = make_wire_client(ctx, setup, querier);
     const auto bob_is_present = [&]() -> bool
     {
@@ -1895,8 +1894,6 @@ TEST_F(Pattern4BrokerProtocolTest, DeregReq_ProvenKeyTargetingAnotherRole_Reject
         return resp.has_value() && resp->value("present", false);
     };
 
-    // Premise — and the round trip that lets the broker's ROUTER observe
-    // Bob's disconnect before the attacker claims his routing id.
     ASSERT_TRUE(bob_is_present()) << "Bob must be registered, or the attack below proves nothing";
 
     // Alice's key on the socket; Bob's uid everywhere the client controls.
@@ -1908,21 +1905,32 @@ TEST_F(Pattern4BrokerProtocolTest, DeregReq_ProvenKeyTargetingAnotherRole_Reject
     c.client_seckey = alice_kp.secret_z85;
     c.client_role_uid = bob;
 
-    {
-        BrokerWireClient attacker(ctx, c);
-        nlohmann::json dereg;
-        dereg["channel_name"] = channel;
-        dereg["role_uid"] = bob;
+    nlohmann::json dereg;
+    dereg["channel_name"] = channel;
+    dereg["role_uid"] = bob;
 
-        attacker.send("DEREG_REQ", dereg);
-        auto reply = attacker.receive(milliseconds{pylabhub::kLongTimeoutMs});
-        ASSERT_TRUE(reply.has_value()) << "no reply to hostile DEREG_REQ";
-        EXPECT_EQ(reply->first, "ERROR")
-            << "Alice's key MUST NOT deregister Bob; got msg_type=" << reply->first
-            << " body=" << reply->second.dump();
-        EXPECT_EQ(reply->second.value("error_code", std::string{}), "IDENTITY_MISMATCH")
-            << "body=" << reply->second.dump();
-    }
+    // The broker's ROUTER releases Bob's routing id asynchronously after his
+    // disconnect, and until it does it drops this client's frames.  Poll the
+    // condition that actually has to hold — the hostile request reaches the
+    // broker and is answered — instead of any proxy for it.  A fresh client
+    // per attempt also draws a fresh nonce, so retries are not replays.
+    std::optional<std::pair<std::string, nlohmann::json>> reply;
+    ASSERT_TRUE(pylabhub::tests::helper::poll_until(
+        [&]
+        {
+            BrokerWireClient attacker(ctx, c);
+            attacker.send("DEREG_REQ", dereg);
+            reply = attacker.receive(milliseconds{pylabhub::kShortTimeoutMs});
+            return reply.has_value();
+        },
+        milliseconds{pylabhub::kLongTimeoutMs}))
+        << "hostile DEREG_REQ never reached the broker";
+
+    EXPECT_EQ(reply->first, "ERROR")
+        << "Alice's key MUST NOT deregister Bob; got msg_type=" << reply->first
+        << " body=" << reply->second.dump();
+    EXPECT_EQ(reply->second.value("error_code", std::string{}), "IDENTITY_MISMATCH")
+        << "body=" << reply->second.dump();
 
     // Side effect, not just the reply.  A gate that returned an error while
     // the handler still dropped the producer would satisfy the assertion

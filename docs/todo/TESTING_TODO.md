@@ -106,9 +106,15 @@ update the destination task's description, then delete the test.
   Test-design note now in `README_testing.md` § Pattern 4 "One routing id, one
   live connection": a ROUTER drops a second peer on an in-use routing id, and
   any test of "acting under another role's identity" needs that collision by
-  construction — so the victim releases first and a `ROLE_PRESENCE_REQ` round
-  trip on a third identity orders the two.  First attempt at this test spent
-  60 s timing out on exactly that.
+  construction — so the victim must release first, and the wait is
+  `poll_until` on the wire condition (does the hostile request get answered).
+  First attempt spent 60 s timing out on the collision; the second "fixed" it
+  with a round trip on a THIRD connection, which is not a barrier at all — a
+  reply there says the broker handled that message, not that it processed the
+  disconnect ahead of it.  It passed by coincidence.  Two lessons, both already
+  rules: scan `tests/test_framework/` before hand-rolling (`poll_until` lives
+  in `test_sync_utils.h`), and a "barrier" that does not wait on the exact
+  condition is not a barrier.
 
 - **2026-08-02 — #83 attested-identity coverage gap closed, and a mutation
   check to prove it.**  Two Pattern-4 cases in

@@ -845,36 +845,55 @@ the test harness, where transient CI noise is a known concern.
 
 #### One routing id, one live connection
 
-A ROUTER refuses a second peer that presents a routing id already in
-use — the newcomer's messages are dropped, and the test sees a silent
+A ROUTER refuses a second peer presenting a routing id already in use —
+the newcomer's frames are dropped, and the test sees a silent
 `receive()` timeout rather than an error.
 
-This bites a specific and important shape of test: one where a client
-must present ANOTHER role's uid as its routing id, because the gate
-under test only runs after `gate_dealer_identity_consistency` has
-compared the routing id to the body's `role_uid`.  Any test of "a peer
-acting under someone else's identity" needs that collision by
-construction.
+This bites one important shape of test: a client that must present
+ANOTHER role's uid as its routing id, because the gate under test only
+runs after `gate_dealer_identity_consistency` has compared the routing
+id to the body's `role_uid`.  Any test of "a peer acting under someone
+else's identity" needs that collision by construction.  So the victim
+must release its connection first — scope the client so its destructor
+runs.
 
-The victim must therefore RELEASE its connection before the second
-client claims that routing id — scope the first client so its
-destructor runs.  Ordering the two is a real synchronization problem,
-and the answer is the usual one: not a sleep, but a round trip.  Send
-something on a THIRD connection with its own identity and wait for the
-reply; the broker cannot answer it without having already processed
-the disconnect ahead of it.  `ROLE_PRESENCE_REQ` suits this — its tier
-exists so a role may ask about a different role — and it does double
-duty as the assertion that the victim is registered at all, which is
-the premise such a test rests on.
+Release is asynchronous, and there is no event to subscribe to: ZMQ
+surfaces no disconnect notification without a socket monitor, which is
+why "disconnect is terminal" is still an open task (#93).  So there is
+nothing for `expect_log` to key on.
+
+**Use `poll_until` on the wire condition itself** — the standing rule
+(never sleep to order; block on the exact condition) applied here:
+
+```cpp
+std::optional<std::pair<std::string, nlohmann::json>> reply;
+ASSERT_TRUE(pylabhub::tests::helper::poll_until(
+    [&] {
+        BrokerWireClient attacker(ctx, cfg);   // fresh client per attempt
+        attacker.send("DEREG_REQ", body);
+        reply = attacker.receive(milliseconds{pylabhub::kShortTimeoutMs});
+        return reply.has_value();
+    },
+    milliseconds{pylabhub::kLongTimeoutMs}));
+```
+
+A fresh client per attempt also draws a fresh `client_nonce`, so retries
+are not replays.
+
+**Do not substitute a round trip on some other connection as a
+barrier.**  It looks like synchronisation and is not: a reply on a
+different connection says the broker handled *that* message, which
+implies nothing about whether it has processed the disconnect ahead of
+it.  Such a test passes by coincidence and rots the first time timing
+shifts.
 
 Worked example:
 `Pattern4BrokerProtocolTest.DeregReq_ProvenKeyTargetingAnotherRole_Rejected`
 in `test_pattern4_broker_protocol.cpp`.
 
-Note what this leans on: a registration outlives the connection that
-made it (see task #93 — "disconnect is terminal" is not enforced
-today).  That is exactly the property the attack exploits, so a test
-of the defence is entitled to rely on it.
+Note the property this leans on: a registration outlives the connection
+that made it (again #93).  That is exactly what the attack exploits, so
+a test of the defence is entitled to rely on it.
 
 #### Coordination between subprocesses
 
