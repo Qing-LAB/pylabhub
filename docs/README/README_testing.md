@@ -843,6 +843,39 @@ immediately so they can fix the config.  Silent retries would mask
 a real operator-facing problem.  The test-side retry is scoped to
 the test harness, where transient CI noise is a known concern.
 
+#### One routing id, one live connection
+
+A ROUTER refuses a second peer that presents a routing id already in
+use — the newcomer's messages are dropped, and the test sees a silent
+`receive()` timeout rather than an error.
+
+This bites a specific and important shape of test: one where a client
+must present ANOTHER role's uid as its routing id, because the gate
+under test only runs after `gate_dealer_identity_consistency` has
+compared the routing id to the body's `role_uid`.  Any test of "a peer
+acting under someone else's identity" needs that collision by
+construction.
+
+The victim must therefore RELEASE its connection before the second
+client claims that routing id — scope the first client so its
+destructor runs.  Ordering the two is a real synchronization problem,
+and the answer is the usual one: not a sleep, but a round trip.  Send
+something on a THIRD connection with its own identity and wait for the
+reply; the broker cannot answer it without having already processed
+the disconnect ahead of it.  `ROLE_PRESENCE_REQ` suits this — its tier
+exists so a role may ask about a different role — and it does double
+duty as the assertion that the victim is registered at all, which is
+the premise such a test rests on.
+
+Worked example:
+`Pattern4BrokerProtocolTest.DeregReq_ProvenKeyTargetingAnotherRole_Rejected`
+in `test_pattern4_broker_protocol.cpp`.
+
+Note what this leans on: a registration outlives the connection that
+made it (see task #93 — "disconnect is terminal" is not enforced
+today).  That is exactly the property the attack exploits, so a test
+of the defence is entitled to rely on it.
+
 #### Coordination between subprocesses
 
 **The only coordination channel between subprocesses is the

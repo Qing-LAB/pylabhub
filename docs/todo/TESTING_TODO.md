@@ -93,6 +93,23 @@ update the destination task's description, then delete the test.
 
 ## Recent Completions
 
+- **2026-08-02 — #95 channel-teardown attack pinned, side effect and all.**
+  `DeregReq_ProvenKeyTargetingAnotherRole_Rejected` drives a valid role using
+  its own key to deregister a different role.  Mutation-checked: without the
+  ownership gate the broker replies `CHANNEL_CLOSING_NOTIFY`
+  `reason="producer_deregistered"` and the victim is gone.
+  **The reply assertion alone would not have been enough.**  A gate that
+  returned an error while the handler still dropped the producer passes a
+  rejection-only check and loses the channel anyway, so the test re-queries
+  the victim afterwards and requires him still present.  Assert the state, not
+  just the answer.
+  Test-design note now in `README_testing.md` § Pattern 4 "One routing id, one
+  live connection": a ROUTER drops a second peer on an in-use routing id, and
+  any test of "acting under another role's identity" needs that collision by
+  construction — so the victim releases first and a `ROLE_PRESENCE_REQ` round
+  trip on a third identity orders the two.  First attempt at this test spent
+  60 s timing out on exactly that.
+
 - **2026-08-02 — #83 attested-identity coverage gap closed, and a mutation
   check to prove it.**  Two Pattern-4 cases in
   `test_pattern4_broker_protocol.cpp` drive a live peer that completes a real
