@@ -178,6 +178,85 @@ is not attempted here.
 
 ---
 
+## Spot-validation of findings already marked ✅ FIXED
+
+52 resolution notes exist across `REVIEW_FullSystem`; every one is
+self-reported and none had been independently checked.  Verified by reading
+the code and the governing contract, **not** by confirming a symbol exists —
+a symbol's presence says nothing about whether it is reached or whether it
+does what the HEP requires.
+
+Triaged by stakes.  Depth is recorded per finding so this section cannot be
+read as more confident than it is.
+
+### `[high/risk-error]` shared ReplayGuard with an attacker-controllable clock (#67) — **CLAIM HOLDS**
+
+Reviewed in full against HEP-0027 §3.6 (I-REPLAY-BOUND).  Four independent
+properties, three of them stronger than the finding asked for:
+
+1. **The attack is structurally impossible, not merely avoided.**
+   `check_and_record(identity, nonce, window_ms)` takes **no timestamp
+   parameter at all** (`replay_guard.hpp:85`).  The reference time is read
+   from `clock_()` inside the lock.  A caller cannot supply the reference
+   time even by mistake — which is what the HEP means by "deliberately no
+   per-call timestamp argument".
+2. **The one seam is genuinely test-only.**  The `ClockFn` constructor is the
+   sole way to influence the clock; grepping every construction site in
+   `src/` outside the header returns **nothing**, so production never injects
+   one.  The header's claim that "production never points at client input" is
+   a fact, not an aspiration.
+3. **The window ≥ 2 × skew invariant holds on all three planes.**  Inbox:
+   skew 30 s, window `2 * kInboxReplaySkewMs`.  Admin: skew 30 s, window
+   `2 * kReplaySkewMs`.  REG: skew 30 s, window 60 s.
+4. **Fail-closed beyond the finding.**  Empty identity or nonce returns
+   `false` — a caller that cannot name the sender is rejected rather than
+   admitted.  Nothing required this; it is the right default.
+
+### NEW — the REG plane states its replay invariant in a comment; the other two make it structural
+
+Found while verifying property 3 above; **not** part of the original finding.
+
+The inbox and admin planes derive the window from the skew:
+
+    kInboxReplayWindowMs = 2 * kInboxReplaySkewMs;   // hub_inbox_queue.cpp:190
+    kReplayWindowMs      = 2 * kReplaySkewMs;        // admin_service.cpp:363
+
+The REG plane sets two independent literals and explains the relationship in
+a comment (`broker_service.cpp:7062-7071`):
+
+    context.skew_tolerance_ms = 30'000ULL;
+    // I-REPLAY-BOUND ... nonce_window_ms MUST be >= 2 * skew_tolerance_ms
+    context.nonce_window_ms   = 60'000ULL;
+
+The values are correct today.  But raising `skew_tolerance_ms` to 45 s
+silently breaks I-REPLAY-BOUND — window becomes 60 s where 90 s is required,
+a late-but-skew-valid replay finds its nonce already pruned, and it is
+admitted.  No compile error, no test failure, and the comment that states the
+rule sits two lines above the literal that violates it.
+
+This is the codebase's own "make it structural, not conventional" principle,
+applied unevenly across three planes that share one invariant.  Fix is one
+line: derive the window from the skew as the other two do.
+
+**Severity: low today, latent.**  Nothing is wrong now; the guard rail is
+missing, not the behaviour.
+
+### Depth actually achieved
+
+| Finding | Depth |
+|---|---|
+| ReplayGuard clock (#67) | **Full** — code + HEP-0027 §3.6 + all three call sites |
+| The other 51 ✅ notes | **NOT VERIFIED** |
+
+51 resolution notes remain unchecked, including the `[high/risk-error]` dead
+identity/authority validators (#68), the checksum-contract drift, and the
+resource-cleanup findings.  #68's note claims four validators are "gone or
+armed" across three subsystems and names four production call sites; that one
+deserves the same treatment as the ReplayGuard finding and did not get it
+here.
+
+---
+
 ## Carried forward
 
 Two findings survive validation and are genuinely open, both LOW:
@@ -194,6 +273,11 @@ Two findings survive validation and are genuinely open, both LOW:
 - **O3** — the three forwarders are real, but inlining 30 call sites to remove
   a one-line seam is a judgement call, not a defect. Recorded, not
   recommended.
+
+- **NEW** — derive the REG plane's `nonce_window_ms` from
+  `skew_tolerance_ms` instead of restating it as a literal, matching the
+  inbox and admin planes.  One line; removes a silent way to break
+  I-REPLAY-BOUND.
 
 None is scheduled. They go to the owner as candidates, not as plan.
 
