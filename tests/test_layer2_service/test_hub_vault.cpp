@@ -16,6 +16,7 @@
 #include "utils/uuid_utils.hpp"
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <cctype>
 #include <filesystem>
@@ -355,6 +356,138 @@ TEST_F(HubVaultTest, DifferentHubUidProducesDifferentCiphertext)
     EXPECT_THROW(HubVault::open(dir_b / "vault" / "hub.vault", uid_a, kPassword),
                  std::runtime_error)
         << "Cross-uid open should fail (wrong KDF salt)";
+}
+
+// ============================================================================
+// known_roles document (HEP-CORE-0035 §4.8)
+// ============================================================================
+//
+// The encrypted vault is the authoritative home of the ZAP allowlist.  These
+// tests pin the vault's half of that contract — bootstrap state, in-memory
+// vs. on-disk mutation, and survival across a save/reopen cycle — at the
+// vault seam, where a vault regression cannot be confused with a CLI one.
+// The document's SCHEMA belongs to `KnownRolesStore`; the vault carries it
+// opaquely, so these tests deliberately assert on bytes in and bytes out.
+
+namespace
+{
+
+// A roster in the shape `KnownRolesStore::to_json` emits (known_roles.hpp
+// file-format block).  The vault never parses it — a faithful shape is used
+// so the test carries what production actually stores, not a placeholder.
+nlohmann::json sample_roster()
+{
+    return nlohmann::json{
+        {"version", 1},
+        {"roles", nlohmann::json::array({nlohmann::json{
+                      {"name", "lab.daq.sensor1"},
+                      {"uid", "prod.sensor.uid12345678"},
+                      {"role", "producer"},
+                      {"pubkey_z85", "rq:rZbW}gcC-<hV$4ZhF+t)MvA0MMk?e^kD^0BvT"}}})}};
+}
+
+} // namespace
+
+TEST_F(HubVaultTest, FreshVault_HasEmptyKnownRoles_DenyAllBootstrap)
+{
+    // §4.8.4: a newly created vault admits nobody.  If create() ever seeded a
+    // non-empty roster, a hub would boot already trusting keys the operator
+    // never added.
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
+
+    EXPECT_TRUE(v.known_roles().is_object())
+        << "known_roles must be a JSON object on a fresh vault";
+    EXPECT_TRUE(v.known_roles().empty())
+        << "a fresh vault must admit no roles (§4.8.4 deny-all bootstrap)";
+
+    // The same must hold after a round trip through the file — the bootstrap
+    // state is what a hub actually reads on its first start, not merely what
+    // create() returned in memory.
+    HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword);
+    EXPECT_TRUE(reopened.known_roles().empty())
+        << "deny-all bootstrap did not survive create → open";
+}
+
+TEST_F(HubVaultTest, SetKnownRoles_WithoutSave_DoesNotReachDisk)
+{
+    // set_known_roles() is documented as in-memory only.  Pinning it matters
+    // because the CLI flow is open → set → save: if set() silently persisted,
+    // a command that failed validation after mutating would still have
+    // changed the allowlist on disk.
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
+    v.set_known_roles(sample_roster());
+
+    EXPECT_FALSE(v.known_roles().empty()) << "set_known_roles did not update memory";
+
+    HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword);
+    EXPECT_TRUE(reopened.known_roles().empty())
+        << "set_known_roles reached disk without save() — a mutation that was "
+           "never committed is now live in the allowlist";
+}
+
+TEST_F(HubVaultTest, KnownRoles_SurvivesSaveAndReopen)
+{
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
+    const nlohmann::json roster = sample_roster();
+    v.set_known_roles(roster);
+    v.save(vault_path_, hub_uid_, kPassword);
+
+    // Simulate the hub starting in a new process against the saved vault.
+    HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword);
+    EXPECT_EQ(reopened.known_roles(), roster)
+        << "the roster came back different from the one saved";
+}
+
+TEST_F(HubVaultTest, Save_PreservesKeypairAndAdminToken)
+{
+    // save() rewrites the whole payload to persist a known_roles change.  The
+    // keypair and token must ride through untouched — regenerating them would
+    // silently invalidate every role's pinned server key and the admin's
+    // token on an unrelated allowlist edit.
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
+    const std::string expected_pubkey{v.broker_curve_public_key()};
+    const std::string expected_seckey{v.broker_curve_secret_key()};
+    const std::string expected_token{v.admin_token()};
+
+    v.set_known_roles(sample_roster());
+    v.save(vault_path_, hub_uid_, kPassword);
+
+    HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword);
+    EXPECT_EQ(reopened.broker_curve_public_key(), expected_pubkey)
+        << "save() changed the broker public key";
+    EXPECT_EQ(reopened.broker_curve_secret_key(), expected_seckey)
+        << "save() changed the broker secret key";
+    EXPECT_EQ(reopened.admin_token(), expected_token) << "save() changed the admin token";
+}
+
+TEST_F(HubVaultTest, KnownRoles_IsStoredInsideTheEncryptedPayload)
+{
+    // §4.8 makes the ENCRYPTED vault authoritative for the allowlist.  The
+    // preceding round-trip tests would all still pass if the roster were
+    // written beside the vault in plaintext, so this is the test that pins
+    // WHERE it lives: after save(), the roster's contents must not be
+    // readable in the vault file, and no plaintext sidecar may appear.
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
+    v.set_known_roles(sample_roster());
+    v.save(vault_path_, hub_uid_, kPassword);
+
+    std::ifstream ifs(vault_path_, std::ios::binary);
+    const std::string raw_bytes((std::istreambuf_iterator<char>(ifs)),
+                                std::istreambuf_iterator<char>());
+
+    EXPECT_EQ(raw_bytes.find("prod.sensor.uid12345678"), std::string::npos)
+        << "a role uid appears in plaintext in hub.vault — the allowlist is not "
+           "inside the encrypted payload";
+    EXPECT_EQ(raw_bytes.find("lab.daq.sensor1"), std::string::npos)
+        << "a role name appears in plaintext in hub.vault — the allowlist is not "
+           "inside the encrypted payload";
+
+    for (const auto &entry : fs::directory_iterator(vault_path_.parent_path()))
+    {
+        EXPECT_EQ(entry.path().filename(), vault_path_.filename())
+            << "save() wrote a second file beside the vault; the encrypted vault "
+               "is the only sanctioned home for the allowlist (§4.8)";
+    }
 }
 
 // ============================================================================

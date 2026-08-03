@@ -229,8 +229,8 @@ TEST_F(LoggerTest, StressLog)
     ASSERT_TRUE(read_file_contents(log_path.string(), log_contents));
     fmt::print(stderr, "Final log file size: {} bytes\n", log_contents.size());
     // fmt::print(stderr, "Final log file content:\n{}\n", log_contents);
-    fmt::print(stderr, "Final log lines that contain [INFO  ]",
-               count_lines(log_contents, "[INFO]"));
+    fmt::print(stderr, "Final log lines that contain [INFO  ]: {}\n",
+               count_lines(log_contents, "[INFO  ]"));
     ASSERT_EQ(count_lines(log_contents, "[INFO  ]"), PROCS * MSGS_PER_PROC);
 }
 

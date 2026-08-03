@@ -13,9 +13,9 @@
  *
  * Real production wiring per feedback_test_layering_and_no_mocks.md:
  * real InboxQueue / InboxClient classes, real ZMQ context via the
- * production lifecycle module.  Test #6 (`bad_magic_drops`) uses raw
- * `zmq_ctx_new()` + `zmq_socket()` to fabricate a malformed wire
- * frame — that is NOT a mock; it is the same underlying ZMQ library
+ * production lifecycle module.  Test #6 (`wrong_frame_count_drops`) uses
+ * raw `zmq_ctx_new()` + `zmq_socket()` to fabricate a malformed wire
+ * envelope — that is NOT a mock; it is the same underlying ZMQ library
  * producing a non-production wire shape so the receiver's drop path
  * can be exercised.  Legitimate test fabrication for error-path
  * coverage.
@@ -402,9 +402,21 @@ int sender_uid_is_preserved()
         "hub_inbox_queue::sender_uid_is_preserved", PLH_INBOX_MODS);
 }
 
-// ─── Test #6: BadMagic_Drops ────────────────────────────────────────────────
-
-int bad_magic_drops()
+// ─── Test #6: WrongFrameCount_Drops ─────────────────────────────────────────
+//
+// Scope: the receiver's ENVELOPE-SHAPE guard, not the payload codec.
+// `recv_one` requires the four-frame envelope (identity, delimiter, replay
+// metadata, payload); anything else is dropped and counted before any byte
+// of the payload is parsed.
+//
+// Frame MAGIC is deliberately NOT tested here.  Magic lives in
+// `wire_detail::decode_frame`, the single decoder the inbox and the data
+// plane share, and it is pinned at L1 by `ZmqWireFrameTest.RejectsWrongMagic`
+// — directly on that function, where a wrong magic is the only variable.
+// Re-testing it through a live CURVE socket would duplicate that pin while
+// being unable to observe it: the shape guard below rejects a fabricated
+// frame long before the decoder runs.
+int wrong_frame_count_drops()
 {
     return run_gtest_worker(
         []
@@ -419,7 +431,7 @@ int bad_magic_drops()
             ASSERT_TRUE(q->start());
             pylabhub::utils::security::ZapPumpThread inbox_pump;
 
-            // Raw ZMQ context + DEALER to fabricate a malformed frame.
+            // Raw ZMQ context + DEALER to send a wrongly-shaped envelope.
             // Not a mock — same ZMQ library, non-production wire shape.
             void *ctx = zmq_ctx_new();
             ASSERT_NE(ctx, nullptr);
@@ -427,11 +439,11 @@ int bad_magic_drops()
             void *sock = zmq_socket(ctx, ZMQ_DEALER);
             ASSERT_NE(sock, nullptr);
 
-            const std::string id = "BAD-MAGIC-SENDER";
+            const std::string id = "MALFORMED-FRAME-SENDER";
             admit_sender(*q, inbox_keys);
             zmq_setsockopt(sock, ZMQ_IDENTITY, id.c_str(), id.size());
             // The receiver is CURVE-only.  This worker fabricates a bad
-            // PAYLOAD; it is not testing an unauthenticated peer, so it
+            // ENVELOPE; it is not testing an unauthenticated peer, so it
             // presents a genuine admitted identity and lets the frame itself
             // be the malformed thing.
             zmq_setsockopt(sock, ZMQ_CURVE_PUBLICKEY, inbox_keys.send_pub.c_str(), 40);
@@ -445,12 +457,18 @@ int bad_magic_drops()
 
             std::this_thread::sleep_for(ms{50}); // let connect establish
 
-            const char bad_payload[] = "BAAD";
-            zmq_send(sock, bad_payload, sizeof(bad_payload) - 1, 0);
+            // One frame from a DEALER reaches the ROUTER as [identity,
+            // payload] — two frames, where the envelope requires four
+            // (identity, delimiter, replay metadata, payload).  The
+            // production sender never emits this shape; only a hand-rolled
+            // socket can.
+            const char lone_frame[] = "BAAD";
+            zmq_send(sock, lone_frame, sizeof(lone_frame) - 1, 0);
 
             const auto *item = q->recv_one(ms{200});
-            EXPECT_EQ(item, nullptr);
-            EXPECT_GT(q->recv_frame_error_count(), uint64_t{0});
+            EXPECT_EQ(item, nullptr) << "a two-frame envelope was accepted as a message";
+            EXPECT_GT(q->recv_frame_error_count(), uint64_t{0})
+                << "the wrongly-shaped envelope was dropped without being counted";
 
             zmq_close(sock);
             zmq_ctx_term(ctx);
@@ -459,7 +477,141 @@ int bad_magic_drops()
             log_cap.AssertNoUnexpectedLogWarnError();
             log_cap.Uninstall();
         },
-        "hub_inbox_queue::bad_magic_drops", PLH_INBOX_MODS);
+        "hub_inbox_queue::wrong_frame_count_drops", PLH_INBOX_MODS);
+}
+
+// ─── recv_gap_count: a slow receiver makes the sender drop, and the ─────────
+//     receiver learns exactly how many it missed.
+//
+// This is the production scenario the counter exists for, reproduced with
+// production classes only: the receiver stops draining, its queue fills, and
+// `InboxClient::send` then DROPS rather than parking the caller (its
+// documented contract — 255 on "receiver's queue is at its high-water mark").
+//
+// The hole is what makes the gap observable.  `send()` consumes a sequence
+// number BEFORE it attempts the write, so a dropped send burns a seq that
+// never reaches the wire.  When the receiver drains and the next message
+// lands, its seq is ahead of what the receiver expected by exactly the number
+// of drops — which is why this test can assert an exact count rather than
+// "greater than zero".
+//
+// No frames are fabricated here.  An earlier reading of this gap concluded it
+// was untestable because a hand-built frame cannot carry a valid schema tag
+// (`compute_inbox_schema_tag` is file-static).  That was the wrong question:
+// the counter is not reached by forging a frame, it is reached by causing a
+// real loss.
+
+int gap_count_tracks_dropped_sends()
+{
+    return run_gtest_worker(
+        []
+        {
+            LogCaptureFixture log_cap;
+            log_cap.Install();
+            // The drop path is edge-triggered WARN by design ("send:blocked").
+            log_cap.ExpectLogWarn("send:blocked");
+
+            // A small receive backlog is what makes the sender start dropping
+            // within a bounded number of sends; nothing about the contract
+            // depends on the exact value.  Do NOT lower this to 1 — libzmq
+            // carries the ZMTP handshake through the same pipe, and a
+            // one-message backlog starves it, so the connection never
+            // establishes and the test measures nothing (observed 2026-08-02).
+            auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema(), "aligned",
+                                         /*rcvhwm=*/16);
+            ASSERT_NE(q, nullptr);
+            const auto inbox_keys = arm_inbox_queue(*q, "test.inbox");
+            ASSERT_TRUE(q->start());
+            pylabhub::utils::security::ZapPumpThread inbox_pump;
+
+            auto c = InboxClient::connect_to(q->actual_endpoint(), "prod.gap.uid000000001",
+                                             uint32_schema());
+            ASSERT_NE(c, nullptr);
+            admit_and_arm_client(*q, *c, inbox_keys);
+            ASSERT_TRUE(c->start());
+
+            // Fire-and-forget so the loop is bounded by the socket, not by ACK
+            // round-trips.  The receiver deliberately never calls recv_one
+            // here, so the transport backs up and sends start failing.
+            auto send_value = [&](uint32_t v) -> uint8_t
+            {
+                void *buf = c->acquire();
+                if (buf == nullptr)
+                    return 255;
+                std::memcpy(buf, &v, sizeof(v));
+                return c->send(ms{0});
+            };
+
+            // Establish the link and PROVE it before measuring anything.
+            // `send_blocked_count` rises for two different reasons — no
+            // writable peer yet, and peer's queue full — and only the second
+            // one is this test's subject.  Blasting straight after start()
+            // trips the first: the CURVE handshake has not completed, every
+            // send fails, and the loop below would exit having measured
+            // nothing.  (It did exactly that on the first run.)
+            const InboxItem *first = nullptr;
+            uint32_t warmup = 0;
+            while (first == nullptr && warmup < 200)
+            {
+                (void)send_value(warmup);
+                first = q->recv_one(ms{100});
+                ++warmup;
+            }
+            ASSERT_NE(first, nullptr) << "the link never came up; nothing can be measured";
+            q->send_ack(0);
+            uint64_t last_seq = first->seq;
+
+            // From here the receiver stops draining, so a refused send can
+            // only mean the receiver's queue is full — the condition under
+            // test.  The cap is a safety bound (sender + receiver buffering
+            // is ~1k frames), not an expected count.
+            const uint64_t blocked_before = c->send_blocked_count();
+            constexpr uint32_t kMaxAttempts = 20000;
+            uint32_t attempts = 0;
+            while (c->send_blocked_count() == blocked_before && attempts < kMaxAttempts)
+            {
+                (void)send_value(attempts);
+                ++attempts;
+            }
+            ASSERT_GT(c->send_blocked_count(), blocked_before)
+                << "the receiver's queue never filled, so no message was lost and "
+                   "there is no gap to observe (attempts=" << attempts << ")";
+
+            // Keep pushing briefly so the drops are unambiguously in the middle
+            // of the stream rather than only at its tail.
+            for (uint32_t i = 0; i < 50; ++i)
+                (void)send_value(kMaxAttempts + i);
+
+            // Drain everything the receiver actually got.
+            while (const InboxItem *item = q->recv_one(ms{200}))
+            {
+                last_seq = item->seq;
+                q->send_ack(0);
+            }
+
+            // The recovery message: the queue has room again, so this one lands
+            // and its seq exposes every seq burned by a dropped send.
+            const uint8_t ack = send_value(0xFEEDFACE);
+            ASSERT_NE(ack, 255) << "the recovery send was also dropped";
+
+            const InboxItem *recovered = q->recv_one(ms{2000});
+            ASSERT_NE(recovered, nullptr) << "the recovery message never arrived";
+            q->send_ack(0);
+
+            EXPECT_GT(recovered->gap, uint64_t{0})
+                << "the message after a loss must report a non-zero per-message gap; "
+                   "without it a handler cannot tell WHICH state it is missing";
+            EXPECT_EQ(recovered->gap, recovered->seq - (last_seq + 1))
+                << "the reported gap must equal the number of sequence numbers "
+                   "that never reached the receiver";
+            EXPECT_GE(q->recv_gap_count(), recovered->gap)
+                << "the process-wide counter must include this message's gap";
+
+            c->stop();
+            q->stop();
+            log_cap.Uninstall();
+        },
+        "hub_inbox_queue::gap_count_tracks_dropped_sends", PLH_INBOX_MODS);
 }
 
 // ─── Replay defense: replayed + skewed frames are dropped (§3.6) ────────────
@@ -1161,8 +1313,8 @@ int inbox_backpressure_bounded_and_edge_logged()
             ASSERT_TRUE(q->start());
             pylabhub::utils::security::ZapPumpThread inbox_pump;
 
-            auto c =
-                InboxClient::connect_to(q->actual_endpoint(), "flooder.uid00000001", uint32_schema());
+            auto c = InboxClient::connect_to(q->actual_endpoint(), "flooder.uid00000001",
+                                             uint32_schema());
             ASSERT_NE(c, nullptr);
             admit_and_arm_client(*q, *c, inbox_keys);
             ASSERT_TRUE(c->start());
@@ -1265,9 +1417,8 @@ int inbox_stale_ack_not_attributed_to_next_send()
             ASSERT_TRUE(q->start());
             pylabhub::utils::security::ZapPumpThread inbox_pump;
 
-            auto c =
-                InboxClient::connect_to(q->actual_endpoint(), "slowpoke.uid00000001",
-                                        uint32_schema());
+            auto c = InboxClient::connect_to(q->actual_endpoint(), "slowpoke.uid00000001",
+                                             uint32_schema());
             ASSERT_NE(c, nullptr);
             admit_and_arm_client(*q, *c, inbox_keys);
             ASSERT_TRUE(c->start());
@@ -1359,8 +1510,10 @@ struct HubInboxQueueRegistrar
                     return double_stop_no_throw();
                 if (sc == "sender_uid_is_preserved")
                     return sender_uid_is_preserved();
-                if (sc == "bad_magic_drops")
-                    return bad_magic_drops();
+                if (sc == "wrong_frame_count_drops")
+                    return wrong_frame_count_drops();
+                if (sc == "gap_count_tracks_dropped_sends")
+                    return gap_count_tracks_dropped_sends();
                 if (sc == "replay_and_skew_dropped")
                     return replay_and_skew_dropped();
                 if (sc == "ack_code_3_handler_error")

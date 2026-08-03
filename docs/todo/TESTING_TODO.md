@@ -262,6 +262,45 @@ update the destination task's description, then delete the test.
 
 ## Current Focus — Open coverage gaps
 
+### ⚠ OPEN — `channel_broadcast` has no L3 three-engine parity test (#98, 2026-08-02)
+
+`api.channel_broadcast(...)` and `on_channel_broadcast(...)` are bound across
+Lua, Python, and Native, and the dispatcher half is pinned by four L2 tests in
+`test_dispatch_notifications.cpp` (mutation-checked: deleting the classifier arm
+fails all four on the pre-fix behaviour).  What is NOT pinned is each engine's
+own binding — those are compile-verified only.  Per the multi-engine parity
+rule, each engine needs a test that a real script SENDS a channel broadcast and
+RECEIVES one, verified directly rather than inferred from a sibling engine.
+Send and receive must both be exercised: they are independent bindings and
+either could regress alone.
+
+### ✅ CLOSED 2026-08-02 — `InboxQueue::recv_gap_count` now pinned by a real loss
+
+`InboxQueueTest.GapCount_TracksDroppedSends`.  An earlier pass called this
+untestable because a hand-built frame cannot carry a valid schema tag
+(`compute_inbox_schema_tag` is file-static).  That was the wrong question: the
+counter is not reached by FORGING a frame, it is reached by CAUSING a loss.
+Set a small `rcvhwm`, stop draining, and `InboxClient::send` drops — its
+documented behaviour when the receiver is backed up.  Because `send()` consumes
+a sequence number BEFORE it attempts the write, each drop burns a seq that
+never reaches the wire, so the next delivered message's gap equals the number
+lost exactly.  Mutation-checked: forcing `gap = 0` in the receive path fails the
+test on the per-message-gap assertion.
+
+Two traps this test hit, both now guarded by comments in the worker — do not
+re-introduce them:
+- **Measure only after the link is PROVEN.**  `send_blocked_count` rises both
+  for "no writable peer yet" and for "peer's queue full", and only the second is
+  the subject.  Blasting straight after `start()` trips the first and measures
+  nothing.
+- **Do NOT set `rcvhwm` to 1.**  libzmq carries the ZMTP handshake through the
+  same pipe; a one-message backlog starves it and the connection never
+  establishes (observed: a 20 s no-op).  16 is small enough to force drops
+  quickly and large enough to connect.
+
+Note this is a METRICS counter — the review that raised it filed it as
+"security-adjacent", which it is not.
+
 ### ✅ Delete `HubConfig::load_known_roles_from_vault`; L3 hub harnesses onto production `load_keypair` (task #65, DONE 2026-07-20)
 
 **Smell (removed):** `HubConfig::load_known_roles_from_vault` was a production method

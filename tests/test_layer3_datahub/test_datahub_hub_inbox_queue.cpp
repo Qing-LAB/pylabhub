@@ -53,9 +53,24 @@ TEST_F(InboxQueueTest, SenderUid_IsPreserved)
     ExpectWorkerOk(w);
 }
 
-TEST_F(InboxQueueTest, BadMagic_Drops)
+// Envelope-shape guard: `recv_one` requires the four-frame envelope, so a
+// wrongly-shaped message is dropped and counted before the payload is parsed.
+// Frame magic is NOT tested here — it belongs to the shared decoder and is
+// pinned at L1 by `ZmqWireFrameTest.RejectsWrongMagic`.
+TEST_F(InboxQueueTest, WrongFrameCount_Drops)
 {
-    auto w = SpawnWorker("hub_inbox_queue.bad_magic_drops");
+    auto w = SpawnWorker("hub_inbox_queue.wrong_frame_count_drops");
+    ExpectWorkerOk(w);
+}
+
+// Per-sender sequence-gap accounting (HEP-CORE-0027 §8).  A receiver that
+// stops draining makes the SENDER drop — its documented behaviour when the
+// queue is full — and each dropped send burns a sequence number that never
+// reaches the wire.  The next delivered message therefore reports exactly how
+// many were lost, which is the whole point of the counter.
+TEST_F(InboxQueueTest, GapCount_TracksDroppedSends)
+{
+    auto w = SpawnWorker("hub_inbox_queue.gap_count_tracks_dropped_sends");
     ExpectWorkerOk(w);
 }
 
