@@ -752,6 +752,32 @@ class ScriptEngine
                                         const nlohmann::json &body) = 0;
 
     /**
+     * @brief Invoke on_channel_broadcast(channel, sender_uid, message, data, api)
+     *        for `CHANNEL_BROADCAST_DELIVER_NOTIFY` (HEP-CORE-0030 §9.1).
+     *
+     * The channel-bound sibling of `on_band_message`: the audience is
+     * whoever is attached to the channel rather than a group that opted
+     * in.  The broker fans it out to the channel's producer(s) AND all
+     * its consumers, so a role that broadcasts on a channel it is itself
+     * attached to receives its own message back.
+     *
+     * @param channel     Wire `channel_name` field.
+     * @param sender_uid  Wire `sender_uid` — stamped by the BROKER from the
+     *                    CURVE key the sending connection proved, never a
+     *                    value the sender supplied (HEP-CORE-0035 §4.2.2).
+     *                    Trustworthy as an identity.
+     * @param message     Wire `message` — opaque to the framework.
+     * @param data        Wire `data`, or empty: the broker OMITS the field
+     *                    when the sender passed an empty string, so the
+     *                    dispatcher substitutes `""` rather than surfacing
+     *                    a missing key to scripts.
+     */
+    virtual void invoke_on_channel_broadcast(const std::string &channel,
+                                             const std::string &sender_uid,
+                                             const std::string &message,
+                                             const std::string &data) = 0;
+
+    /**
      * @brief Invoke on_band_lost(band, reason, api).
      *
      * Synthetic event — the framework enqueues this when the role's

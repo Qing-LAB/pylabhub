@@ -55,6 +55,15 @@ void ConsumerAPI::band_broadcast(const std::string &channel, py::dict body)
     base_->band_broadcast(channel, body_json);
 }
 
+void ConsumerAPI::channel_broadcast(const std::string &channel, const std::string &message,
+                                    const std::string &data)
+{
+    // All three arguments are plain strings — no JSON conversion, so the
+    // GIL is released for the whole call rather than after a convert step.
+    py::gil_scoped_release release;
+    base_->channel_broadcast(channel, message, data);
+}
+
 py::object ConsumerAPI::band_members(const std::string &channel)
 {
     std::optional<nlohmann::json> result;
@@ -345,6 +354,8 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def("band_join", &ConsumerAPI::band_join, py::arg("channel"))
         .def("band_leave", &ConsumerAPI::band_leave, py::arg("channel"))
         .def("band_broadcast", &ConsumerAPI::band_broadcast, py::arg("channel"), py::arg("body"))
+        .def("channel_broadcast", &ConsumerAPI::channel_broadcast, py::arg("channel"),
+             py::arg("message"), py::arg("data") = std::string{})
         .def("band_members", &ConsumerAPI::band_members, py::arg("channel"))
         .def("get_schema", &ConsumerAPI::get_schema, py::arg("owner"), py::arg("schema_id"))
         .def("get_channel_schema", &ConsumerAPI::get_channel_schema, py::arg("channel"))

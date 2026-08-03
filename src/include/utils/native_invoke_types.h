@@ -167,6 +167,22 @@ typedef struct
     const char *body_json;       /**< JSON-encoded body payload. */
 } plh_band_message_args_t;
 
+/** on_channel_broadcast args (HEP-CORE-0030 §9.1).
+ *  Fired on every CHANNEL_BROADCAST_DELIVER_NOTIFY received.  Unlike
+ *  on_band_message there is no JSON to parse — all four fields are
+ *  plain strings.  `sender_uid` is the BROKER's stamp taken from the
+ *  CURVE key the sending connection proved (HEP-CORE-0035 §4.2.2), not
+ *  a value the sender chose, so it is safe to use as an identity.
+ *  `data` is "" (never NULL) when the sender supplied none.
+ *  Lifetime: valid for the duration of the callback only. */
+typedef struct
+{
+    const char *channel;    /**< Channel the broadcast was sent on. */
+    const char *sender_uid; /**< Broker-stamped sender role UID. */
+    const char *message;    /**< Opaque application message. */
+    const char *data;       /**< Opaque application data, or "". */
+} plh_channel_broadcast_args_t;
+
 /** on_band_lost args (S4 expansion 2026-05-19).
  *  Synthetic event — the framework enqueues this when the role's
  *  band routing is invalidated (currently: hub-dead drops every

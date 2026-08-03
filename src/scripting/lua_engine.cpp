@@ -234,6 +234,7 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir, const std::
     ref_on_band_member_joined_ = extract_callback_ref_("on_band_member_joined");
     ref_on_band_member_left_ = extract_callback_ref_("on_band_member_left");
     ref_on_band_message_ = extract_callback_ref_("on_band_message");
+    ref_on_channel_broadcast_ = extract_callback_ref_("on_channel_broadcast");
     ref_on_band_lost_ = extract_callback_ref_("on_band_lost");
     ref_on_allowlist_changed_ = extract_callback_ref_("on_allowlist_changed");
     ref_on_produce_ = extract_callback_ref_("on_produce");
@@ -266,6 +267,8 @@ bool LuaEngine::load_script(const std::filesystem::path &script_dir, const std::
     set_standard_callback_present("on_band_member_left",
                                   state_.is_ref_callable(ref_on_band_member_left_));
     set_standard_callback_present("on_band_message", state_.is_ref_callable(ref_on_band_message_));
+    set_standard_callback_present("on_channel_broadcast",
+                                  state_.is_ref_callable(ref_on_channel_broadcast_));
     set_standard_callback_present("on_band_lost", state_.is_ref_callable(ref_on_band_lost_));
     set_standard_callback_present("on_allowlist_changed",
                                   state_.is_ref_callable(ref_on_allowlist_changed_));
@@ -1281,6 +1284,23 @@ void LuaEngine::invoke_on_band_member_left(const std::string &band, const std::s
         on_pcall_error_("on_band_member_left");
 }
 
+void LuaEngine::invoke_on_channel_broadcast(const std::string &channel,
+                                            const std::string &sender_uid,
+                                            const std::string &message, const std::string &data)
+{
+    if (!state_.is_ref_callable(ref_on_channel_broadcast_))
+        return;
+    lua_State *L = state_.raw();
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_on_channel_broadcast_);
+    lua_pushlstring(L, channel.data(), channel.size());
+    lua_pushlstring(L, sender_uid.data(), sender_uid.size());
+    lua_pushlstring(L, message.data(), message.size());
+    lua_pushlstring(L, data.data(), data.size());
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ref_api_);
+    if (!state_.pcall(5, 0, "on_channel_broadcast"))
+        on_pcall_error_("on_channel_broadcast");
+}
+
 void LuaEngine::invoke_on_band_message(const std::string &band, const std::string &sender_role_uid,
                                        const nlohmann::json &body)
 {
@@ -1702,6 +1722,8 @@ void LuaEngine::clear_refs_()
     ref_on_band_member_left_ = LUA_NOREF;
     state_.unref(ref_on_band_message_);
     ref_on_band_message_ = LUA_NOREF;
+    state_.unref(ref_on_channel_broadcast_);
+    ref_on_channel_broadcast_ = LUA_NOREF;
     state_.unref(ref_on_band_lost_);
     ref_on_band_lost_ = LUA_NOREF;
     state_.unref(ref_on_produce_);
@@ -1842,6 +1864,7 @@ void LuaEngine::push_common_api_closures_(lua_State *L)
     push_closure("band_join", lua_api_band_join);
     push_closure("band_leave", lua_api_band_leave);
     push_closure("band_broadcast", lua_api_band_broadcast);
+    push_closure("channel_broadcast", lua_api_channel_broadcast);
     push_closure("band_members", lua_api_band_members);
     push_closure("is_in_band", lua_api_is_in_band);
 
@@ -2637,6 +2660,18 @@ int LuaEngine::lua_api_band_broadcast(lua_State *L)
     luaL_checktype(L, 2, LUA_TTABLE);
     nlohmann::json body = lua_to_json(L, 2);
     self->api_->band_broadcast(channel, body);
+    return 0;
+}
+
+int LuaEngine::lua_api_channel_broadcast(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *channel = luaL_checkstring(L, 1);
+    const char *message = luaL_checkstring(L, 2);
+    // `data` is optional: a broadcast that is purely a verb carries no
+    // argument, and the broker omits the field entirely when it is empty.
+    const char *data = luaL_optstring(L, 3, "");
+    self->api_->channel_broadcast(channel, message, data);
     return 0;
 }
 

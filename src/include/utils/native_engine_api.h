@@ -13,7 +13,7 @@
  * ctx with the 16 `hub_*` fn ptrs wired through).  See `is_hub()` predicate
  * in the C++ wrapper and §4.9 in HEP-CORE-0028.
  *
- * Current ABI version: see `PLH_NATIVE_API_VERSION` below.  v12 (2026-07-25)
+ * Current ABI version: see `PLH_NATIVE_API_VERSION` below.  v14 (2026-08-02)
  * is the latest; earlier history is in the version log at the `#define`.
  *
  * ## Minimal Producer Native engine (C)
@@ -564,6 +564,17 @@ extern "C"
         const char *(*get_channel_metrics_json)(const struct PlhNativeContext *ctx,
                                                 const char *channel);
 
+        /** channel_broadcast: send a control-plane message to every role
+         *  attached to `channel` — its producer(s) and all consumers.
+         *  The channel-bound sibling of band_broadcast; `message` and
+         *  `data` are opaque strings, NOT JSON.  `data` may be NULL or ""
+         *  for a broadcast that is purely a verb.  Fire-and-forget, no
+         *  status return (same #192 caveat as band_broadcast).  The
+         *  sender is NOT passed: the broker stamps it from the CURVE key
+         *  this connection proved (HEP-CORE-0035 §4.2.2). */
+        void (*channel_broadcast)(const struct PlhNativeContext *ctx, const char *channel,
+                                  const char *message, const char *data);
+
         /* ── Opaque host data (do not dereference) ────────────────────── */
         void *_core;            /**< Internal — RoleHostCore pointer for API implementations. */
         void *_api;             /**< Internal — RoleAPIBase pointer for spinlock/messaging. */
@@ -746,7 +757,18 @@ extern "C"
  * prior callbacks unchanged; exact-match api_version gate still
  * requires a rebuild.  Native-plugin-ABI bump only; ComponentVersions
  * unchanged. */
-#define PLH_NATIVE_API_VERSION 13
+/* v14 (2026-08-02): ADDITIVE — channel broadcast reaches native plugins in
+ * both directions (#98).  Send: `channel_broadcast` callback appended
+ * before the opaque `_core`/`_api` tail, giving parity with Lua/Python
+ * `api.channel_broadcast(...)`.  Receive: the host now resolves an
+ * optional `on_channel_broadcast` plugin symbol
+ * (plh_channel_broadcast_args_t).  Before this version the facility was
+ * unreachable from any engine — the send path had no binding and the
+ * delivery notify had no arm in the role's notification classifier.
+ * Offsets for prior callbacks unchanged; exact-match api_version gate
+ * still requires a rebuild.  Native-plugin-ABI bump only;
+ * ComponentVersions unchanged. */
+#define PLH_NATIVE_API_VERSION 14
 
     /* =========================================================================
      * C-visible pylabhub ComponentVersions constants
@@ -1415,6 +1437,15 @@ class Context
     {
         if (c_ && c_->band_broadcast)
             c_->band_broadcast(c_, channel, body_json);
+    }
+
+    /// Broadcast to everyone attached to `channel` (producer + consumers).
+    /// `data` is optional — pass nullptr or "" for a message-only broadcast.
+    void channel_broadcast(const char *channel, const char *message,
+                           const char *data = "") const noexcept
+    {
+        if (c_ && c_->channel_broadcast)
+            c_->channel_broadcast(c_, channel, message, data ? data : "");
     }
 
     /// Returns a lightweight handle for band-membership queries.  Zero

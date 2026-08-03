@@ -661,6 +661,31 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// broker-side membership use `band_members(channel)`.
     [[nodiscard]] bool is_in_band(const std::string &channel) const noexcept;
 
+    // ── Channel broadcast (HEP-CORE-0030 §9.1 channel-bound sideband) ─────────
+
+    /// Send a control-plane message to every role attached to @p channel —
+    /// its producer and all its consumers — without touching the data plane.
+    ///
+    /// This is the CHANNEL-bound sibling of `band_broadcast`.  The two differ
+    /// only in who hears it: a band is an explicit opt-in group a role joins,
+    /// a channel's audience is whoever is attached to that channel right now.
+    /// Use a band when the group is the point; use this when the channel is.
+    ///
+    /// The payload is two opaque strings rather than a JSON body (which is
+    /// what `band_broadcast` takes) because that is the shape the wire
+    /// already carries — `message` is conventionally a short kind/verb and
+    /// `data` its argument.  Neither is interpreted by the framework.
+    ///
+    /// Fire-and-forget, like `band_broadcast`: it is queued for the broker
+    /// and there is no delivery result to return.  The SENDER is never
+    /// carried in the request — the broker stamps it from the CURVE key the
+    /// connection proved (HEP-CORE-0035 §4.2.2), so a role cannot claim to
+    /// be another role.  Recipients see it via `on_channel_broadcast`.
+    ///
+    /// Dropped with a WARN if this role has no connection for @p channel.
+    void channel_broadcast(const std::string &channel, const std::string &message,
+                           const std::string &data);
+
     // ── Inbox client management ───────────────────────────────────────────────
 
     struct InboxOpenResult
@@ -1051,15 +1076,15 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// a missing channel is terminal CHANNEL_NOT_FOUND (queries never
     /// wait).  Schema validity = channel lifetime: re-pull after any
     /// re-establishment.
-    [[nodiscard]] std::optional<nlohmann::json>
-    get_channel_schema(const std::string &channel, int timeout_ms = 5000);
+    [[nodiscard]] std::optional<nlohmann::json> get_channel_schema(const std::string &channel,
+                                                                   int timeout_ms = 5000);
 
     /// Pull a channel's live metrics snapshot (METRICS_REQ) — the
     /// per-presence metrics its members push via heartbeats, plus SHM
     /// block info.  Member-gated; freshness = heartbeat cadence.  The
     /// pull complement to the pushed CHANNEL_COUNT_NOTIFY counts.
-    [[nodiscard]] std::optional<nlohmann::json>
-    get_channel_metrics(const std::string &channel, int timeout_ms = 5000);
+    [[nodiscard]] std::optional<nlohmann::json> get_channel_metrics(const std::string &channel,
+                                                                    int timeout_ms = 5000);
 
     /// Register as consumer (CONSUMER_REG_REQ → CONSUMER_REG_ACK).
     ///

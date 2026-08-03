@@ -281,6 +281,7 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
         py_on_band_member_joined_ = py::getattr(module_, "on_band_member_joined", py::none());
         py_on_band_member_left_ = py::getattr(module_, "on_band_member_left", py::none());
         py_on_band_message_ = py::getattr(module_, "on_band_message", py::none());
+        py_on_channel_broadcast_ = py::getattr(module_, "on_channel_broadcast", py::none());
         py_on_band_lost_ = py::getattr(module_, "on_band_lost", py::none());
         py_on_allowlist_changed_ = py::getattr(module_, "on_allowlist_changed", py::none());
         py_on_produce_ = py::getattr(module_, "on_produce", py::none());
@@ -307,6 +308,8 @@ bool PythonEngine::load_script(const std::filesystem::path &script_dir,
                                       is_callable(py_on_band_member_joined_));
         set_standard_callback_present("on_band_member_left", is_callable(py_on_band_member_left_));
         set_standard_callback_present("on_band_message", is_callable(py_on_band_message_));
+        set_standard_callback_present("on_channel_broadcast",
+                                      is_callable(py_on_channel_broadcast_));
         set_standard_callback_present("on_band_lost", is_callable(py_on_band_lost_));
         set_standard_callback_present("on_allowlist_changed",
                                       is_callable(py_on_allowlist_changed_));
@@ -1269,6 +1272,25 @@ void PythonEngine::invoke_on_band_member_left(const std::string &band, const std
     }
 }
 
+void PythonEngine::invoke_on_channel_broadcast(const std::string &channel,
+                                               const std::string &sender_uid,
+                                               const std::string &message, const std::string &data)
+{
+    if (!is_callable(py_on_channel_broadcast_))
+        return;
+    py::gil_scoped_acquire g;
+    try
+    {
+        // All four wire fields are strings — no JSON conversion, unlike
+        // `on_band_message` whose body is a document.
+        py_on_channel_broadcast_(channel, sender_uid, message, data, api_obj_);
+    }
+    catch (py::error_already_set &e)
+    {
+        on_python_error_("on_channel_broadcast", e);
+    }
+}
+
 void PythonEngine::invoke_on_band_message(const std::string &band,
                                           const std::string &sender_role_uid,
                                           const nlohmann::json &body)
@@ -1707,6 +1729,7 @@ void PythonEngine::clear_pyobjects_()
     release_to_none(py_on_band_member_joined_);
     release_to_none(py_on_band_member_left_);
     release_to_none(py_on_band_message_);
+    release_to_none(py_on_channel_broadcast_);
     release_to_none(py_on_band_lost_);
     release_to_none(py_on_allowlist_changed_);
     release_to_none(py_on_produce_);

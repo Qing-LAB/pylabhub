@@ -197,6 +197,10 @@ struct StubEngine : public ScriptEngine
                                 const nlohmann::json &) override
     {
     }
+    void invoke_on_channel_broadcast(const std::string &, const std::string &, const std::string &,
+                                     const std::string &) override
+    {
+    }
     void invoke_on_band_lost(const std::string &, const std::string &) override {}
     void invoke_on_allowlist_changed(const std::string &,
                                      const std::vector<pylabhub::scripting::AllowedPeer> &,

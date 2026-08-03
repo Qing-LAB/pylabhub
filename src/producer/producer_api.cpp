@@ -63,6 +63,15 @@ void ProducerAPI::band_broadcast(const std::string &channel, py::dict body)
     base_->band_broadcast(channel, body_json);
 }
 
+void ProducerAPI::channel_broadcast(const std::string &channel, const std::string &message,
+                                    const std::string &data)
+{
+    // All three arguments are plain strings — no JSON conversion, so the
+    // GIL is released for the whole call rather than after a convert step.
+    py::gil_scoped_release release;
+    base_->channel_broadcast(channel, message, data);
+}
+
 py::object ProducerAPI::band_members(const std::string &channel)
 {
     std::optional<nlohmann::json> result;
@@ -377,6 +386,8 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_producer, m) // NOLINT
         .def("band_leave", &producer::ProducerAPI::band_leave, py::arg("channel"))
         .def("band_broadcast", &producer::ProducerAPI::band_broadcast, py::arg("channel"),
              py::arg("body"))
+        .def("channel_broadcast", &producer::ProducerAPI::channel_broadcast, py::arg("channel"),
+             py::arg("message"), py::arg("data") = std::string{})
         .def("band_members", &producer::ProducerAPI::band_members, py::arg("channel"))
         .def("get_schema", &producer::ProducerAPI::get_schema, py::arg("owner"),
              py::arg("schema_id"))

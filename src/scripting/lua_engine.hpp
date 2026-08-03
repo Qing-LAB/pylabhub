@@ -120,6 +120,8 @@ class LuaEngine : public ScriptEngine
                                       const std::string &role_name) override;
     void invoke_on_band_member_left(const std::string &band, const std::string &role_uid,
                                     const std::string &reason) override;
+    void invoke_on_channel_broadcast(const std::string &channel, const std::string &sender_uid,
+                                     const std::string &message, const std::string &data) override;
     void invoke_on_band_message(const std::string &band, const std::string &sender_role_uid,
                                 const nlohmann::json &body) override;
     void invoke_on_band_lost(const std::string &band, const std::string &reason) override;
@@ -176,6 +178,7 @@ class LuaEngine : public ScriptEngine
     int ref_on_band_member_joined_{LUA_NOREF};
     int ref_on_band_member_left_{LUA_NOREF};
     int ref_on_band_message_{LUA_NOREF};
+    int ref_on_channel_broadcast_{LUA_NOREF};
     int ref_on_band_lost_{LUA_NOREF};
     int ref_on_allowlist_changed_{LUA_NOREF};
     int ref_on_produce_{LUA_NOREF};
@@ -346,6 +349,7 @@ class LuaEngine : public ScriptEngine
     static int lua_api_band_join(lua_State *L);
     static int lua_api_band_leave(lua_State *L);
     static int lua_api_band_broadcast(lua_State *L);
+    static int lua_api_channel_broadcast(lua_State *L);
     static int lua_api_band_members(lua_State *L);
     // Broker schema/metrics queries (HEP-CORE-0034 §10.3) —
     // full broker reply as a table; nil only on transport failure.

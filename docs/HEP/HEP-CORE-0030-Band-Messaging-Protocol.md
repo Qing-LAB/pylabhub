@@ -482,6 +482,41 @@ CONSUMER_REG'd on a channel).  Band membership is **opt-in** (a role
 must explicitly `band_join` to receive).  They serve different
 coordination needs; both stay in the protocol.
 
+#### Script-facing surface (both directions)
+
+Until 2026-08-02 the channel-bound broadcast was reachable only from the
+hub side.  A role could neither send one — `BrokerRequestComm::send_broadcast`
+had no `RoleAPIBase` method and no engine binding — nor receive one: the
+broker emitted `CHANNEL_BROADCAST_DELIVER_NOTIFY` to the channel's producer
+and every consumer, but the role's notification classifier had no arm for
+that wire string, so it fell through as `Unknown` and no callback ever
+fired.  Both halves are now bound across Lua, Python, and Native:
+
+| Direction | Script surface | Arguments |
+|---|---|---|
+| Send | `api.channel_broadcast(channel, message, data)` | `data` optional; defaults to `""` |
+| Receive | `on_channel_broadcast(channel, sender_uid, message, data, api)` | fires on `CHANNEL_BROADCAST_DELIVER_NOTIFY` |
+
+Three properties are load-bearing and are pinned by tests rather than left
+to convention:
+
+- **The payload is two opaque strings, not a JSON document.**  This is the
+  one place the channel-bound and band-bound APIs deliberately differ:
+  `band_broadcast` carries a `body` document because its wire field is a
+  document, while the channel broadcast's wire has always been
+  `message` + `data`.  Matching band's shape would mean changing the wire
+  for cosmetic uniformity.
+- **`sender_uid` is the broker's stamp, never the caller's claim.**  The
+  request carries no sender at all; the broker fills it from the CURVE key
+  the connection proved (HEP-CORE-0035 §4.2.2, broker_proto 8).  Scripts may
+  therefore use it as an identity.
+- **`data` is absent from the wire when empty.**  The broker omits the key
+  rather than sending `""`, so the dispatcher substitutes an empty string
+  and scripts always receive four arguments.
+
+The broker fans out to producers AND consumers, so a role that broadcasts
+on a channel it is itself attached to receives its own message back.
+
 `CHANNEL_NOTIFY_REQ` has been **fully retired** (audit R3.6, 2026-05-17):
 
 - **Role-side wire surface is dead** (audit O1, 2026-05-17).

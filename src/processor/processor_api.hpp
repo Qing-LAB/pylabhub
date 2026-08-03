@@ -57,6 +57,8 @@ class ProcessorAPI
         return resp.has_value() && resp->value("status", std::string{}) == "success";
     }
     void band_broadcast(const std::string &channel, py::dict body);
+    void channel_broadcast(const std::string &channel, const std::string &message,
+                           const std::string &data);
     py::object band_members(const std::string &channel);
 
     /// Broker schema/metrics queries (HEP-CORE-0034 §10.3) —

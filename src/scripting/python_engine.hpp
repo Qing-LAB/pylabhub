@@ -155,6 +155,8 @@ class PythonEngine : public ScriptEngine
                                     const std::string &reason) override;
     void invoke_on_band_message(const std::string &band, const std::string &sender_role_uid,
                                 const nlohmann::json &body) override;
+    void invoke_on_channel_broadcast(const std::string &channel, const std::string &sender_uid,
+                                     const std::string &message, const std::string &data) override;
     void invoke_on_band_lost(const std::string &band, const std::string &reason) override;
     void invoke_on_allowlist_changed(const std::string &channel,
                                      const std::vector<AllowedPeer> &allowlist,
@@ -243,6 +245,7 @@ class PythonEngine : public ScriptEngine
     py::object py_on_band_member_joined_{py::none()};
     py::object py_on_band_member_left_{py::none()};
     py::object py_on_band_message_{py::none()};
+    py::object py_on_channel_broadcast_{py::none()};
     py::object py_on_band_lost_{py::none()};
     py::object py_on_allowlist_changed_{py::none()};
     py::object py_on_produce_{py::none()};

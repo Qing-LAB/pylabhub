@@ -144,6 +144,17 @@ inline void invoke_user_band_message(ScriptEngine &engine, const IncomingMessage
                                   msg.details.value("body", nlohmann::json::object()));
 }
 
+inline void invoke_user_channel_broadcast(ScriptEngine &engine, const IncomingMessage &msg)
+{
+    // `data` is absent from the wire when the sender passed an empty string
+    // (broker_service.cpp omits the key), so the default here IS the
+    // contract, not defensive padding — scripts always see four arguments.
+    engine.invoke_on_channel_broadcast(msg.details.value("channel_name", std::string{}),
+                                       msg.details.value("sender_uid", std::string{}),
+                                       msg.details.value("message", std::string{}),
+                                       msg.details.value("data", std::string{}));
+}
+
 inline void invoke_user_band_lost(ScriptEngine &engine, const IncomingMessage &msg)
 {
     engine.invoke_on_band_lost(msg.details.value("band", std::string{}),
@@ -182,14 +193,12 @@ inline void default_consumer_died(const IncomingMessage & /*msg*/, const StopReq
 /// additive (HEP-CORE-0011 §"Notification dispatch" — the
 /// unconditional-plus-additive shape; NOT override-else-default).  Tracking
 /// is unconditional bookkeeping, not the callback's default.
-inline void default_producer_joined(const IncomingMessage & /*msg*/,
-                                    const StopRequestor & /*stop*/)
+inline void default_producer_joined(const IncomingMessage & /*msg*/, const StopRequestor & /*stop*/)
 {
     // Intentionally empty — tracking is unconditional, not the default.
 }
 
-inline void default_consumer_joined(const IncomingMessage & /*msg*/,
-                                    const StopRequestor & /*stop*/)
+inline void default_consumer_joined(const IncomingMessage & /*msg*/, const StopRequestor & /*stop*/)
 {
     // Intentionally empty — see default_producer_joined.
 }
@@ -230,6 +239,14 @@ inline void default_band_member_left(const IncomingMessage & /*msg*/,
 inline void default_band_message(const IncomingMessage & /*msg*/, const StopRequestor & /*stop*/) {}
 
 inline void default_band_lost(const IncomingMessage & /*msg*/, const StopRequestor & /*stop*/) {}
+
+/// No framework reaction: a channel broadcast is application traffic the
+/// framework neither interprets nor acts on.  A role with no
+/// `on_channel_broadcast` simply does not listen.
+inline void default_channel_broadcast(const IncomingMessage & /*msg*/,
+                                      const StopRequestor & /*stop*/)
+{
+}
 
 // ── Dispatch table ────────────────────────────────────────────────────
 
@@ -275,6 +292,13 @@ inline constexpr NotificationEntry kNotificationTable[static_cast<std::size_t>(
     {"on_producer_joined", &invoke_user_producer_joined, &default_producer_joined},
     /* ConsumerJoined     */
     {"on_consumer_joined", &invoke_user_consumer_joined, &default_consumer_joined},
+    // ChannelCount is INFRASTRUCTURE-ONLY (#74): the worker thread stores the
+    // objective counts to back producer_count()/consumer_count() and there is
+    // no script callback.  Row kept so the positional initializers below stay
+    // aligned with the enum ordinals.
+    /* ChannelCount       */ {nullptr, nullptr, nullptr},
+    /* ChannelBroadcast   */
+    {"on_channel_broadcast", &invoke_user_channel_broadcast, &default_channel_broadcast},
 };
 
 /// Single-pass dispatcher.  For each known msg: fire the user

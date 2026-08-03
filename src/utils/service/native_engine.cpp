@@ -432,6 +432,10 @@ int hub_stub_band_int_arg2(const PlhNativeContext *, const char *) noexcept
     return -1;
 }
 void hub_stub_band_broadcast(const PlhNativeContext *, const char *, const char *) noexcept {}
+void hub_stub_channel_broadcast(const PlhNativeContext *, const char *, const char *,
+                                const char *) noexcept
+{
+}
 int hub_stub_band_members(const PlhNativeContext *, const char *, plh_band_member_visitor,
                           void *) noexcept
 {
@@ -952,6 +956,17 @@ int ctx_band_leave(const PlhNativeContext *ctx, const char *channel)
     {
         return -1;
     }
+}
+
+void ctx_channel_broadcast(const PlhNativeContext *ctx, const char *channel, const char *message,
+                           const char *data)
+{
+    if (!ctx || !ctx->_api || !channel || !message)
+        return;
+    // `data` is optional by contract — a NULL means "no argument", which
+    // the wire represents as an absent field.  No JSON hop: unlike
+    // band_broadcast there is nothing to parse or to get wrong.
+    static_cast<RoleAPIBase *>(ctx->_api)->channel_broadcast(channel, message, data ? data : "");
 }
 
 void ctx_band_broadcast(const PlhNativeContext *ctx, const char *channel, const char *body_json)
@@ -1510,6 +1525,7 @@ struct NativeEngine::NativeContextStorage
         ctx.band_join = hub_stub_band_int_arg2;
         ctx.band_leave = hub_stub_band_int_arg2;
         ctx.band_broadcast = hub_stub_band_broadcast;
+        ctx.channel_broadcast = hub_stub_channel_broadcast;
         ctx.band_members = hub_stub_band_members;
         ctx.band_member_contains = hub_stub_band_member_contains;
         ctx.band_member_count = hub_stub_band_int_arg2;
@@ -1632,6 +1648,7 @@ struct NativeEngine::NativeContextStorage
         ctx.band_join = ctx_band_join;
         ctx.band_leave = ctx_band_leave;
         ctx.band_broadcast = ctx_band_broadcast;
+        ctx.channel_broadcast = ctx_channel_broadcast;
         ctx.band_members = ctx_band_members;
         ctx.band_member_contains = ctx_band_member_contains;
         ctx.band_member_count = ctx_band_member_count;
@@ -1820,6 +1837,8 @@ bool NativeEngine::load_script(const std::filesystem::path &script_dir,
     fn_on_band_member_left_ =
         reinterpret_cast<FnOnBandMemberLeft>(resolve_sym_("on_band_member_left"));
     fn_on_band_message_ = reinterpret_cast<FnOnBandMessage>(resolve_sym_("on_band_message"));
+    fn_on_channel_broadcast_ =
+        reinterpret_cast<FnOnChannelBroadcast>(resolve_sym_("on_channel_broadcast"));
     fn_on_band_lost_ = reinterpret_cast<FnOnBandLost>(resolve_sym_("on_band_lost"));
     // HEP-CORE-0036 §I11 + §6.5 — producer-side event-driven allowlist
     // refresh.  Same shape as the band typed callbacks above.
@@ -1999,6 +2018,7 @@ void NativeEngine::finalize_engine_()
     fn_on_band_member_joined_ = nullptr;
     fn_on_band_member_left_ = nullptr;
     fn_on_band_message_ = nullptr;
+    fn_on_channel_broadcast_ = nullptr;
     fn_on_band_lost_ = nullptr;
     fn_on_allowlist_changed_ = nullptr;
     fn_on_produce_ = nullptr;
@@ -2044,6 +2064,8 @@ bool NativeEngine::has_callback(const std::string &name) const noexcept
         return fn_on_band_member_left_ != nullptr;
     if (name == "on_band_message")
         return fn_on_band_message_ != nullptr;
+    if (name == "on_channel_broadcast")
+        return fn_on_channel_broadcast_ != nullptr;
     if (name == "on_band_lost")
         return fn_on_band_lost_ != nullptr;
     if (name == "on_allowlist_changed")
@@ -2271,6 +2293,20 @@ void NativeEngine::invoke_on_band_message(const std::string &band,
     const std::string body_str = body.dump();
     const plh_band_message_args_t args{band.c_str(), sender_role_uid.c_str(), body_str.c_str()};
     fn_on_band_message_(&args);
+}
+
+void NativeEngine::invoke_on_channel_broadcast(const std::string &channel,
+                                               const std::string &sender_uid,
+                                               const std::string &message, const std::string &data)
+{
+    if (!fn_on_channel_broadcast_)
+        return;
+    // No JSON hop, unlike `invoke_on_band_message` — the wire fields are
+    // already strings.  Same pointer-lifetime rule: valid for this call
+    // only; a plugin that keeps them must copy.
+    const plh_channel_broadcast_args_t args{channel.c_str(), sender_uid.c_str(), message.c_str(),
+                                            data.c_str()};
+    fn_on_channel_broadcast_(&args);
 }
 
 void NativeEngine::invoke_on_band_lost(const std::string &band, const std::string &reason)

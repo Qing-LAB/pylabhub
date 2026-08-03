@@ -4613,6 +4613,26 @@ void RoleAPIBase::band_broadcast(const std::string &channel, const nlohmann::jso
     }
 }
 
+void RoleAPIBase::channel_broadcast(const std::string &channel, const std::string &message,
+                                    const std::string &data)
+{
+    // Class C (channel-bound) — route via the connection that owns the
+    // channel, the same resolver every other channel verb uses.  Mirrors
+    // `band_broadcast`'s not-routable path: WARN rather than silence, so a
+    // broadcast to a channel this role is not attached to leaves a trace
+    // instead of vanishing.  Fire-and-forget — no return value to set.
+    if (auto *bc = pImpl->resolve_bc_for_channel(channel))
+    {
+        bc->send_broadcast(channel, message, data);
+    }
+    else
+    {
+        LOGGER_WARN("[{}] channel_broadcast('{}') dropped — no connection for that "
+                    "channel in this role",
+                    pImpl->short_tag, channel);
+    }
+}
+
 std::optional<nlohmann::json> RoleAPIBase::band_members(const std::string &channel)
 {
     // Class D (band-bound) — route via handler's band_index_

@@ -128,6 +128,13 @@ enum class NotificationId : std::uint8_t
                             ///< thread stores it (RoleAPIBase::channel_counts)
                             ///< to back producer_count()/consumer_count() on
                             ///< EVERY role, both sides.  No script callback.
+    ChannelBroadcast = 12,  ///< CHANNEL_BROADCAST_DELIVER_NOTIFY (HEP-CORE-0030
+                            ///< §9.1).  Control-plane sideband from another role
+                            ///< attached to the same channel — the channel-bound
+                            ///< sibling of BandMessage.  Carries `message` +
+                            ///< `data` plus the sender the BROKER stamped from
+                            ///< the proven CURVE key, never a sender the caller
+                            ///< claimed (HEP-CORE-0035 §4.2.2).
     Count                   ///< sentinel — must be last
 };
 
@@ -154,6 +161,8 @@ enum class NotificationId : std::uint8_t
         return NotificationId::BandMemberLeft;
     if (type == "BAND_BROADCAST_DELIVER_NOTIFY")
         return NotificationId::BandMessage;
+    if (type == "CHANNEL_BROADCAST_DELIVER_NOTIFY")
+        return NotificationId::ChannelBroadcast;
     if (type == "BAND_LOST")
         return NotificationId::BandLost;
     if (type == "CHANNEL_AUTH_CHANGED_NOTIFY")

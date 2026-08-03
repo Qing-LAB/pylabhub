@@ -87,6 +87,8 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
     void invoke_on_band_message(const std::string &band, const std::string &sender_role_uid,
                                 const nlohmann::json &body) override;
     void invoke_on_band_lost(const std::string &band, const std::string &reason) override;
+    void invoke_on_channel_broadcast(const std::string &channel, const std::string &sender_uid,
+                                     const std::string &message, const std::string &data) override;
     /// HEP-CORE-0036 §I11 — Native plugins currently do not implement
     /// the allowlist-changed callback (Native is MVP per #84/#85);
     /// scripts using polling via `RoleAPIBase::allowed_peers` still
@@ -165,6 +167,7 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
     using FnOnBandMemberLeft = void (*)(const plh_band_member_left_args_t *);
     using FnOnBandMessage = void (*)(const plh_band_message_args_t *);
     using FnOnBandLost = void (*)(const plh_band_lost_args_t *);
+    using FnOnChannelBroadcast = void (*)(const plh_channel_broadcast_args_t *);
     using FnOnAllowlistChanged = void (*)(const plh_allowlist_changed_args_t *);
     using FnOnProduce = bool (*)(const plh_tx_t *);
     using FnOnConsume = bool (*)(const plh_rx_t *);
@@ -191,6 +194,7 @@ class PYLABHUB_UTILS_EXPORT NativeEngine : public ScriptEngine
     FnOnBandMemberLeft fn_on_band_member_left_{nullptr};
     FnOnBandMessage fn_on_band_message_{nullptr};
     FnOnBandLost fn_on_band_lost_{nullptr};
+    FnOnChannelBroadcast fn_on_channel_broadcast_{nullptr};
     // HEP-CORE-0036 §I11 (#194, 2026-06-10).  v3 → v4 API bump.
     FnOnAllowlistChanged fn_on_allowlist_changed_{nullptr};
     FnOnProduce fn_on_produce_{nullptr};

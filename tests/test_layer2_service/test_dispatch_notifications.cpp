@@ -168,6 +168,7 @@ class RecordingEngine : public ScriptEngine
     bool has_on_band_member_joined{false};
     bool has_on_band_member_left{false};
     bool has_on_band_message{false};
+    bool has_on_channel_broadcast{false};
     bool has_on_band_lost{false};
     // Peer-join (HEP-CORE-0011 §"Notification dispatch", 2026-07-25).
     bool has_on_producer_joined{false};
@@ -186,6 +187,8 @@ class RecordingEngine : public ScriptEngine
     std::vector<std::tuple<std::string, std::string, std::string>> band_member_joined_calls;
     std::vector<std::tuple<std::string, std::string, std::string>> band_member_left_calls;
     std::vector<std::tuple<std::string, std::string, nlohmann::json>> band_message_calls;
+    std::vector<std::tuple<std::string, std::string, std::string, std::string>>
+        channel_broadcast_calls;
     std::vector<std::pair<std::string, std::string>> band_lost_calls;
 
     /// Recorded on_producer_joined / on_consumer_joined (channel, uid) pairs.
@@ -206,6 +209,8 @@ class RecordingEngine : public ScriptEngine
             return has_on_band_member_left;
         if (name == "on_band_message")
             return has_on_band_message;
+        if (name == "on_channel_broadcast")
+            return has_on_channel_broadcast;
         if (name == "on_band_lost")
             return has_on_band_lost;
         if (name == "on_producer_joined")
@@ -241,6 +246,12 @@ class RecordingEngine : public ScriptEngine
     {
         band_member_left_calls.emplace_back(band, role_uid, reason);
     }
+    void invoke_on_channel_broadcast(const std::string &channel, const std::string &sender_uid,
+                                     const std::string &message, const std::string &data) override
+    {
+        channel_broadcast_calls.emplace_back(channel, sender_uid, message, data);
+    }
+
     void invoke_on_band_message(const std::string &band, const std::string &sender_role_uid,
                                 const nlohmann::json &body) override
     {
@@ -393,6 +404,26 @@ IncomingMessage make_band_broadcast_notify(const std::string &band, const std::s
     m.details["band"] = band;
     m.details["role_uid"] = sender;
     m.details["body"] = body;
+    return m;
+}
+
+/// Mirrors `BrokerServiceImpl::handle_channel_broadcast_req`'s forward body,
+/// including its omission of `data` when the sender supplied none — the
+/// dispatcher's default for that key is a contract, not padding.
+IncomingMessage make_channel_broadcast_notify(const std::string &channel,
+                                              const std::string &sender_uid,
+                                              const std::string &message, const std::string &data)
+{
+    IncomingMessage m;
+    m.event = "CHANNEL_BROADCAST_DELIVER_NOTIFY";
+    m.notification_id = parse_notification_id(m.event);
+    m.details = nlohmann::json::object();
+    m.details["channel_name"] = channel;
+    m.details["event"] = "broadcast";
+    m.details["sender_uid"] = sender_uid;
+    m.details["message"] = message;
+    if (!data.empty())
+        m.details["data"] = data;
     return m;
 }
 
@@ -1128,6 +1159,83 @@ TEST_F(DispatchBandTest, Message_Callback_DispatchesWithBody)
     EXPECT_EQ(std::get<1>(eng.band_message_calls[0]), "prod.lab.sensor_a");
     EXPECT_EQ(std::get<2>(eng.band_message_calls[0]), body);
     EXPECT_TRUE(msgs.empty());
+}
+
+// ── Channel broadcast (HEP-CORE-0030 §9.1) ────────────────────────
+//
+// The wire type must reach `on_channel_broadcast`.  Before #98 it parsed to
+// NotificationId::Unknown, so the broker's delivery notify fell through the
+// dispatcher untouched and no script could ever observe a channel broadcast.
+
+TEST_F(DispatchBandTest, ChannelBroadcast_WireTypeIsClassified)
+{
+    // Guards the arm itself: an unmapped type stays Unknown, which is how
+    // this facility was silently unreachable in the first place.
+    EXPECT_EQ(parse_notification_id("CHANNEL_BROADCAST_DELIVER_NOTIFY"),
+              NotificationId::ChannelBroadcast);
+}
+
+TEST_F(DispatchBandTest, ChannelBroadcast_NoCallback_DefaultNoOpButConsumes)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_channel_broadcast = false;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_channel_broadcast_notify("ch.temps", "prod.lab.uid01", "recalibrate", ""));
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+                                                pylabhub::scripting::StopRequestor{core});
+
+    EXPECT_TRUE(eng.channel_broadcast_calls.empty());
+    EXPECT_TRUE(msgs.empty()) << "an unhandled channel broadcast must still be consumed";
+    EXPECT_FALSE(core.is_shutdown_requested())
+        << "a channel broadcast is application traffic; it must never stop the role";
+}
+
+TEST_F(DispatchBandTest, ChannelBroadcast_Callback_DispatchesAllFourFields)
+{
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_channel_broadcast = true;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(
+        make_channel_broadcast_notify("ch.temps", "prod.lab.sensor_a", "set_rate", "200"));
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+                                                pylabhub::scripting::StopRequestor{core});
+
+    ASSERT_EQ(eng.channel_broadcast_calls.size(), 1u);
+    const auto &[channel, sender, message, data] = eng.channel_broadcast_calls[0];
+    EXPECT_EQ(channel, "ch.temps");
+    EXPECT_EQ(sender, "prod.lab.sensor_a")
+        << "the sender must come from the broker-stamped `sender_uid` field";
+    EXPECT_EQ(message, "set_rate");
+    EXPECT_EQ(data, "200");
+    EXPECT_TRUE(msgs.empty());
+}
+
+TEST_F(DispatchBandTest, ChannelBroadcast_OmittedData_ArrivesAsEmptyString)
+{
+    // The broker omits `data` entirely when the sender passed "".  Scripts
+    // must still receive four arguments; a missing key must not surface as
+    // a null, a throw, or a dropped dispatch.
+    RecordingEngine eng;
+    RoleHostCore core;
+    eng.has_on_channel_broadcast = true;
+
+    std::vector<IncomingMessage> msgs;
+    msgs.push_back(make_channel_broadcast_notify("ch.temps", "prod.lab.sensor_a", "halt", ""));
+    ASSERT_FALSE(msgs[0].details.contains("data")) << "test setup must reproduce the omission";
+
+    pylabhub::scripting::dispatch_notifications(eng, msgs,
+                                                pylabhub::scripting::StopRequestor{core});
+
+    ASSERT_EQ(eng.channel_broadcast_calls.size(), 1u);
+    EXPECT_EQ(std::get<2>(eng.channel_broadcast_calls[0]), "halt");
+    EXPECT_EQ(std::get<3>(eng.channel_broadcast_calls[0]), "")
+        << "an omitted `data` field must reach the script as an empty string";
 }
 
 TEST_F(DispatchBandTest, Lost_NoCallback_DefaultNoOpButConsumes)
