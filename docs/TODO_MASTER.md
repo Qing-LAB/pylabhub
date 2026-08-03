@@ -56,12 +56,14 @@ post-reconcile shipped-sprint detail).
   bodies: CHANNEL_COUNT_NOTIFY, CHANNEL_EVENT_NOTIFY,
   CHANNEL_ERROR_NOTIFY, CHANNEL_BROADCAST_DELIVER_NOTIFY,
   BAND_BROADCAST_DELIVER_NOTIFY — each needs a wire_bodies class + a
-  BRC shape-table arm), #69 federation ingress.
+  BRC shape-table arm).  Federation ingress is parked with #69.
 - **Full-system audit (`REVIEW_FullSystem_2026-07-20`):** 🚧 56 findings, **52
   resolved / 4 open** after the #72 reconciliation pass (2026-07-24) closed the
-  hep-gap + dead-residue clusters.  Remaining open: federation ingress bypass
-  (= #69) and three test-coverage items (inbox-worker magic/gap pins, hub_vault
-  known_roles L2 round-trip, logger StressLog diagnostic).
+  hep-gap + dead-residue clusters.  The three test-coverage items (inbox-worker
+  magic/gap pins, hub_vault known_roles L2 round-trip, logger StressLog
+  diagnostic) were validated and closed 2026-08-02 — see band 1.  The fourth —
+  federation ingress bypass — is parked with #69 and is not counted as open
+  work.
 
 ---
 
@@ -73,11 +75,25 @@ post-reconcile shipped-sprint detail).
 >
 > | # | Band | What it covers |
 > |---|---|---|
-> | **1** | **Security items** | ✅ CLOSED: dead/no-op identity + authority validators (#68, verified 2026-07-27); #66 Cat-A vault harness (2026-08-02); **#83 registration now decides on the key the peer PROVED, not the key it claimed** (2026-08-02) — malformed roster entries are fatal, the attested key rides the envelope, and two Pattern-4 cases pin a live impersonation attempt.  #95 (same defect on DEREG / ENDPOINT_UPDATE / CHANNEL_AUTH_APPLIED, 2026-08-02) — `gate_attested_role_ownership` now runs there, sharing one implementation with the registration check.  **#96 (2026-08-02)** — the last two homes of the same defect: the channel broadcast took its `sender_uid` from the request body and forwarded it verbatim, so any handshaked peer could forge message origin; and the control tier checked a claimed `role_uid` only against the routing id, which the same client picks.  Now the broadcast request carries no sender at all (broker_proto 7→8) and the broker stamps it from the proven key via `PeerAuthority::attribute_sender`, while `run_control_gates` binds every caller's-own-uid claim — heartbeat, band join/leave/broadcast — to that key.  Three Pattern-4 cases, each mutation-checked to fail on the harm (a forged broadcast delivered, a forged heartbeat's metrics landing on the victim's presence) rather than on a missing error reply.  **Open, in order:** the three security-adjacent coverage gaps (inbox frame-magic / gap-count / seq-reset-after-reconnect; hub_vault `known_roles` round-trip), #83 residual slices (inbox roster protocol, admin session binding), then federation (#69, design-first). |
+> | **1** | **Security items** | ✅ CLOSED: dead/no-op identity + authority validators (#68, verified 2026-07-27); #66 Cat-A vault harness (2026-08-02); **#83 registration now decides on the key the peer PROVED, not the key it claimed** (2026-08-02) — malformed roster entries are fatal, the attested key rides the envelope, and two Pattern-4 cases pin a live impersonation attempt.  #95 (same defect on DEREG / ENDPOINT_UPDATE / CHANNEL_AUTH_APPLIED, 2026-08-02) — `gate_attested_role_ownership` now runs there, sharing one implementation with the registration check.  **#96 (2026-08-02)** — the last two homes of the same defect: the channel broadcast took its `sender_uid` from the request body and forwarded it verbatim, so any handshaked peer could forge message origin; and the control tier checked a claimed `role_uid` only against the routing id, which the same client picks.  Now the broadcast request carries no sender at all (broker_proto 7→8) and the broker stamps it from the proven key via `PeerAuthority::attribute_sender`, while `run_control_gates` binds every caller's-own-uid claim — heartbeat, band join/leave/broadcast — to that key.  Three Pattern-4 cases, each mutation-checked to fail on the harm (a forged broadcast delivered, a forged heartbeat's metrics landing on the victim's presence) rather than on a missing error reply.  **Open:** #83 residual slices (inbox roster protocol, admin session binding).  The "three coverage gaps" that used to head this list were validated against code on 2026-08-02: two were false and the three real ones (vault `known_roles`, logger diagnostic, inbox gap-count) are all closed — detail below.  **Federation is NOT in this band** — see the parked entry below. |
 > | **2** | **Shared-memory observer feature** | HEP-CORE-0045 Line 3 remaining phases: `PeerDeathWatcher` → broker dial worker + fd cache → opt-out → `collect_shm_info` → L4 tests → pointer refresh. |
 > | **3** | **Backlog of smaller polish items** | The P0/P1 batches below (startup log lines, config defaults, per-area subtopic items) — small, independently shippable. |
 > | **4** | **Role-program unification (C++ RAII framework)** | #292 collapse of the three role-host files, taken together with the Template-RAII layer (Phase 2b: `TypedInboxClient`, `SimpleRoleHost`) since both reshape the same surface; #55 test re-homing rides along. |
 > | **5** | **The rest** | Topology T4/T5 residuals, the Pattern-4 test migration (#52), Windows/CI coverage, and everything else in "Open work by area". |
+
+> **Review findings are not the plan.**  A finding produced by a review pass
+> is a CLAIM until someone validates it against code and the owner accepts it.
+> Two rules, both learned the hard way on 2026-08-02:
+>
+> 1. **Findings live in `docs/code_review/REVIEW_*.md` until triaged.**  They
+>    do not get copied into this file as work.  This file carries what the
+>    owner decided; mixing the two makes a robot's suggestion indistinguishable
+>    from a decision, and the suggestion then gets worked on first.
+> 2. **Validate before scheduling, not after.**  For any finding of the form
+>    "X is untested" or "Y is unchecked": find where X is implemented, find
+>    whether that place is already covered, and read the design doc that says
+>    what X is supposed to do.  Of the three findings that had sat at the head
+>    of band 1 for two weeks, two evaporated under one grep each.
 
 ### Detail (open, within the bands above)
 
@@ -92,31 +108,85 @@ post-reconcile shipped-sprint detail).
   dead wire, superseded by capability-fd attach (HEP-CORE-0013 banner).
   The task sat `pending` after the fix landed — closed on verification, not
   on the tracker's word.
-- **Three security-adjacent coverage gaps (from REVIEW_FullSystem, all still
-  reproduce):** (a) the inbox "bad magic" worker sends a 2-frame message that
-  is rejected by the frame-count guard before the magic check ever runs, so
-  frame-magic validation is untested; `recv_gap_count` has no test at all; and
-  the HEP-0027 §3.6 rule that a reconnected sender's reset sequence number must
-  NOT be mistaken for a replay is unpinned.  (b) `HubVault`'s `known_roles`
-  save/reload round-trip has no L2 pin — only the L4 CLI test covers it, which
-  cannot separate a vault regression from a CLI one.  (c) a broken diagnostic
-  line in the logger stress test (one-line fix).
-- **Federation — design-first, CONSOLIDATED under task #69 (ratified
-  2026-07-24):** a full top-down design (HEP: hub↔hub trust model, peer
-  lifecycle, wire, security) comes BEFORE any protocol work — no piecemeal
-  patches.  #69 now owns every open federation item: the peer-DEALER
-  ingress bypassing `receive_and_validate` (the last unvalidated broker
-  ingress, REVIEW_FullSystem high), the HUB_PEER_HELLO/BYE +
-  HUB_TARGETED/RELAY_MSG control-envelope bypass, H43 role-disconnect
-  propagation, #75 HUB_TARGETED_ACK, and the #105/HEP-0037 post-MVP scope
-  + skipped federation tests.  Detail: MESSAGEHUB_TODO "Federation —
-  CONSOLIDATED".
+- **"Three security-adjacent coverage gaps" — VALIDATED AGAINST CODE
+  2026-08-02.  Two of them do not exist.**  They were carried here verbatim
+  from REVIEW_FullSystem and never checked.  What is actually true:
+  - **Frame-magic "validation is untested" — MISLEADING; the validation is
+    tested.**  Magic is checked in exactly one place,
+    `wire_detail::decode_frame` (`zmq_wire_helpers.hpp`), shared by the inbox
+    and the data plane, and it is pinned at L1 by
+    `ZmqWireFrameTest.RejectsWrongMagic`.  What the review actually
+    established is narrower and true: the L3 worker named for it could never
+    reach the decoder — a DEALER's single frame arrives as two, and the
+    four-frame envelope guard rejects it first — so the INBOX's own
+    `!env.valid → count + drop` branch is never entered via a bad magic.
+    That branch's siblings (schema-tag mismatch, payload-size mismatch,
+    envelope shape) are each pinned by existing workers and all do the same
+    thing, so re-entering it through a fourth trigger is low value; it is
+    NOT blocked, though — a bad magic short-circuits `decode_frame` before
+    the schema-tag check, so no schema tag has to be forged.  Action taken:
+    the test was renamed to `WrongFrameCount_Drops` after what it does pin.
+    Adding a bad-magic L3 worker remains optional and unscheduled.
+  - **"Reset seq mistaken for a replay" — FALSE.**  HEP-0027 §3.6 states
+    that `seq` is metrics-only and explicitly must NOT gate replay, because
+    it resets on reconnect; replay is defended by nonce + skew.  The receive
+    path matches.  There is no code path in which a reset seq could be read
+    as a replay, so there is nothing to pin.
+  - **`recv_gap_count` untested — TRUE, now CLOSED** (2026-08-02).  An earlier
+    pass in this same session called it blocked, reasoning that a test cannot
+    forge a frame the receiver accepts because `compute_inbox_schema_tag` is
+    file-static.  That was the wrong question: the counter is not reached by
+    FORGING a frame, it is reached by CAUSING a loss.  A small `rcvhwm` plus a
+    receiver that stops draining makes `InboxClient::send` drop — its
+    documented behaviour — and because `send()` consumes a sequence number
+    before it attempts the write, every drop burns a seq that never reaches
+    the wire, so the next delivered message's gap equals the number lost
+    exactly.  `InboxQueueTest.GapCount_TracksDroppedSends`, mutation-checked.
+    Also note this is a METRICS counter; "security-adjacent" was mislabelled.
+  - **`HubVault` `known_roles` round-trip — TRUE, now closed** (2026-08-02):
+    five L2 pins at the vault seam — deny-all bootstrap, in-memory-only
+    `set_known_roles`, save/reopen round-trip, keypair+token preserved across
+    save, and the roster living inside the ENCRYPTED payload with no
+    plaintext sidecar (the one that would catch a re-plaintexted allowlist).
+  - **Logger stress diagnostic — TRUE, now closed** (2026-08-02): the line
+    had no `{}` placeholder AND counted a different marker than the
+    assertion, so it could only ever print nothing.
+  **Process note:** review output was written straight into this file as if
+  it were decided work.  It is not.  See "Review findings are not the plan".
+- **Federation — 🅿 PARKED (owner, 2026-08-02).  NOT security work, NOT
+  next work, not to be re-raised.**  Federation is an unactivated
+  proposal: no running hub or role uses it, `cfg.peers` is empty in every
+  real deployment, and nothing behind the peer path can be reached until
+  someone configures a peer.  Every open federation item stays parked
+  under #69 until the owner decides what federation is and when it is
+  needed — no design pass, no piecemeal patches, no promotion on the
+  strength of a latent finding.  Parked scope: the peer-DEALER ingress
+  bypassing `receive_and_validate`, the HUB_PEER_HELLO/BYE +
+  HUB_TARGETED_MSG control-envelope bypass (task #99 — an admitted role
+  can register itself as a configured peer hub; `HUB_RELAY_MSG` is NOT
+  affected, it arrives on the dedicated outbound peer DEALER so its
+  sender is fixed by the socket), H43 role-disconnect propagation, #75
+  HUB_TARGETED_ACK, and the #105/HEP-0037 post-MVP scope + skipped
+  federation tests.  Detail: MESSAGEHUB_TODO "Federation — CONSOLIDATED".
   *(Admin-plane CURVE — the former #1 surface — ✅ SHIPPED 2026-07-19; residual
   polish only, AUTH_TODO Line E.)*
-- **FullSystem-review remediation (4 open of 56)** — remaining: #69 federation
-  ingress + 3 test-coverage items; see "Active code reviews" for the breakdown.
+- **FullSystem-review remediation (4 open of 56)** — 3 test-coverage items are
+  the live remainder; the fourth (federation ingress) is parked with #69.  See
+  "Active code reviews" for the breakdown.
 
 **In-flight arcs:**
+- **#98 Channel broadcast — make it reachable from scripts (owner-approved
+  2026-08-02, ACTIVE).**  The facility is unreachable in BOTH directions
+  today: `BrokerRequestComm::send_broadcast` has no `RoleAPIBase` method and
+  no engine binding, so nothing can send it; and the broker's
+  `CHANNEL_BROADCAST_DELIVER_NOTIFY` to producer + consumers hits a
+  `parse_notification_id` with no arm for that string, so it classifies as
+  `Unknown` and nothing can receive it.  Binding one end alone would ship a
+  call that goes nowhere.  Named `channel_broadcast` / `on_channel_broadcast`;
+  payload stays `message` + `data` (already the wire, and what the #96 typed
+  body requires).  Full HEP-CORE-0011 Sync Matrix sweep in one commit — role
+  API, both dispatch halves, Lua, Python, Native (ABI 13→14), `.pyi` ×3,
+  three-engine parity tests, HEP-0030/0007 docs.
 - **#52** HubHostBrokerHandle → Pattern 4 sweep (in progress; ~21 in-process
   co-host workers across ~6 files remain; Round 1 recipe proven).
 - **#57** HEP-0046 Phase B — ✅ COMPLETE 2026-07-24 (see "REG protocol
