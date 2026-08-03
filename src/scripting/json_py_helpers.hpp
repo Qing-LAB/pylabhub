@@ -217,4 +217,19 @@ inline nlohmann::json fetch_band_members_or_throw(RoleAPIBase *base, const std::
     return reply->value("members", nlohmann::json::array());
 }
 
+/// Map the script-facing integer `side` argument onto `ChannelSide`.
+///
+/// The three role APIs (producer / consumer / processor) each expose
+/// `spinlock(index, side)` and `spinlock_count(side)` with an optional
+/// integer, and each needs the same `nullopt -> nullopt, value -> enum`
+/// mapping.  It lived as a file-static copy in all three; one copy is
+/// enough, and this header is where the other shared py-argument
+/// conversions already live.
+inline std::optional<ChannelSide> to_channel_side(std::optional<int> side)
+{
+    if (!side.has_value())
+        return std::nullopt;
+    return static_cast<ChannelSide>(*side);
+}
+
 } // namespace pylabhub::scripting::detail

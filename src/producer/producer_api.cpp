@@ -225,18 +225,12 @@ uint64_t ProducerAPI::flexzone_logical_size(std::optional<int> side) const
             : std::nullopt));
 }
 
-static std::optional<scripting::ChannelSide> to_channel_side(std::optional<int> side)
-{
-    if (!side.has_value())
-        return std::nullopt;
-    return static_cast<scripting::ChannelSide>(*side);
-}
-
 py::object ProducerAPI::spinlock(std::size_t index, std::optional<int> side)
 {
     try
     {
-        return py::cast(scripting::SpinLockPy{base_->get_spinlock(index, to_channel_side(side))},
+        return py::cast(scripting::SpinLockPy{base_->get_spinlock(
+                            index, scripting::detail::to_channel_side(side))},
                         py::return_value_policy::move);
     }
     catch (const std::exception &e)
@@ -249,7 +243,7 @@ uint32_t ProducerAPI::spinlock_count(std::optional<int> side) const
 {
     try
     {
-        return base_->spinlock_count(to_channel_side(side));
+        return base_->spinlock_count(scripting::detail::to_channel_side(side));
     }
     catch (const std::exception &e)
     {

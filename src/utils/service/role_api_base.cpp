@@ -4,7 +4,7 @@
  */
 #include "utils/role_api_base.hpp"
 #include "utils/broker_request_comm.hpp"
-#include "utils/role_handler.hpp"  // Wave-B M4c: handler-mode ctrl threads
+#include "utils/role_handler.hpp"  // handler-mode ctrl threads
 #include "utils/script_engine.hpp" // ScriptEngine, InvokeInbox, ThreadEngineGuard
 #include "utils/zmq_poll_loop.hpp" // ZmqPollLoop, PeriodicTask
 
@@ -446,7 +446,7 @@ struct RoleAPIBase::Impl
     /// synchronization dependency between the two counters).
     std::atomic<std::uint64_t> producer_instance_id_{0};
 
-    // RoleHandler-mode network surface (Wave-B M4c; sole path after M4f).
+    // RoleHandler-mode network surface — the sole path.
     //   (a) `handler_` non-null + `ctrl_threads_started_ == true`:
     //       handler-mode active; N ctrl threads polling N BRCs.
     //   (b) `handler_` null + `ctrl_threads_started_ == false`:
@@ -3784,7 +3784,7 @@ void RoleAPIBase::on_heartbeat_tick_()
 // (heartbeat tick already calls `snapshot_metrics_json()` at the
 // same cadence).
 
-// Wave-B M4f (2026-05-16): `start_ctrl_thread` + `set_broker_comm` +
+// Retired 2026-05-16: `start_ctrl_thread` + `set_broker_comm` +
 // the `pImpl->broker_channel` raw-pointer view + `CtrlThreadConfig`
 // struct DELETED.  Pre-M5/M6/M7 the legacy single-BRC path co-existed
 // with handler-mode as a fallback view for role hosts not yet migrated;
@@ -3794,7 +3794,7 @@ void RoleAPIBase::on_heartbeat_tick_()
 // handler is attached — no fallback path.
 
 // ============================================================================
-// Handler-mode control plane (Wave-B M4c)
+// Handler-mode control plane
 // ============================================================================
 
 bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
@@ -4159,7 +4159,7 @@ bool RoleAPIBase::start_handler_threads(std::unique_ptr<RoleHandler> handler)
     // in Phase 1.5 (BEFORE Phase 2 wires the lambdas that capture it
     // + BEFORE Phase 3 spawns ctrl threads).  No init needed here.
 
-    // Wave-B M4f (2026-05-16): the previous Phase 4 set
+    // Retired 2026-05-16: the previous Phase 4 set
     // `pImpl->broker_channel = handler->connections()[0].brc.get()`
     // as a legacy fallback view for unmigrated call sites.  After
     // M4d/e migrated every Class A/B/D site through the routing
@@ -4185,7 +4185,7 @@ void RoleAPIBase::stop_handler_threads() noexcept
 
     LOGGER_INFO("[{}] stop_handler_threads: ENTRY", pImpl->short_tag);
 
-    // Wave-B M4f (2026-05-16): the previous Phase 1 cleared the
+    // Retired 2026-05-16: the previous Phase 1 cleared the
     // legacy `broker_channel` fallback view before BRCs were
     // destroyed; the field is gone, so no clear is needed.  Numbering
     // of the remaining phases preserved for log grep continuity.

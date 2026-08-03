@@ -7060,7 +7060,7 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState &state)
         // verified through `abi_fingerprint` at the REG handler per
         // HEP-CORE-0032 §8, not by this admission pipeline).
         impl->admission_binder_.context.skew_tolerance_ms = 30'000ULL;
-        // I-REPLAY-BOUND soundness invariant: nonce_window_ms MUST be >=
+        // I-REPLAY-BOUND soundness invariant: the nonce window MUST be >=
         // 2 * skew_tolerance_ms.  Dedup is pruned against the TRUSTED broker
         // clock (record_and_check_nonce receives wall_now_ms(), not the
         // client stamp), so a peer cannot force early eviction.  But a
@@ -7068,7 +7068,15 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState &state)
         // (the tolerance bounds both the original acceptance and the
         // replay), so the nonce must be remembered that long or a late-but-
         // skew-valid replay finds its nonce pruned and is wrongly admitted.
-        impl->admission_binder_.context.nonce_window_ms = 60'000ULL;
+        //
+        // DERIVED, not restated.  A second literal here would let the two
+        // drift apart on any future change to the tolerance -- silently,
+        // since nothing would fail to compile and no test would notice.
+        // The inbox and admin planes express the same invariant the same
+        // way (`2 * kInboxReplaySkewMs`, `2 * kReplaySkewMs`); this is the
+        // third plane sharing one rule, so it states it identically.
+        impl->admission_binder_.context.nonce_window_ms =
+            2 * impl->admission_binder_.context.skew_tolerance_ms;
         impl->admission_binder_.finalize();
     }
 

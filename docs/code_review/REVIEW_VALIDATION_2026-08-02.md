@@ -241,21 +241,88 @@ line: derive the window from the skew as the other two do.
 **Severity: low today, latent.**  Nothing is wrong now; the guard rail is
 missing, not the behaviour.
 
+### `[high/risk-error]` four dead/no-op identity validators (#68) — **CLAIM SUBSTANTIALLY HOLDS**
+
+The note claims four validators across three subsystems are "gone or armed".
+Two sub-claims verified in full, one corroborated, one unchecked.
+
+**Sub-claim 1 — the schema-citation validator runs on every joiner path
+"including the consumer one": VERIFIED, and this is the one that mattered.**
+The original defect was that the consumer path skipped the check. Four
+production call sites of `HubState::_validate_schema_citation` exist, and the
+question is not their count but *which handlers* contain them. Handler
+boundaries: `handle_reg_req` (before 2956) holds the calls at 2340 and 2510;
+`handle_consumer_reg_req` spans 3239-4073 and holds the calls at 3680 and
+3734. So the producer path has two and **the consumer path has two** — the
+gap is genuinely closed. The reject counter
+`schema_citation_rejected_total` is pinned 11 times in `test_hub_state.cpp`,
+so a validator that silently stopped rejecting would fail tests.
+
+*Method note.* A first pass attributed 3680/3734 to `handle_dereg_req` — a
+leave path, which would have made the "including the consumer one" claim
+false — because the enclosing-function pattern missed a signature split
+across two lines (`nlohmann::json` on one, `BrokerServiceImpl::handle_...` on
+the next). That near-miss is the argument for reading boundaries rather than
+counting matches: a grep total of "four call sites" is compatible with the
+claim being true *or* false, and only the boundaries decide which.
+
+**Sub-claim 2 — the `RoleIdentityPolicy` string gate deleted: VERIFIED.**
+`effective_role_identity_policy` has zero occurrences anywhere in `src/`, and
+the two surviving mentions of `RoleIdentityPolicy` / `check_role_identity`
+are inside comments explaining the removal.
+
+**Sub-claim 3 — no separate key-rotation gate: CORROBORATED, not
+independently proven.** `broker_service.cpp:7035-7038` states the rule (a
+re-REG under a different pubkey is refused as `PUBKEY_MISMATCH` by
+`check_known_role_binding`) and that no separate gate exists. Consistent with
+the note; the rejection path itself was not exercised here.
+
+**Sub-claim 4 — stale-SHM `producer_uid` cross-check retired: NOT CHECKED.**
+
+### NEW (minor) — `role_identity_policy.hpp` is a repurposed file with a stale name and docblock
+
+The file survives at 55 lines, but it no longer defines a role-identity
+policy: its `@brief` says it defines `KnownRole`, the live vault-backed ZAP
+pubkey carrier that #68 deliberately kept. Lines 8-9 still narrate the
+deleted `RoleIdentityPolicy` enum as though it were the file's subject.
+
+So a reader looking for the deleted gate finds a file named after it, and a
+reader looking for `KnownRole` has no reason to open it. Rename to
+`known_roles`-adjacent and trim the docblock to what the file now contains.
+**Cosmetic, zero behavioural risk** — but it is precisely the
+"migration residue that actively misleads" class this review already flagged
+elsewhere.
+
 ### Depth actually achieved
 
 | Finding | Depth |
 |---|---|
 | ReplayGuard clock (#67) | **Full** — code + HEP-0027 §3.6 + all three call sites |
-| The other 51 ✅ notes | **NOT VERIFIED** |
+| Dead identity validators (#68) | **Substantial** — 2 of 4 sub-claims full, 1 corroborated, 1 unchecked |
+| The other 50 ✅ notes | **NOT VERIFIED** |
 
-51 resolution notes remain unchecked, including the `[high/risk-error]` dead
-identity/authority validators (#68), the checksum-contract drift, and the
-resource-cleanup findings.  #68's note claims four validators are "gone or
-armed" across three subsystems and names four production call sites; that one
-deserves the same treatment as the ReplayGuard finding and did not get it
-here.
+50 resolution notes remain unchecked, including the checksum-contract drift
+and the resource-cleanup findings.  Both notes verified so far have held,
+which is mild evidence the resolution notes are honest — but two out of
+fifty-two is not a basis for trusting the rest.
 
 ---
+
+## Fixes applied 2026-08-02
+
+Three of the six candidates were fixed.  Checking the other three before
+touching them changed two of the verdicts — which is the whole point of
+validating before scheduling.
+
+| Candidate | Action | Note |
+|---|---|---|
+| REG plane restates the replay invariant | **FIXED** | `nonce_window_ms` is now `2 * skew_tolerance_ms`, matching the inbox and admin planes.  The drift path is closed structurally. |
+| Six stale `Wave-B M4d/e/f` labels | **FIXED** | Rewritten to say what the code does, keeping the dates.  Migration-wave prefixes are meaningless to anyone who did not live through the wave. |
+| `to_channel_side()` in three files | **FIXED** | One `inline` definition in `scripting/json_py_helpers.hpp` — the header where the other shared py-argument conversions already live — and the three file-static copies deleted. |
+| **T1** counter naming | **NOT FIXED — verdict corrected to VALID-BUT-EXTERNAL** | `ready_to_pending_total` / `pending_to_ready_total` are **emitted in the broker's JSON metrics blob** (`broker_service.hpp:497`), not internal state.  Renaming them is a break for every metrics consumer, not a cosmetic tidy.  The May review classified this as cosmetic; that classification is wrong.  Either keep the names and document that "ready" is the historical spelling of Connected, or deprecate them properly with both keys emitted for a period.  Owner call, not a sweep. |
+| **B-1** `should_continue_loop` / `should_exit_inner` | **NOT FIXED — deliberately** | The choice is adopt-or-delete, and both are wrong to make casually.  Adopting means rewriting the loop condition in three role hosts; a subtly different condition there is a hang or a premature exit, not a compile error.  Deleting throws away the right abstraction weeks before band 4 (role-host unification) is going to want exactly it.  Best done inside band 4, where the three loops are being collapsed anyway. |
+| **O1b** `query_shm_info` | **NOT FIXED — as recorded** | Dead today, but band 2 is about to build this capability.  Settle it there. |
+| **O3** three forwarders | **NOT FIXED — as recorded** | Factually pure forwarders, but inlining 30 call sites to delete a one-line seam is a judgement call, not a defect. |
 
 ## Carried forward
 
