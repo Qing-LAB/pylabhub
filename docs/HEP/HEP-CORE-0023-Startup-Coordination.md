@@ -104,7 +104,7 @@ stateDiagram-v2
     [*] --> Connected : REG_REQ / CONSUMER_REG_REQ accepted<br/>(presence row created, first heartbeat already in flight)
     Connected --> Connected : HEARTBEAT_NOTIFY<br/>(refresh last_heartbeat, update metrics)
     Connected --> Pending : ready_timeout<br/>(missed heartbeats)
-    Pending --> Connected : HEARTBEAT_NOTIFY (recovery)<br/>bump pending_to_ready_total
+    Pending --> Connected : HEARTBEAT_NOTIFY (recovery)<br/>bump pending_to_connected_total
     Pending --> [*] : pending_timeout<br/>presence Disconnected;<br/>fan-out CHANNEL_CLOSING_NOTIFY<br/>iff the leaving presence is the<br/>channel's binding OWNER (§2.1.1)
     Connected --> [*] : DEREG_REQ accepted<br/>presence Disconnected;<br/>fan-out CHANNEL_CLOSING_NOTIFY<br/>iff the leaving presence is the<br/>channel's binding OWNER (§2.1.1)
     Pending --> [*] : DEREG_REQ accepted (same path)
@@ -139,7 +139,7 @@ route through them rather than poking presence fields directly:
 
 | Transition | RoleEntry method | Returns |
 |---|---|---|
-| Connected ↔ Connected (refresh) / Pending → Connected (recovery) / first heartbeat | `on_heartbeat(channel, role_type, when)` | `HeartbeatEffect { presence_found, prev_state, was_first_heartbeat_seen }` — caller reads `prev_state` to bump `pending_to_ready_total` only on Pending→Connected. |
+| Connected ↔ Connected (refresh) / Pending → Connected (recovery) / first heartbeat | `on_heartbeat(channel, role_type, when)` | `HeartbeatEffect { presence_found, prev_state, was_first_heartbeat_seen }` — caller reads `prev_state` to bump `pending_to_connected_total` only on Pending→Connected. |
 | Connected → Pending | `on_heartbeat_timeout(channel, role_type)` | `TransitionEffect::ToPending` (or `NoChange` if not Connected) |
 | Pending → Disconnected | `on_pending_timeout(channel, role_type)` | `TransitionEffect::ToDisconnected` (or `NoChange` if not Pending) |
 | Any → Disconnected (DEREG / forced) | `on_dereg(channel, role_type)` | `TransitionEffect::ToDisconnected` (or `NoChange` if already Disconnected) |
@@ -650,29 +650,30 @@ presence** — incremented once per FSM transition regardless of
 which uid or channel the presence belongs to:
 
 The struct is `pylabhub::hub::BrokerCounters` in
-`src/include/utils/hub_state.hpp`.  Field names carry the
-pre-§2-rewrite "Ready/Deregistered" vocabulary for backward
-compatibility with existing test fixtures + production log scrapers
-— a rename pass is scoped to a future cleanup (see §16 history).
+`src/include/utils/hub_state.hpp`.  Each field is named for the two
+§2.1 states it counts the transition between, so a counter and the
+state it counts are the same word.
 
 | Wire name (code)                       | FSM transition                                                                | Bumps for                                                                |
 |----------------------------------------|-------------------------------------------------------------------------------|--------------------------------------------------------------------------|
-| `ready_to_pending_total`               | Connected → Pending (heartbeat absence past `ready_timeout`)                  | Producer-presences AND consumer-presences (per-presence, role-wide bump) |
-| `pending_to_ready_total`               | Pending → Connected (recovery via heartbeat)                                  | Producer-presences AND consumer-presences                                |
-| `pending_to_deregistered_total`        | Pending → Disconnected (heartbeat-timeout reap, OR voluntary DEREG_REQ path)  | Producer-presences AND consumer-presences (Wave-B M2 3/3, 2026-05-15)    |
+| `connected_to_pending_total`           | Connected → Pending (heartbeat absence past `ready_timeout`)                  | Producer-presences AND consumer-presences (per-presence, role-wide bump) |
+| `pending_to_connected_total`           | Pending → Connected (recovery via heartbeat)                                  | Producer-presences AND consumer-presences                                |
+| `pending_to_disconnected_total`        | Pending → Disconnected (heartbeat-timeout reap, OR voluntary DEREG_REQ path)  | Producer-presences AND consumer-presences                                |
 
 Naming notes:
-- "Ready" in `ready_to_*` is the legacy term for the post-§2
-  `Connected` state with `first_heartbeat_seen == true` ("Live"
-  sub-state).
-- "Deregistered" in `*_to_deregistered_total` is the legacy term
-  for `Disconnected`.
+- `Connected` in `connected_to_pending_total` means the Connected
+  state with `first_heartbeat_seen == true` (the "Live" sub-state per
+  §2.2) — the only Connected sub-state a heartbeat-absence demotion
+  can leave.
 - These counters are aggregated **per presence** — incremented
   once per FSM transition regardless of which uid, channel, or
-  role_type the presence belongs to.  Post-Wave-B M2 (3/3), a
-  consumer-presence Pending→Disconnected bumps
-  `pending_to_deregistered_total` the same way a producer-presence
-  transition does.
+  role_type the presence belongs to.  A consumer-presence
+  Pending→Disconnected bumps `pending_to_disconnected_total` the same
+  way a producer-presence transition does.
+- `ready_timeout` in the table above is a configuration key, not a
+  state name.  It keeps its spelling because renaming it would change
+  a user's config file; the state vocabulary rule applies to counters
+  and states, not to config keys.
 
 These counters give tests a race-free way to assert state
 transitions occurred, without relying on wall-clock sleeps.

@@ -1803,13 +1803,11 @@ HeartbeatEffect HubState::_on_heartbeat(const std::string &channel, const std::s
 
         // Route the presence-row FSM mutation through RoleEntry's
         // controlled-access API.  The method updates last_heartbeat +
-        // first_heartbeat_seen, transitions FSM to Connected (legacy
-        // counter name: "Ready" — see BrokerCounters docstring) if
-        // not already, and returns a rich HeartbeatEffect for the
+        // first_heartbeat_seen, transitions FSM to Connected if not
+        // already, and returns a rich HeartbeatEffect for the
         // caller's counter decisions.  HubState retains ownership of:
-        //   (a) the `pending_to_ready_total` counter bump (depends on
-        //       prev_state, which only the wrapper knows; "ready"
-        //       here is the legacy term for the Connected state).
+        //   (a) the `pending_to_connected_total` counter bump (depends
+        //       on prev_state, which only the wrapper knows).
         //   (b) the metrics write — still a direct presence-row
         //       mutation under the writer lock because the
         //       controlled-access API does not yet expose a
@@ -1821,9 +1819,9 @@ HeartbeatEffect HubState::_on_heartbeat(const std::string &channel, const std::s
             return eff_out;
         eff_out = eff; // surface to caller (broker layer logs first-tick)
 
-        // Recovery from Pending counts as pending_to_ready (HEP-0023 §2.5).
+        // Recovery from Pending counts as pending_to_connected (HEP-0023 §2.5).
         if (eff.prev_state == RoleState::Pending)
-            ++pImpl->counters.pending_to_ready_total;
+            ++pImpl->counters.pending_to_connected_total;
 
         // Metrics write — direct presence-row mutation under the
         // writer lock (see the (b) note on the API split above).
@@ -1889,15 +1887,15 @@ void HubState::_on_heartbeat_timeout(const std::string &channel, const std::stri
         if (rit == pImpl->roles.end())
             return;
 
-        // Wave M3 step 3: route FSM transition through the controlled-
-        // access API.  `first_heartbeat_seen` is NOT a gate — the
+        // Route the FSM transition through the controlled-access
+        // API.  `first_heartbeat_seen` is NOT a gate — the
         // registered-but-never-heartbeat case demotes via this same
         // path once `last_heartbeat` (stamped at REG_REQ time) ages
         // past ready_timeout.
         const TransitionEffect te = rit->second.on_heartbeat_timeout(channel, role_type);
         if (te != TransitionEffect::ToPending)
             return;
-        ++pImpl->counters.ready_to_pending_total;
+        ++pImpl->counters.connected_to_pending_total;
         transitioned = true;
 
         if (is_producer)
@@ -1959,7 +1957,7 @@ PresenceDropResult HubState::_on_pending_timeout(const std::string &channel,
             const TransitionEffect te = rit->second.on_pending_timeout(channel, "consumer");
             if (te != TransitionEffect::ToDisconnected)
                 return result;
-            ++pImpl->counters.pending_to_deregistered_total;
+            ++pImpl->counters.pending_to_disconnected_total;
             eligible = true;
 
             // Owner probe (§4.7.0.3 departure classification) + this
@@ -2044,7 +2042,7 @@ PresenceDropResult HubState::_on_pending_timeout(const std::string &channel,
         const TransitionEffect te = rit->second.on_pending_timeout(channel, "producer");
         if (te != TransitionEffect::ToDisconnected)
             return result;
-        ++pImpl->counters.pending_to_deregistered_total;
+        ++pImpl->counters.pending_to_disconnected_total;
         eligible = true;
         // Owner-bound teardown (HEP-CORE-0017 §4.7.0.2 T2) — same rule
         // as `_on_producer_dropped`: only an owning producer's last

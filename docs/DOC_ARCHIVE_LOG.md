@@ -1647,3 +1647,25 @@ files `git mv`'d to `docs/archive/transient-2026-07-18/`.
 | Document | Merged into | Shipped-code evidence |
 |----------|-------------|------------------------|
 | `DRAFT_schema_metrics_query_integration_2026-07-26.md` | HEP-CORE-0034 §2.4 (I10), §6.4 (fingerprint chain + packing recovery), §10.2 (owner axis), §10.3a (schema-at-establishment + `from-channel` sentinel + runtime-resolution diagram + script proxies), §11.1 (ChannelEntry format fields); HEP-CORE-0007 §12.3 + §12.4a (SCHEMA/METRICS payloads + error rows); HEP-CORE-0036 §5b.7 (ACK schema fields) + NOT_A_ROLE_OF_CHANNEL row; HEP-CORE-0011 cross-engine parity rows (`get_schema`/`get_channel_schema`/`get_channel_metrics`); HEP-CORE-0028 §4.7 (`get_*_json`); IMPLEMENTATION_GUIDANCE § "Role-side query surface"; README_Deployment §6.1/§8.3; README_topology_channels §5 | All four slices shipped + swept green (final sweep 2705/2705, commit `d208add7`): member-gated queries (`handle_schema_req`/`handle_metrics_req` SI-tier gates → `Control_EnvelopeWithRoleUid`); 3-engine bindings (ABI v13 `get_*_json`); ACK delivery (`broker_service.cpp` unified consumer success-ACK builder); schema-pending queue (`hub_zmq_queue.cpp` `configure_slot_schema`); runtime resolution (`role_api_base.cpp` `resolve_runtime_slot_schema` + `parse_canonical_fields_str`/`recover_zone_packing` in `schema_utils.hpp`); `from-channel` sentinel (`SchemaSpec.runtime_resolved`); engine slot proxies (late `InSlotFrame` registration, native adoption gate).  Open residuals all live in `MESSAGEHUB_TODO.md` (SHM runtime path, config-pin field, typed SchemaReqBody/MetricsReqBody); observer role kind rides #292. |
+
+## 2026-08-03 — review-record validation pass: one review fully dispositioned
+
+Every finding in the four active review records was re-checked against the
+current tree (record: `code_review/REVIEW_VALIDATION_2026-08-02.md`). The
+table below archives the one review where that left nothing open.
+
+### Reviews → `archive/transient-2026-08-03/code_reviews/` (1)
+
+| Document | Why archived | Residual |
+|----------|--------------|----------|
+| `REVIEW_FullModule_2026-04-06.md` | All ten rows dispositioned with code evidence. Two findings' subjects no longer exist (**A-1** `data_transport()`, **B-2** `engine_module_params.cpp` — both files deleted by the topology/transport rework). **C-1** fixed in `d92a7b0b`; **D-2** and **E-1** were already resolved and never marked. **F-1**/**F-4** are test-*count* comparisons, not defects — nothing actionable was ever stated. **F-3**'s two named offenders are gone (`test_datahub_broker_protocol.cpp` went from 21 `sleep_for` to zero; `poll_until` adoption 2 files → 14). | **B-1** (`should_continue_loop`/`should_exit_inner` tested-but-uncalled) is genuinely open and moved to `docs/todo/API_TODO.md` as band-4 work before archiving — it had been living only in this review, which is exactly how items get lost. |
+
+### Doc-hygiene bugs fixed this batch
+
+- `TODO_MASTER.md` "Active code reviews" described `REVIEW_FullSystem_2026-07-20.md`
+  as "52 RESOLVED, 4 OPEN" and, in the same bullet, "**29 OPEN**, by cluster".
+  Both numbers cannot be right. Corrected to the cluster breakdown, which is
+  the one with per-finding file references behind it.
+- The 2026-07-18 log listed `REVIEW_FullModule_2026-04-06.md` under KEEP
+  because "C-1/D-2 reproduce". C-1 is fixed and D-2 was already resolved when
+  that note was written, so the KEEP rationale no longer holds.

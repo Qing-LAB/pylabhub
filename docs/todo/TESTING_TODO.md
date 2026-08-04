@@ -1020,7 +1020,7 @@ that legitimately need in-process broker state inspection keep
   - ✅ **`role_state` CLOSED OUT (2026-07-16, user-approved).**  The 10
     non-wire tests split by whether a role is actually co-hosted:
     - **Group A — KEEP as `DirectBrokerHandle` + RATIONALE (6):**
-      `metrics_reclaim_cycle`, `pending_recovers_to_ready`,
+      `metrics_reclaim_cycle`, `pending_recovers_to_connected`,
       `stuck_in_pending_reclaimed`,
       `role_entry_terminal_cleanup_on_last_presence_dereg`,
       `role_entry_terminal_cleanup_on_consumer_left_last`,

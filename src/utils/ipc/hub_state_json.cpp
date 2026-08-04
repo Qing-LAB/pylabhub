@@ -198,9 +198,9 @@ nlohmann::json peer_to_json(const PeerEntry &p)
 nlohmann::json broker_counters_to_json(const BrokerCounters &c)
 {
     nlohmann::json j;
-    j["ready_to_pending_total"] = c.ready_to_pending_total;
-    j["pending_to_deregistered_total"] = c.pending_to_deregistered_total;
-    j["pending_to_ready_total"] = c.pending_to_ready_total;
+    j["connected_to_pending_total"] = c.connected_to_pending_total;
+    j["pending_to_disconnected_total"] = c.pending_to_disconnected_total;
+    j["pending_to_connected_total"] = c.pending_to_connected_total;
     j["bytes_in_total"] = c.bytes_in_total;
     j["bytes_out_total"] = c.bytes_out_total;
     j["msg_type_counts"] = c.msg_type_counts;

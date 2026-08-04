@@ -582,30 +582,50 @@ int gap_count_tracks_dropped_sends()
             for (uint32_t i = 0; i < 50; ++i)
                 (void)send_value(kMaxAttempts + i);
 
-            // Drain everything the receiver actually got.
-            while (const InboxItem *item = q->recv_one(ms{200}))
+            // A gap is reported ON THE MESSAGE FOLLOWING the hole
+            // (`gap = seq - expected`), so it has to be read off every
+            // message as it arrives.  Where the burned sequence numbers sit
+            // is not controllable: they interleave with delivered messages
+            // when the receiver drains between refusals, and form one run at
+            // the tail when it does not.  Checking only one of those places
+            // makes the test depend on which happened — it asserted the gap
+            // on a trailing recovery message alone, and failed with a
+            // legitimate gap of 0 on a run where the last send succeeded.
+            uint64_t observed_gap_total = 0;
+            auto account = [&](const InboxItem *item)
             {
+                const uint64_t hole = item->seq > last_seq ? item->seq - (last_seq + 1) : 0;
+                EXPECT_GT(item->seq, last_seq) << "the stream must arrive in order";
+                EXPECT_EQ(item->gap, hole)
+                    << "a message's gap must name exactly the sequence numbers missing "
+                       "before it — that is what tells a handler WHICH state it lost "
+                       "(seq=" << item->seq << " prev=" << last_seq << ")";
+                observed_gap_total += item->gap;
                 last_seq = item->seq;
                 q->send_ack(0);
-            }
+            };
 
-            // The recovery message: the queue has room again, so this one lands
-            // and its seq exposes every seq burned by a dropped send.
+            while (const InboxItem *item = q->recv_one(ms{200}))
+                account(item);
+
+            // Covers the tail case: with the queue drained this send lands, and
+            // its seq exposes every seq burned after the last delivered message.
             const uint8_t ack = send_value(0xFEEDFACE);
             ASSERT_NE(ack, 255) << "the recovery send was also dropped";
 
             const InboxItem *recovered = q->recv_one(ms{2000});
             ASSERT_NE(recovered, nullptr) << "the recovery message never arrived";
-            q->send_ack(0);
+            account(recovered);
 
-            EXPECT_GT(recovered->gap, uint64_t{0})
-                << "the message after a loss must report a non-zero per-message gap; "
-                   "without it a handler cannot tell WHICH state it is missing";
-            EXPECT_EQ(recovered->gap, recovered->seq - (last_seq + 1))
-                << "the reported gap must equal the number of sequence numbers "
-                   "that never reached the receiver";
-            EXPECT_GE(q->recv_gap_count(), recovered->gap)
-                << "the process-wide counter must include this message's gap";
+            // Sends were provably refused above, and a refusal burns a sequence
+            // number, so the loss must be visible somewhere in the two places
+            // just checked.
+            EXPECT_GT(observed_gap_total, uint64_t{0})
+                << "sends were refused, so sequence numbers were burned, but no "
+                   "delivered message reported them; a handler that never sees a gap "
+                   "cannot tell what it is missing";
+            EXPECT_GE(q->recv_gap_count(), observed_gap_total)
+                << "the process-wide counter must account for every per-message gap";
 
             c->stop();
             q->stop();

@@ -172,7 +172,7 @@ TEST(HubStateSkeleton, EmptySnapshotIsEmpty)
     EXPECT_TRUE(snap.bands.empty());
     EXPECT_TRUE(snap.peers.empty());
     EXPECT_TRUE(snap.shm_blocks.empty());
-    EXPECT_EQ(snap.counters.ready_to_pending_total, 0u);
+    EXPECT_EQ(snap.counters.connected_to_pending_total, 0u);
 }
 
 TEST(HubStateSkeleton, MissingLookupsReturnNullopt)
@@ -724,7 +724,7 @@ TEST(HubStateOps, HeartbeatTimeout_DemotesProducerPresence)
     const auto *p = find_producer_in(snap, "ch1", "prod.main.test");
     ASSERT_NE(p, nullptr);
     EXPECT_EQ(p->state, RoleState::Pending);
-    EXPECT_EQ(s.counters().ready_to_pending_total, 1u);
+    EXPECT_EQ(s.counters().connected_to_pending_total, 1u);
 }
 
 TEST(HubStateOps, HeartbeatTimeout_AlreadyPending_NoDoubleCounter)
@@ -733,14 +733,14 @@ TEST(HubStateOps, HeartbeatTimeout_AlreadyPending_NoDoubleCounter)
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
     // Eager presence: Connected + first_heartbeat_seen=false.
     HubStateTestAccess::on_heartbeat_timeout(s, "ch1", "prod.main.test");
-    EXPECT_EQ(s.counters().ready_to_pending_total, 1u);
+    EXPECT_EQ(s.counters().connected_to_pending_total, 1u);
 
     HubStateTestAccess::on_heartbeat_timeout(s, "ch1", "prod.main.test");
-    EXPECT_EQ(s.counters().ready_to_pending_total, 1u)
+    EXPECT_EQ(s.counters().connected_to_pending_total, 1u)
         << "Pending → Pending must not double-bump the counter";
 
     HubStateTestAccess::on_heartbeat_timeout(s, "no.such.channel.uid00000001", "prod.main.test");
-    EXPECT_EQ(s.counters().ready_to_pending_total, 1u);
+    EXPECT_EQ(s.counters().connected_to_pending_total, 1u);
 }
 
 TEST(HubStateOps, PendingTimeout_AtomicallyTearsDownChannel)
@@ -764,7 +764,7 @@ TEST(HubStateOps, PendingTimeout_AtomicallyTearsDownChannel)
     EXPECT_FALSE(s.channel("ch1").has_value())
         << "HEP-CORE-0023 §2.1 atomic teardown — Pending->Disconnected "
            "removes the channel in the same handler";
-    EXPECT_EQ(s.counters().pending_to_deregistered_total, 1u);
+    EXPECT_EQ(s.counters().pending_to_disconnected_total, 1u);
 }
 
 TEST(HubStateOps, PendingTimeout_NotPending_NoOpAndNoCounterBump)
@@ -783,20 +783,20 @@ TEST(HubStateOps, PendingTimeout_NotPending_NoOpAndNoCounterBump)
     EXPECT_FALSE(pt.removed);
     EXPECT_FALSE(pt.channel_now_empty);
     EXPECT_TRUE(s.channel("ch1").has_value());
-    EXPECT_EQ(s.counters().pending_to_deregistered_total, 0u);
+    EXPECT_EQ(s.counters().pending_to_disconnected_total, 0u);
 
     // Unknown channel → no-op.
     auto pt2 =
         HubStateTestAccess::on_pending_timeout(s, "no.such.channel.uid00000001", "prod.main.test");
     EXPECT_FALSE(pt2.removed);
-    EXPECT_EQ(s.counters().pending_to_deregistered_total, 0u);
+    EXPECT_EQ(s.counters().pending_to_disconnected_total, 0u);
 }
 
 TEST(HubStateOps, Heartbeat_PendingToConnected_BumpsRecoveryCounter)
 {
     HubState s;
     HubStateTestAccess::on_channel_registered(s, make_channel("ch1"));
-    ASSERT_EQ(s.counters().pending_to_ready_total, 0u);
+    ASSERT_EQ(s.counters().pending_to_connected_total, 0u);
 
     // First heartbeat: kRegistering → kLive (was_first==true) — counts.
     HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", "producer",
@@ -807,7 +807,7 @@ TEST(HubStateOps, Heartbeat_PendingToConnected_BumpsRecoveryCounter)
 
     HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", "producer",
                                      std::chrono::steady_clock::now(), std::nullopt);
-    EXPECT_EQ(s.counters().pending_to_ready_total, 0u);
+    EXPECT_EQ(s.counters().pending_to_connected_total, 0u);
 
     // Demote, then heartbeat to recover — Pending→Connected.
     HubStateTestAccess::on_heartbeat_timeout(s, "ch1", "prod.main.test");
@@ -818,7 +818,7 @@ TEST(HubStateOps, Heartbeat_PendingToConnected_BumpsRecoveryCounter)
     HubStateTestAccess::on_heartbeat(s, "ch1", "prod.main.test", "producer",
                                      std::chrono::steady_clock::now(), std::nullopt);
     EXPECT_EQ(channel_observable(s, "ch1"), ChannelObservable::kLive);
-    EXPECT_EQ(s.counters().pending_to_ready_total, 1u);
+    EXPECT_EQ(s.counters().pending_to_connected_total, 1u);
 }
 
 TEST(HubStateOps, BandJoined_UpsertsMemberRole)
@@ -2470,7 +2470,7 @@ TEST(HubStateProducerPendingTimeout, NonLastProducer_DropsOnlyOne_ChannelSurvive
     EXPECT_EQ(ch->producer_count(), 1u);
     EXPECT_EQ(ch->find_producer("prod.camA.uid00000001"), nullptr);
     EXPECT_NE(ch->find_producer("prod.camB.uid00000002"), nullptr);
-    EXPECT_EQ(s.counters().pending_to_deregistered_total, 1u);
+    EXPECT_EQ(s.counters().pending_to_disconnected_total, 1u);
 }
 
 TEST(HubStateProducerPendingTimeout, LastProducer_TearsChannelDown)
@@ -2491,7 +2491,7 @@ TEST(HubStateProducerPendingTimeout, LastProducer_TearsChannelDown)
     EXPECT_TRUE(pt.removed);
     EXPECT_TRUE(pt.channel_now_empty);
     EXPECT_FALSE(s.channel("ch.fanin.pending-last").has_value());
-    EXPECT_EQ(s.counters().pending_to_deregistered_total, 1u);
+    EXPECT_EQ(s.counters().pending_to_disconnected_total, 1u);
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -3569,7 +3569,7 @@ TEST(RoleEntryApi, OnHeartbeat_PendingRecovery_NewlyConnected_PrevPending)
 {
     // Pending → Connected via heartbeat.  prev_state == Pending is the
     // signal callers (HubState::_on_heartbeat) use to bump
-    // pending_to_ready_total.
+    // pending_to_connected_total.
     RoleEntry r = make_role("prod.cam.uid00000001");
     ASSERT_EQ(r.add_presence("ch.test", "producer"), AddPresenceResult::Created);
     r.on_heartbeat("ch.test", "producer", std::chrono::steady_clock::now());
@@ -3749,8 +3749,8 @@ TEST(HubStateConsumerHeartbeatTimeout, TransitionsConsumerPresenceToPending)
     EXPECT_EQ(pp->state, RoleState::Connected);
 
     // Counter bumped — producer + consumer transitions both count
-    // toward ready_to_pending_total (per-role-presence FSM metric).
-    EXPECT_EQ(s.counters().ready_to_pending_total, 1u);
+    // toward connected_to_pending_total (per-role-presence FSM metric).
+    EXPECT_EQ(s.counters().connected_to_pending_total, 1u);
 
     // ChannelStatusChangedHandler MUST NOT fire on a consumer-only
     // transition.  Pinning this catches a regression where the
@@ -3801,7 +3801,7 @@ TEST(HubStateConsumerPendingTimeout, TransitionsToDisconnected_ChannelSurvives)
     const auto *pc = find_presence_in(snap, "ch.cons.pt", "cons.B.uid00000002", "consumer");
     EXPECT_EQ(pc, nullptr) << "Consumer-presence row erased on pending-timeout (M3 step 5h)";
 
-    EXPECT_EQ(s.counters().pending_to_deregistered_total, 1u);
+    EXPECT_EQ(s.counters().pending_to_disconnected_total, 1u);
 }
 
 TEST(HubStateConsumerPendingTimeout, LastPresence_TriggersRoleDisconnected)
@@ -3870,7 +3870,7 @@ TEST(HubStateConsumerPendingTimeout, FanInOwner_PendingTimeout_ClosesChannel)
     // Terminal cleanup cascaded to every party on the channel.
     EXPECT_FALSE(s.role(owner_uid).has_value());
     EXPECT_FALSE(s.role("prod.camA.uid00000001").has_value());
-    EXPECT_EQ(s.counters().pending_to_deregistered_total, 1u);
+    EXPECT_EQ(s.counters().pending_to_disconnected_total, 1u);
 }
 
 // ─── HEP-CORE-0036 §4.1 channel-access index — D1 ────────────────────────────

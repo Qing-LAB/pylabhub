@@ -7197,9 +7197,9 @@ RoleStateMetrics BrokerService::query_role_state_metrics() const
     // takes its own internal lock; m_query_mu not needed here.
     const auto c = pImpl->hub_state_->counters();
     return RoleStateMetrics{
-        c.ready_to_pending_total,
-        c.pending_to_deregistered_total,
-        c.pending_to_ready_total,
+        c.connected_to_pending_total,
+        c.pending_to_disconnected_total,
+        c.pending_to_connected_total,
     };
 }
 

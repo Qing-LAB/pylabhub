@@ -1,7 +1,7 @@
 // tests/test_layer3_datahub/workers/datahub_role_state_workers.cpp
 //
 // HEP-CORE-0023 §2.5: broker role-liveness state machine workers.
-// Exercises Ready/Pending transitions + RoleStateMetrics counters.
+// Exercises Connected/Pending transitions + RoleStateMetrics counters.
 //
 // Strict-CURVE migration (#154 AUTH-6 batch-2a C3, 2026-06-29):
 //   - All test brokers come up CURVE-only via the canonical
@@ -24,7 +24,7 @@
 // in two groups:
 //
 //   (A) BROKER-INTERNAL-STATE tests — KEEP as `DirectBrokerHandle`.
-//       `metrics_reclaim_cycle`, `pending_recovers_to_ready`,
+//       `metrics_reclaim_cycle`, `pending_recovers_to_connected`,
 //       `stuck_in_pending_reclaimed`, `role_entry_terminal_cleanup_on_last_
 //       presence_dereg`, `role_entry_terminal_cleanup_on_consumer_left_last`,
 //       `consumer_heartbeat_timeout_fires_consumer_died_notify`.
@@ -100,7 +100,7 @@ static auto zmq_module()
 }
 
 // ============================================================================
-// metrics_reclaim_cycle — full Ready -> Pending -> dereg, verified via metrics
+// metrics_reclaim_cycle — full Connected -> Pending -> Disconnected, via metrics
 // ============================================================================
 
 // RATIONALE (task #52 group A, KEEP): broker-only DirectBrokerHandle + bare
@@ -129,28 +129,30 @@ int metrics_reclaim_cycle()
             auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(ch, uid), 3000);
             ASSERT_TRUE(reg.has_value());
 
-            // One heartbeat -> PendingReady -> Ready, bumps pending_to_ready.
+            // One heartbeat flips the presence from the kRegistering to the
+            // kLive sub-state of Connected.  That is NOT a Pending->Connected
+            // transition, so it bumps no counter — see the assertion below.
             bh.brc.send_heartbeat(ch, uid, "producer", {});
 
-            // Stop heartbeating; wait for Ready -> Pending -> dereg via metrics.
+            // Stop heartbeating; wait for Connected -> Pending -> Disconnected.
             auto metrics_reclaimed = [&]()
             {
                 auto m = broker.service->query_role_state_metrics();
-                return m.pending_to_deregistered_total >= 1;
+                return m.pending_to_disconnected_total >= 1;
             };
             ASSERT_TRUE(poll_until(metrics_reclaimed, std::chrono::seconds(3)))
-                << "pending_to_deregistered_total did not increment within 3s";
+                << "pending_to_disconnected_total did not increment within 3s";
 
             auto m = broker.service->query_role_state_metrics();
-            // HEP-CORE-0023 §2.5 — pending_to_ready counts genuine
+            // HEP-CORE-0023 §2.5 — pending_to_connected counts genuine
             // Pending→Connected recoveries.  First-heartbeat (kRegistering
             // → kLive sub-state flip) is NOT a Pending→Connected transition
             // and does not bump this counter.
-            EXPECT_EQ(m.pending_to_ready_total, 0u) << "no recovery happened in this scenario";
-            EXPECT_GE(m.ready_to_pending_total, 1u)
-                << "ready_to_pending_total should be >=1 (demotion on timeout)";
-            EXPECT_GE(m.pending_to_deregistered_total, 1u)
-                << "pending_to_deregistered_total should be >=1 (pending timeout)";
+            EXPECT_EQ(m.pending_to_connected_total, 0u) << "no recovery happened in this scenario";
+            EXPECT_GE(m.connected_to_pending_total, 1u)
+                << "connected_to_pending_total should be >=1 (demotion on timeout)";
+            EXPECT_GE(m.pending_to_disconnected_total, 1u)
+                << "pending_to_disconnected_total should be >=1 (pending timeout)";
 
             bh.stop();
             broker.stop_and_join();
@@ -160,12 +162,12 @@ int metrics_reclaim_cycle()
 }
 
 // ============================================================================
-// pending_recovers_to_ready — demote, then heartbeat restores Ready
+// pending_recovers_to_connected — demote, then heartbeat restores Connected
 // ============================================================================
 
 // RATIONALE (task #52 group A, KEEP): broker-only DirectBrokerHandle + bare
-// BrcHandle; pins the pending_to_ready recovery counter.  See file header.
-int pending_recovers_to_ready()
+// BrcHandle; pins the pending_to_connected recovery counter.  See file header.
+int pending_recovers_to_connected()
 {
     return run_gtest_worker(
         []()
@@ -187,36 +189,36 @@ int pending_recovers_to_ready()
 
             auto reg = bh.brc.register_channel(pylabhub::tests::make_reg_opts(ch, uid), 3000);
             ASSERT_TRUE(reg.has_value());
-            bh.brc.send_heartbeat(ch, uid, "producer", {}); // -> Ready
+            bh.brc.send_heartbeat(ch, uid, "producer", {}); // -> Connected, kLive
 
             // Wait for demotion to Pending.
             auto demoted = [&]()
             {
                 auto m = broker.service->query_role_state_metrics();
-                return m.ready_to_pending_total >= 1;
+                return m.connected_to_pending_total >= 1;
             };
             ASSERT_TRUE(poll_until(demoted, std::chrono::seconds(2)))
-                << "Ready -> Pending demotion did not fire";
+                << "Connected -> Pending demotion did not fire";
 
-            // Heartbeat again -> should transition Pending -> Ready (counter +1).
-            auto before = broker.service->query_role_state_metrics().pending_to_ready_total;
+            // Heartbeat again -> should transition Pending -> Connected (counter +1).
+            auto before = broker.service->query_role_state_metrics().pending_to_connected_total;
             bh.brc.send_heartbeat(ch, uid, "producer", {});
             auto recovered = [&]()
             {
                 auto m = broker.service->query_role_state_metrics();
-                return m.pending_to_ready_total > before;
+                return m.pending_to_connected_total > before;
             };
             ASSERT_TRUE(poll_until(recovered, std::chrono::seconds(1)))
-                << "pending_to_ready_total did not increment on heartbeat";
+                << "pending_to_connected_total did not increment on heartbeat";
 
             auto m = broker.service->query_role_state_metrics();
-            EXPECT_EQ(m.pending_to_deregistered_total, 0u)
-                << "Should not have deregistered — pending_timeout was long";
+            EXPECT_EQ(m.pending_to_disconnected_total, 0u)
+                << "Should not have reached Disconnected — pending_timeout was long";
 
             bh.stop();
             broker.stop_and_join();
         },
-        "role_state.pending_recovers_to_ready", logger_module(),
+        "role_state.pending_recovers_to_connected", logger_module(),
         ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module());
 }
 
@@ -262,15 +264,15 @@ int stuck_in_pending_reclaimed()
             auto reclaimed = [&]()
             {
                 auto m = broker.service->query_role_state_metrics();
-                return m.pending_to_deregistered_total >= 1;
+                return m.pending_to_disconnected_total >= 1;
             };
             ASSERT_TRUE(poll_until(reclaimed, std::chrono::seconds(2)))
                 << "Registered-no-heartbeat role was not reclaimed within 2s";
 
             auto m = broker.service->query_role_state_metrics();
-            EXPECT_EQ(m.pending_to_ready_total, 0u)
-                << "Should never have transitioned to Ready (no heartbeat sent)";
-            EXPECT_GE(m.ready_to_pending_total, 1u)
+            EXPECT_EQ(m.pending_to_connected_total, 0u)
+                << "Should never have transitioned to Connected (no heartbeat sent)";
+            EXPECT_GE(m.connected_to_pending_total, 1u)
                 << "Connected -> Pending demotion should have fired (no "
                    "heartbeats within ready_timeout)";
 
@@ -576,11 +578,11 @@ int consumer_heartbeat_timeout_fires_consumer_died_notify()
                 << "Consumer role entry must be erased after its last "
                    "presence transitions Disconnected (H1 wiring cascade).";
 
-            // Counter bumped — pending_to_deregistered_total covers
+            // Counter bumped — pending_to_disconnected_total covers
             // both producer and consumer per-presence transitions.
             auto m = broker.service->query_role_state_metrics();
-            EXPECT_GE(m.pending_to_deregistered_total, 1u)
-                << "pending_to_deregistered_total must bump on the "
+            EXPECT_GE(m.pending_to_disconnected_total, 1u)
+                << "pending_to_disconnected_total must bump on the "
                    "consumer-presence Pending→Disconnected path.";
 
             // Tear down.
@@ -1181,8 +1183,8 @@ struct BrokerRoleStateWorkerRegistrar
                 using namespace pylabhub::tests::worker::broker_role_state;
                 if (scenario == "metrics_reclaim_cycle")
                     return metrics_reclaim_cycle();
-                if (scenario == "pending_recovers_to_ready")
-                    return pending_recovers_to_ready();
+                if (scenario == "pending_recovers_to_connected")
+                    return pending_recovers_to_connected();
                 if (scenario == "stuck_in_pending_reclaimed")
                     return stuck_in_pending_reclaimed();
                 // band_membership_cleaned_on_role_close migrated to

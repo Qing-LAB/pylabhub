@@ -5,9 +5,9 @@
  *
  * BrokerService runs the channel discovery hub: producers register channels,
  * consumers discover them via REG/DISC/DEREG messages over a ZMQ ROUTER socket.
- * Channels start in PendingReady state; the first HEARTBEAT_REQ transitions them
- * to Ready. Dead channels (heartbeat timeout) trigger CHANNEL_CLOSING_NOTIFY to
- * registered consumers AND producer, then are removed.
+ * A presence starts Connected; the first HEARTBEAT_REQ marks it live
+ * (HEP-CORE-0023 §2.1). Dead channels (heartbeat timeout) trigger
+ * CHANNEL_CLOSING_NOTIFY to registered consumers AND producer, then are removed.
  *
  * Error taxonomy (see docs/IMPLEMENTATION_GUIDANCE.md § Error Taxonomy):
  *   Cat 1 — invariant violations (schema mismatch, heartbeat timeout): log + notify + shutdown.
@@ -91,10 +91,9 @@ struct ChannelSnapshot
 /// transitions occurred without racing on wall-clock timing.
 struct RoleStateMetrics
 {
-    uint64_t ready_to_pending_total{0};        ///< Ready -> Pending demotions.
-    uint64_t pending_to_deregistered_total{0}; ///< Pending -> deregistered (+ CLOSING_NOTIFY).
-    uint64_t pending_to_ready_total{
-        0}; ///< Pending -> Ready transitions (first heartbeat or recovery).
+    uint64_t connected_to_pending_total{0};    ///< Connected -> Pending demotions.
+    uint64_t pending_to_disconnected_total{0}; ///< Pending -> Disconnected (+ CLOSING_NOTIFY).
+    uint64_t pending_to_connected_total{0};    ///< Pending -> Connected (heartbeat recovery).
 };
 
 /// Configuration for one outbound federation peer (HEP-CORE-0022).
@@ -167,10 +166,12 @@ class PYLABHUB_UTILS_EXPORT BrokerService
         /// (2 Hz).
         std::chrono::milliseconds heartbeat_interval{::pylabhub::kDefaultHeartbeatIntervalMs};
 
-        /// Ready -> Pending demotion after this many consecutive missed heartbeats.
+        /// Connected -> Pending demotion after this many consecutive missed heartbeats.
+        /// The field name keeps its spelling: it is a configuration key, and renaming
+        /// it would change a user's config file.
         uint32_t ready_miss_heartbeats{::pylabhub::kDefaultReadyMissHeartbeats};
 
-        /// Pending -> deregistered + CHANNEL_CLOSING_NOTIFY after this many additional missed
+        /// Pending -> Disconnected + CHANNEL_CLOSING_NOTIFY after this many additional missed
         /// heartbeats (counted from the moment the role entered Pending).
         uint32_t pending_miss_heartbeats{::pylabhub::kDefaultPendingMissHeartbeats};
 
@@ -494,7 +495,7 @@ class PYLABHUB_UTILS_EXPORT BrokerService
      * ... }, "roles":      { "<uid>": { state, name, short_tag, channels, latest_metrics,
      * _collected_at }, ... }, "bands":      { "<name>": { members, created_at, last_activity }, ...
      * }, "peers":      { "<uid>": { endpoint, state, last_seen, relay_channels }, ... }, "broker":
-     * { ready_to_pending_total, ..., msg_type_counts, ... }, "shm":        { "<channel>": {
+     * { connected_to_pending_total, ..., msg_type_counts, ... }, "shm":        { "<channel>": {
      * shm_metrics or null, _collected_at, ... }, ... }, "schemas":    { "<owner>:<id>": { ... },
      * ... }
      * }

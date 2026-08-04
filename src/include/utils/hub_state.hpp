@@ -1186,11 +1186,11 @@ enum class TransitionEffect
 };
 
 /// Rich return for `RoleEntry::on_heartbeat`.  Callers that need
-/// `prev_state` (e.g., to bump `pending_to_ready_total` only on a
-/// Pending→Ready (= Connected post-§2) recovery) read it from here
-/// directly.  The post-mutation presence state is always Connected
-/// (= legacy "Ready") when `presence_found` is true — heartbeats
-/// unconditionally transition to Connected per HEP-CORE-0023 §2.1.
+/// `prev_state` (e.g., to bump `pending_to_connected_total` only on a
+/// Pending→Connected recovery) read it from here directly.  The
+/// post-mutation presence state is always Connected when
+/// `presence_found` is true — heartbeats unconditionally transition to
+/// Connected per HEP-CORE-0023 §2.1.
 struct HeartbeatEffect
 {
     bool presence_found{false};
@@ -1320,9 +1320,8 @@ struct RoleEntry
     /// Heartbeat handler.  Updates last_heartbeat + first_heartbeat_seen;
     /// transitions FSM to Connected if not already; returns a rich
     /// `HeartbeatEffect` so callers can inspect `prev_state` for counter
-    /// decisions (e.g., `pending_to_ready_total` on Pending → Ready
-    /// recovery — "Ready" here is the legacy term for the Connected
-    /// state post-§2 per the BrokerCounters docstring).
+    /// decisions (e.g., `pending_to_connected_total` on a Pending →
+    /// Connected recovery).
     /// Mutating only the matched (channel, role_type) presence — never
     /// touches sibling rows.  Per HEP-CORE-0023 §2.5.2.
     HeartbeatEffect on_heartbeat(std::string_view channel_, std::string_view role_type_,
@@ -1481,23 +1480,15 @@ struct ShmBlockRef
 /// Broker-internal counters (HEP-CORE-0023 §2.5 + general instrumentation).
 struct BrokerCounters
 {
-    // Role-presence FSM transitions (HEP-CORE-0023 §2.5).
-    //
-    // Naming note (audit T1, 2026-05-17): "ready" in these field names
-    // is the pre-§2-rewrite term for what HEP-CORE-0023 §2.1 now calls
-    // the **Connected** state (more precisely: the Connected sub-state
-    // with `first_heartbeat_seen == true`, i.e. the `kLive`
-    // `ChannelObservable` per §2.2).  The legacy field names are kept
-    // for backward compatibility with shipped test fixtures and
-    // production log scrapers — see HEP-CORE-0023 §2.5.3 for the
-    // deferral note.  When reading or writing comments here, ALWAYS
-    // refer to the FSM state as "Ready (= Connected post-§2)" — never
-    // mix the two terms without the equivalence — so a reader is not
-    // left wondering whether two terms denote the same state or two
-    // different states.
-    uint64_t ready_to_pending_total{0};
-    uint64_t pending_to_deregistered_total{0};
-    uint64_t pending_to_ready_total{0};
+    // Role-presence FSM transitions (HEP-CORE-0023 §2.5).  Each field
+    // is named for the two §2.1 states it counts the transition
+    // between, so the counter and the state are the same word.
+    // `Connected` here means the Connected sub-state with
+    // `first_heartbeat_seen == true` (the `kLive` `ChannelObservable`
+    // per §2.2) — the only one a heartbeat-absence demotion can leave.
+    uint64_t connected_to_pending_total{0};
+    uint64_t pending_to_disconnected_total{0};
+    uint64_t pending_to_connected_total{0};
 
     // Loop instrumentation.
     uint64_t bytes_in_total{0};
@@ -2163,8 +2154,7 @@ class PYLABHUB_UTILS_EXPORT HubState
                                   const std::optional<nlohmann::json> &metrics);
     /// Connected → Pending transition for the `(channel, role_uid,
     /// role_type)` presence (HEP-CORE-0023 §2.1).  Producer + consumer
-    /// transitions both bump `ready_to_pending_total` ("ready" is the
-    /// legacy term for "Connected" — see BrokerCounters docstring);
+    /// transitions both bump `connected_to_pending_total`;
     /// only producer transitions fan out
     /// `ChannelStatusChangedHandler` (consumer presence does not
     /// affect `ChannelObservable` per §2.1).  `role_type` MUST be
@@ -2173,7 +2163,7 @@ class PYLABHUB_UTILS_EXPORT HubState
                                const std::string &role_type);
     /// Pending → Disconnected transition for the `(channel, role_uid,
     /// role_type)` presence (HEP-CORE-0023 §2.1 + §2.1.1).  Bumps
-    /// `pending_to_deregistered_total`.  Behavior by role_type:
+    /// `pending_to_disconnected_total`.  Behavior by role_type:
     ///
     /// Teardown is OWNER-bound in both branches (HEP-CORE-0017
     /// §4.7.0.2 T2):

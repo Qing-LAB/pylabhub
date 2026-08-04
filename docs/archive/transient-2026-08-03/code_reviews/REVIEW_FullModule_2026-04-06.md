@@ -7,18 +7,15 @@
 
 ---
 
-## TODO — Address Each Issue
+## Disposition — all items validated against code 2026-08-02/03
 
-- [ ] A-1: Verify processor data socket poll condition (comment/code mismatch)
-- [ ] B-1: Remove or adopt `should_continue_loop()` / `should_exit_inner()` in RoleHostCore
-- [ ] B-2: Remove redundant ternary in `engine_lifecycle_startup()`
-- [ ] C-1: Extract `to_channel_side()` to shared location
-- [ ] D-2: Update 3 stale doc references to point to HEP-0011
-- [ ] E-1: Track native engine API parity gap (future sprint)
-- [ ] F-1: Track native engine L2 test expansion (future sprint)
-- [ ] F-2: Track L3 consumer/processor engine roundtrip tests (future sprint)
-- [ ] F-3: Track sleep-to-poll_until migration (future sprint)
-- [ ] F-4: Track test_schema_helpers.h adoption (future sprint)
+Every row below was re-checked against the current tree before being
+closed. Four findings had already been fixed or had their subject deleted
+without anyone updating this table, which is why the table said ten open
+items when one was open.
+
+The single surviving item, **B-1**, is now carried in
+`docs/todo/API_TODO.md` so it is not lost when this review is archived.
 
 ---
 
@@ -26,16 +23,16 @@
 
 | ID | Sev | Category | File(s) | Description | Status |
 |----|-----|----------|---------|-------------|--------|
-| **A-1** | HIGH | Logic | `processor_role_host.cpp:909-916` | Data socket poll condition: comment says "needed for ZMQ relay" but code adds socket when `!= "zmq"` (SHM mode). Consumer uses same pattern. Comment or code is wrong. | :x: OPEN |
-| **B-1** | LOW | Dead code | `role_host_core.hpp:248-262` | `should_continue_loop()` and `should_exit_inner()` defined but never called by any role host | :x: OPEN |
-| **B-2** | LOW | Dead code | `engine_module_params.cpp:24` | Redundant `p->api ? p->api->core() : nullptr` ternary — `p->api` already guaranteed non-null by line 20 throw | :x: OPEN |
-| **C-1** | LOW | Duplication | `producer_api.cpp:102`, `consumer_api.cpp:72`, `processor_api.cpp:99` | `to_channel_side()` identical 6-line helper defined 3 times | :x: OPEN |
-| **D-2** | LOW | Docs | `script_engine.hpp:27`, `python_engine.hpp:6`, `engine_module_params.hpp:10` | Comment references point to archived tech drafts instead of HEP-0011 | :x: OPEN |
-| **E-1** | INFO | API gap | `native_engine_api.h` | Native C API missing queue diagnostics (policy, capacity, last_seq, verify_checksum) vs Python/Lua | :hourglass: DEFERRED — future sprint |
-| **F-1** | INFO | Test gap | `test_scriptengine_native_dylib.cpp` | Native engine L2 tests: 22 vs Python 98 / Lua 101 | :hourglass: DEFERRED — future sprint |
-| **F-2** | INFO | Test gap | `test_datahub_engine_roundtrip.cpp` | L3 engine roundtrip: producer-only; no consumer-role or processor-chain engine tests | :hourglass: DEFERRED — future sprint |
-| **F-3** | INFO | Test quality | 10+ test files | ~110 `sleep_for` calls; `poll_until()` adopted in only 2 files | :hourglass: DEFERRED — future sprint |
-| **F-4** | INFO | Test quality | 30+ test files | `test_schema_helpers.h` used by 6 files; applicable to 30+ | :hourglass: DEFERRED — future sprint |
+| **A-1** | HIGH | Logic | `processor_role_host.cpp:909-916` | Data socket poll condition: comment says "needed for ZMQ relay" but code adds socket when `!= "zmq"` (SHM mode). | :white_check_mark: STALE 2026-08-02 — `data_transport()` no longer exists anywhere in `src/processor/` or `src/consumer/`; the `!= "zmq"` construct went with the topology/transport rework. Nothing to fix. |
+| **B-1** | LOW | Dead code | `role_host_core.hpp:516,525` | `should_continue_loop()` and `should_exit_inner()` defined but never called by any role host | :x: **OPEN — the only one.** Both still defined, still zero production callers; the only references are in `test_role_host_core.cpp`, which tests them. Tested-but-uncalled is worse than plain dead code: the tests make it look live. Adopt-or-delete belongs inside band 4 (role-host unification), which collapses the three loops this would touch. Tracked in `API_TODO.md`. |
+| **B-2** | LOW | Dead code | `engine_module_params.cpp:24` | Redundant `p->api ? p->api->core() : nullptr` ternary | :white_check_mark: STALE 2026-08-02 — `src/scripting/engine_module_params.cpp` no longer exists. |
+| **C-1** | LOW | Duplication | `producer_api.cpp`, `consumer_api.cpp`, `processor_api.cpp` | `to_channel_side()` identical helper defined 3 times | :white_check_mark: FIXED 2026-08-02 (`d92a7b0b`) — one `inline` definition in `scripting/json_py_helpers.hpp`, where the other shared py-argument conversions already live; the three file-static copies deleted. |
+| **D-2** | LOW | Docs | `script_engine.hpp`, `python_engine.hpp`, `engine_module_params.hpp` | Comment references point to archived tech drafts instead of HEP-0011 | :white_check_mark: RESOLVED 2026-08-02 — no `script_engine_refactor` or `script_engine_lifecycle_module` reference survives in the two headers that still exist; the third file is deleted. |
+| **E-1** | INFO | API gap | `native_engine_api.h` | Native C API missing queue diagnostics vs Python/Lua | :white_check_mark: RESOLVED 2026-08-02 — 6 of the 8 named methods shipped with the #194 parity work (`in_policy`, `in_capacity`, `out_policy`, `out_capacity`, `last_seq`, `set_verify_checksum`). The other two, `update_last_seq` and `ctrl_queue_dropped`, exist nowhere in `src/include/` at all — retired framework-wide, so not a native gap. |
+| **F-1** | INFO | Test gap | `test_scriptengine_native_dylib.cpp` | Native engine L2 tests: 22 vs Python 98 / Lua 101 | :grey_exclamation: NOT A FINDING — a raw count across engines with different surface areas. Test-count parity is not a defect; a named uncovered behaviour would be. Nothing actionable as written. |
+| **F-2** | INFO | Test gap | `test_datahub_engine_roundtrip.cpp` | L3 engine roundtrip: producer-only | :grey_exclamation: SUPERSEDED — three-engine L3 parity is tracked concretely in `TESTING_TODO.md` (the #98 channel-broadcast parity gap), which names the behaviour instead of a count. |
+| **F-3** | INFO | Test quality | 10+ test files | ~110 `sleep_for` calls; `poll_until()` adopted in only 2 files | :white_check_mark: LARGELY RESOLVED 2026-08-02 — both named offenders are gone: `test_datahub_hub_zmq_queue.cpp` no longer exists and `test_datahub_broker_protocol.cpp` now contains **zero** `sleep_for` (was 21). `poll_until` adoption is up from 2 files to 14. The standing rule lives in `README_testing.md`, not in this review. |
+| **F-4** | INFO | Test quality | 30+ test files | `test_schema_helpers.h` used by 6 files; applicable to 30+ | :grey_exclamation: NOT A FINDING — same counting exercise as F-1. "Applicable to 30+" was never established per-file. |
 
 ---
 

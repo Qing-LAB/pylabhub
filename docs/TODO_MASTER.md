@@ -10,13 +10,32 @@ post-reconcile shipped-sprint detail).
 
 ---
 
-## Current status (2026-07-22)
+## Current status (2026-08-03)
 
 > **Reconciled 2026-07-22** against `git log b0aa0f51..fc08850f` (34 commits since
 > the 2026-07-18 fact-check), the subtopic TODOs, and code.  Shipped-work detail
 > (admin CURVE commits, vault/inbox-replay, schema two-zone, the 27 resolved
 > review findings) extracted to
 > `archive/transient-2026-07-22/todo-completions/TODO_MASTER_completions_2026-07-22.md`.
+
+> **Task-list validation 2026-08-03.** Every open harness task was re-checked
+> against code. Four were already done and unmarked — **#93** (socket monitor
+> makes disconnect terminal), **#70** (consumer failure-path teardown, which is
+> now the *opposite* of the finding — consumer has more teardown sites than
+> producer), **#71** (the L2 HubHost suite was never masked), and **#98**
+> (channel broadcast; its missing parity test moved to `TESTING_TODO.md:265`
+> rather than holding a shipped feature open).  Still genuinely open and
+> re-confirmed: **#52** (53 `HubHostBrokerHandle` usages), **#55**, **#56**,
+> **#97**.  **Not** re-checked this pass — #58, #82, #85, #87, #89.
+>
+> Also shipped: the broker's three role-presence FSM counters now carry the
+> §2.1 state names (`connected_to_pending_total`, `pending_to_connected_total`,
+> `pending_to_disconnected_total`).  HEP-CORE-0023 §2.5 had documented the old
+> spelling and deferred the rename for "production log scrapers" — a
+> justification about the outside world that nobody had verified.  Confirmed
+> with the owner that no scraper exists; the deferral ended.  `ready_timeout`
+> and `ready_miss_heartbeats` keep their spelling: they are config keys, and
+> renaming them would change a user's config file.
 
 **Closed lines** (detail in the completions index above):
 - **Line 1 — CURVE auth chain:** 🟢 Phase 1 production-ready (REVIEW-E); + vault
@@ -318,13 +337,26 @@ scenarios.  Inventory: `TESTING_TODO.md` § "Test infrastructure inventory".
 
 ---
 
-## Active code reviews (5 — updated 2026-07-31)
+## Active code reviews (6 — updated 2026-08-03)
 
+> **Review output is not the plan.** These records are candidate findings,
+> not decided work. Nothing here is scheduled until it has been validated
+> against code and a HEP, and then chosen. The validation record below is
+> the current state of that check.
+
+- `code_review/REVIEW_VALIDATION_2026-08-02.md` — the validation pass over the
+  other records. Of ~26 items that were carried as open, 12 were already fixed
+  and never marked, 2 were stale, 2 were misreads, 5 were advisory, and 5 were
+  genuinely valid. **Three carried forward, all LOW:** B-1 (loop helpers, now in
+  `API_TODO.md`), O1b (`query_shm_info`, settle inside band 2), O3 (three
+  forwarders — recorded, not recommended). Also records the 50 self-reported
+  ✅ resolution notes in the FullSystem review that have **not** been
+  independently verified.
 - `code_review/REVIEW_FullSystem_2026-07-20.md` — full-system HEP-vs-code audit
-  (56 findings). 🚧 **52 RESOLVED (07-20→07-24), 4 OPEN** (#69 + 3
-  test-coverage items — see the summary bullet above).  Resolved-finding
-  detail (#67–#72 + schema) in the 07-22 completions index; per-finding evidence
-  in the review doc's `✅` blocks.  **29 OPEN, by cluster** (files in review doc):
+  (56 findings). Two incompatible counts were carried here for weeks — "4 OPEN"
+  and "29 OPEN" in the same bullet. The cluster breakdown below is the one with
+  per-finding file references behind it; the "4 OPEN" figure had nothing
+  supporting it and is dropped. **29 OPEN, by cluster** (files in review doc):
   - **Federation ingress bypass** (1, high) — peer-DEALER skips the admission
     gate chain; consolidated under the #69 design-first federation task.
   - **Systemic HEP↔code drift** (7, high) — governing HEPs describe superseded
@@ -341,13 +373,17 @@ scenarios.  Inventory: `TESTING_TODO.md` § "Test infrastructure inventory".
   `query_shm_info`); tracked in API_TODO.
 - `code_review/REVIEW_CatchBlocks_2026-05-01.md` — full-codebase silent-failure
   sweep; finding sections never populated (unstarted).
-- `code_review/REVIEW_FullModule_2026-04-06.md` — mostly moot; C-1
-  (`to_channel_side` ×3) + D-2 (stale ref `engine_module_params.hpp:10`) still
-  reproduce — trivially closable.
+- `code_review/REVIEW_CURVE_Integration_2026-07-19.md` — code findings all
+  closed; what remains is an 11-item doc backlog. **One entry is actively
+  wrong** — it asks to reconcile `known_roles` back to a plaintext JSON file,
+  the opposite of the shipped encrypted-vault design (task #63). Fix or delete
+  that entry before working the rest.
 - `code_review/LINT_FIXES_PLAN.md` — §2 lint dispositions undecided (partly
   moot); needs a NOLINT-or-defer pass, then archive.
 
-Closed reviews archived per `docs/DOC_ARCHIVE_LOG.md` (latest batch 2026-07-18).
+`REVIEW_FullModule_2026-04-06.md` was archived 2026-08-03 — all ten rows
+dispositioned against code; its one live finding (B-1) moved to `API_TODO.md`
+first. Closed reviews archived per `docs/DOC_ARCHIVE_LOG.md`.
 
 ---
 

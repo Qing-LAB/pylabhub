@@ -24,6 +24,29 @@ removals from D2 / D3 drift batches).
 > `docs/archive/transient-2026-07-18/todo-completions/`.  #235 residual: L3 parity
 > regression tests → fold into **#232**.
 
+### Band 4 — `should_continue_loop()` / `should_exit_inner()`: adopt or delete
+
+`role_host_core.hpp:516,525`. Both are defined, both have **zero** production
+callers, and both have tests in `test_role_host_core.cpp`. Tested-but-uncalled
+is worse than plain dead code — the tests make it read as live, so a reviewer
+skimming for dead code finds coverage and moves on.
+
+The choice is adopt-or-delete, and neither is right to make on its own:
+
+- **Adopt** means rewriting the loop condition in three role hosts. A subtly
+  different condition there is a hang or a premature exit — not a compile
+  error, and not necessarily a failing test.
+- **Delete** throws away the correct abstraction immediately before band 4
+  (role-host unification, #292/#55) collapses those same three loops.
+
+So it belongs **inside** band 4, where the three loops are being merged
+anyway. Whatever the outcome, the tests move with the decision — do not leave
+them testing an uncalled helper.
+
+Carried here 2026-08-03 from `REVIEW_FullModule_2026-04-06.md` (finding B-1),
+which was the only place it lived. That review is now archived; this is the
+surviving record.
+
 ### #92 S-11 ❌ OPEN — send thread's EAGAIN retry ignores `ctx.shutdown_requested()`
 
 `src/utils/hub/hub_zmq_queue.cpp:472-498`.  `run_send_thread_`'s outer loop

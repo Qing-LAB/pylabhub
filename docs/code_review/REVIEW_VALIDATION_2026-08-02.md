@@ -113,7 +113,7 @@ role-state rework that followed, and simply never got marked.
 | **S2** | `RoleState` has 3 values but 4 observable states | **BY DESIGN** | The finding's own disposition says the split is documented in the docstring and acceptable. Not a defect; revisit only if the enum is extended. |
 | **S3** | `start_handler_threads` phase 2-4 window unobservable | **NOT VALIDATED** | Needs a read of the current phase sequence; deferred rather than guessed. |
 | **S4** | Band membership has no per-role local state | **RESOLVED** | `RoleAPIBase::is_in_band()` now reports the role's cached membership from `band_index_`, which is exactly the missing local state. |
-| **T1** | Counters say "Ready", state says "Connected" | **VALID (cosmetic)** | `ready_to_pending_total` survives at `hub_state.hpp:1498` while `RoleState` is `{Connected, Pending, Disconnected}`. Harmless but the two names describe one transition. |
+| **T1** | Counters say "Ready", state says "Connected" | **VALID — not cosmetic; FIXED 2026-08-03** | The counters were emitted as JSON metrics keys, so this was an interface question, not a tidy-up. Settled by confirming with the owner that the codebase is the only consumer. See "T1 — how this row went wrong twice". |
 | **T2** | `register_*` wire-field comments uniform | **CLEAN** | The finding records a passed spot-check, not a defect. Nothing to do. |
 | **T3** | HEP-0030 §9 over-retires `CHANNEL_BROADCAST_REQ` | **RESOLVED** | §9.1 now states explicitly that the channel-bound broadcast family is NOT superseded, and carries the coexistence table. Corrected by this very audit. |
 | **TR1** | Wire-conformance pinning is new and isolated | **ADVISORY** | An observation about test practice with no specific defect. Its suggestions (pin BAND_*_ACK / REG_ACK key sets) are candidate work, not findings. |
@@ -319,34 +319,67 @@ validating before scheduling.
 | REG plane restates the replay invariant | **FIXED** | `nonce_window_ms` is now `2 * skew_tolerance_ms`, matching the inbox and admin planes.  The drift path is closed structurally. |
 | Six stale `Wave-B M4d/e/f` labels | **FIXED** | Rewritten to say what the code does, keeping the dates.  Migration-wave prefixes are meaningless to anyone who did not live through the wave. |
 | `to_channel_side()` in three files | **FIXED** | One `inline` definition in `scripting/json_py_helpers.hpp` — the header where the other shared py-argument conversions already live — and the three file-static copies deleted. |
-| **T1** counter naming | **NOT FIXED — verdict corrected to VALID-BUT-EXTERNAL** | `ready_to_pending_total` / `pending_to_ready_total` are **emitted in the broker's JSON metrics blob** (`broker_service.hpp:497`), not internal state.  Renaming them is a break for every metrics consumer, not a cosmetic tidy.  The May review classified this as cosmetic; that classification is wrong.  Either keep the names and document that "ready" is the historical spelling of Connected, or deprecate them properly with both keys emitted for a period.  Owner call, not a sweep. |
+| **T1** counter naming | **FIXED 2026-08-03 — after a verdict correction that was itself wrong** | See "T1 — how this row went wrong twice" below.  The counters are now `connected_to_pending_total` / `pending_to_connected_total` / `pending_to_disconnected_total`, matching the §2.1 state names. |
 | **B-1** `should_continue_loop` / `should_exit_inner` | **NOT FIXED — deliberately** | The choice is adopt-or-delete, and both are wrong to make casually.  Adopting means rewriting the loop condition in three role hosts; a subtly different condition there is a hang or a premature exit, not a compile error.  Deleting throws away the right abstraction weeks before band 4 (role-host unification) is going to want exactly it.  Best done inside band 4, where the three loops are being collapsed anyway. |
 | **O1b** `query_shm_info` | **NOT FIXED — as recorded** | Dead today, but band 2 is about to build this capability.  Settle it there. |
 | **O3** three forwarders | **NOT FIXED — as recorded** | Factually pure forwarders, but inlining 30 call sites to delete a one-line seam is a judgement call, not a defect. |
 
+## T1 — how this row went wrong twice
+
+Worth recording, because both errors are repeatable.
+
+**First error (the May review).** It classified the Ready/Connected
+naming drift as cosmetic. It is not: the counters are emitted as JSON
+keys in the broker's metrics blob, so a rename reaches anything reading
+that output.
+
+**Second error (this validation, 2026-08-02).** Having caught that, I
+recorded T1 as an unmade owner decision and took it to the owner as one.
+It was not unmade. `HEP-CORE-0023` §2.5 had already decided it in
+writing — keep the legacy spelling for now, rename in a future cleanup —
+and gave the reason: backward compatibility with test fixtures and
+"production log scrapers". The May review closed T1 deliberately on that
+basis and harmonized the comments instead.
+
+So I re-derived from scratch a decision the governing HEP had already
+made, and presented the result as a new question. The rule that would
+have caught it is the one already in `CLAUDE.md`: refresh against the
+doc at the moment of starting work. A finding that cites a HEP section
+is a prompt to open that section, not a summary of it.
+
+**Resolution (2026-08-03).** Owner confirmed no log scrapers exist —
+the codebase is the consumer. That voids the HEP's stated justification,
+so the deferral ended and the rename shipped. HEP-0023 §2.5 and
+HEP-0033 §9.4 were updated first, then the code. `ready_timeout` and
+`ready_miss_heartbeats` keep their spelling: they are configuration
+keys, and renaming them would change a user's config file — a different
+surface with a different answer.
+
+The lasting lesson is narrower than "read the HEP". It is: when a
+deferral is justified by a fact about the outside world ("scrapers
+exist"), the fact needs an owner to confirm it, and it should be
+re-confirmed before the deferral is quoted as settled. A justification
+nobody has checked in a year is not a decision, it is an assumption
+wearing one.
+
 ## Carried forward
 
-Two findings survive validation and are genuinely open, both LOW:
+Three findings survive validation and are genuinely open, all LOW.
+None is scheduled — they go to the owner as candidates, not as plan.
 
 - **B-1** — delete `should_continue_loop()` / `should_exit_inner()` **and**
   their tests, or adopt them in the three role hosts. Do not leave them
-  tested-but-uncalled.
-- **C-1** — one `to_channel_side()`, not three.
-- **O2** — strip the 6 `Wave-B M4d/e/f` labels from `role_api_base.cpp`.
-- **T1** — `ready_to_pending_total` / `pending_to_ready_total` name a state
-  the enum no longer calls "Ready".
+  tested-but-uncalled. Best done inside band 4, which collapses those
+  three loops anyway.
 - **O1b** — `query_shm_info` is uncalled, but see the caution above: settle it
   inside band 2, not before.
 - **O3** — the three forwarders are real, but inlining 30 call sites to remove
   a one-line seam is a judgement call, not a defect. Recorded, not
   recommended.
 
-- **NEW** — derive the REG plane's `nonce_window_ms` from
-  `skew_tolerance_ms` instead of restating it as a literal, matching the
-  inbox and admin planes.  One line; removes a silent way to break
-  I-REPLAY-BOUND.
-
-None is scheduled. They go to the owner as candidates, not as plan.
+Closed since this record was opened: **C-1** (one `to_channel_side()`),
+**O2** (six stale labels), the **REG-plane replay-window derivation**,
+and **T1** (counter rename).
 
 ## Not yet done
 

@@ -14,6 +14,37 @@ the fix is in production code at `native_engine.cpp:289-305`).
 
 ## Recent Completions
 
+### 2026-08-03 — FSM counters renamed to the state vocabulary they count
+
+The broker's three role-presence transition counters were named for states
+the enum stopped using: `ready_to_pending_total`, `pending_to_ready_total`,
+`pending_to_deregistered_total`, against a `RoleState` of `{Connected,
+Pending, Disconnected}`.  They are now `connected_to_pending_total`,
+`pending_to_connected_total`, `pending_to_disconnected_total`.
+
+The drift was not an oversight — HEP-CORE-0023 §2.5 documented it and
+deferred the rename, citing backward compatibility with "production log
+scrapers".  That justification was never verified.  The owner confirmed
+2026-08-03 that no such scraper exists, which voided the deferral and let
+the rename proceed.  HEP-0023 §2.5 and HEP-0033 §9.4 were updated first,
+then the code.
+
+Deleted with it: the `BrokerCounters` comment block instructing every future
+reader to write "Ready (= Connected post-§2)" and never mix the terms.  That
+convention existed only to paper over the mismatch; with the names aligned
+there is nothing to bridge.
+
+`ready_timeout` / `ready_miss_heartbeats` deliberately keep their spelling —
+they are configuration keys reaching a user's config file via
+`hub_host.cpp:313`, a different surface with a different answer.  Both the
+HEP and the field docstring now say so, so the rename is not "finished"
+later by someone breaking a config.
+
+Also fixed while reading: `datahub_role_state_workers.cpp` claimed a first
+heartbeat bumps the recovery counter, while the same test asserted that
+counter is zero and the HEP agreed.  The comment contradicted its own
+assertion, not just the vocabulary.
+
 ### 2026-07-30 — Inbox delivery semantics + two admission backdoors closed
 
 Started from one hanging test (`InboxQueueTest.CurveUnknownSenderDenied`,

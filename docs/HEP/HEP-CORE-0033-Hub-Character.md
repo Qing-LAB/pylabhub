@@ -1364,9 +1364,9 @@ sys.invalid_identifier_rejected — bumped INSIDE HubState capability ops
 **Semantic metrics** (HubState capability op; bump atomic with state change):
 
 ```
-ready_to_pending_total          HEP-CORE-0023 §2.5
-pending_to_ready_total
-pending_to_deregistered_total
+connected_to_pending_total      HEP-CORE-0023 §2.5
+pending_to_connected_total
+pending_to_disconnected_total
 close:<reason>                  per ChannelCloseReason enum value
 
 schema_registered_total         HEP-CORE-0034 §11.3
@@ -1376,8 +1376,8 @@ schema_citation_rejected_total    bumped on _validate_schema_citation NACK
 
 These are triggered by **state transitions**, which include but are
 not limited to message arrivals (the heartbeat-timeout sweep fires
-`ready_to_pending_total` from a timer, no inbound message; producer
-deregistration fires both `pending_to_deregistered_total` and any
+`connected_to_pending_total` from a timer, no inbound message; producer
+deregistration fires both `pending_to_disconnected_total` and any
 number of `schema_evicted_total` bumps inside the same mutator
 section).  They remain inside the capability ops because the dispatcher
 cannot detect a transition without state-diff introspection.
