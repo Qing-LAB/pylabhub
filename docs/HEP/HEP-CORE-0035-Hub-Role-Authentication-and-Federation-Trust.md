@@ -174,10 +174,15 @@ addressable, plus:
   Hot-reloadable via SIGHUP + file watch?  AdminService RPC
   (`add_known_role` / `remove_known_role`) over an
   operator-authenticated channel?  Some hybrid?
-- **Propagation across a federation.**  When Hub-A adds a role
-  pubkey, does Hub-B learn about it automatically (via augmented
-  HUB_PEER_HELLO per §4.4)?  What's the consistency model — eventual
-  via heartbeat, immediate via push, neither?
+- **Propagation from a hub to its own roles.**  Resolved — §4.9.
+  Eventual, over the periodic work a role already performs, with the
+  hub's snapshot replicated whole and roles confirming the version they
+  hold.
+- **Propagation across a federation.**  Still open.  When Hub-A adds a
+  role pubkey, does Hub-B learn about it automatically (via augmented
+  HUB_PEER_HELLO per §4.4)?  This is agreement *between* hubs, which
+  §4.9 deliberately does not address — it defines replication from one
+  hub to the roles that hub owns.
 - **Audit log model.**  Which Layer-1 + Layer-2 decisions get logged
   at what level?  Where do the logs live (per-hub stdout, central
   syslog, structured admin event stream)?
@@ -1487,6 +1492,16 @@ command checks for the hub PID file (`<hub_dir>/run/plh_hub.pid` per
 HEP-CORE-0033 §7) and, if present, sends the reload RPC.  If absent,
 the next hub startup picks up the new contents.
 
+**Reload has a second half, and it is §4.9.**  Re-reading the vault
+updates the hub's own gate and nothing else: roles hold their own copy
+of the list, so a reload that stops at the hub leaves every running
+role deciding on the roster it was given at registration.  A key
+revoked in the vault would still be admitted by every role's inbox, and
+a key added would still be refused by them.  Replication is therefore
+not an enhancement to reload — it is the difference between reload
+meaning "this hub changed its mind" and "the system changed its mind."
+Implement §4.9 first, or reload ships a guarantee it does not have.
+
 ### 4.8.6 Out of scope
 
 - Federation-delegated role propagation (HEP-CORE-0035 §4.4
@@ -1524,6 +1539,451 @@ period.
 
 The operator runbook for this migration lives in
 `docs/README/README_Deployment.md`.
+
+## 4.9 Auth-list replication — how a role keeps a hub-owned key list current
+
+### 4.9.1 What this is, in plain terms
+
+The hub owns the answer to "which keys are legitimate, and whose are
+they."  Roles need that answer locally, because a role gates its own
+inbox and must decide about a connecting peer without asking anyone.
+So the answer is copied to every role.
+
+A copy of an answer that can change is only useful if it can be
+corrected.  This section defines how a role gets a hub-owned list, how
+it learns the list changed, and what it is allowed to assume in
+between.
+
+The list is replicated, not summarised: a role holds the same key-to-
+name index the hub holds, so it can both admit a peer and name the peer
+it admitted.  These are two questions about one fact, and answering
+them from two different structures is how they drift apart.
+
+### 4.9.2 The unit of replication is an authority snapshot
+
+`PeerAuthority` (§4.2) is the whole abstraction, on both ends.
+
+It is immutable, published by pointer swap, indexed by public key, and
+already answers every question either side asks of a key list: the ZAP
+projection for building an admission gate, `attribute_sender` for
+turning a proven key into a name, and the roster projection for
+carrying entries over the wire.  It depends on nothing above the
+security layer, so a role can hold one exactly as the hub does.
+
+**The hub and the role therefore hold the same type.**  The hub builds
+its snapshot from the vault; a role builds one per side from what that
+side's hub sent.  Both then ask the same questions and get answers that
+cannot disagree in shape, because there is only one shape.
+
+The count differs, not the kind: a hub holds one, a single-sided role
+holds one, a processor spanning two hubs holds two.  §4.9.6 covers how a
+role with more than one answers a single question.
+
+Also worth naming, because the word "snapshot" invites the wrong
+picture: this is not a point-in-time copy that ages into uselessness. It
+is the current answer, replaced whole when a newer one arrives. Nothing
+reads a stale one alongside a fresh one, because there is only ever the
+published one.
+
+This is the reason the mechanism is defined once here rather than per
+consumer: the second list to be replicated adds a snapshot, not a
+protocol.
+
+### 4.9.3 Entries carry names, not only keys
+
+Replicated entries are `{uid, pubkey}` pairs (`RosterEntry`).
+
+A key-only list can admit a peer and cannot name it.  A receiver that
+admits `BBBB` and cannot learn that `BBBB` is `alice` has no way to
+name the sender to the application, key per-sender state, or key replay
+tracking — it must fall back on whatever the sender chose to call
+itself, which is not a fact about the sender.
+
+The key-only form remains available as a *projection* for the ZAP
+layer, which genuinely needs only keys.  It is derived on demand and
+never stored as the authority; a projection that becomes the stored
+form is how the name gets lost.
+
+**I-ROSTER-MINIMAL.**  A replicated entry carries the uid and the
+public key, and nothing else.  The operator's record (`KnownRole`) also
+holds a human label and a role-type field; neither is replicated.
+
+This is a rule, not an accident of the current shape.  Replication is
+the one place where information the operator gave the hub is handed to
+every role on it, so the set of fields that travel must be chosen
+rather than inherited.  A field added to the operator's record must not
+reach roles by default — widening the projection is a disclosure
+decision and should read like one in the diff.
+
+What replication does disclose, and why it is accepted: every role
+learns the identity behind every key, including roles it will never
+exchange a message with.  That follows from the inbox being hub-wide
+(HEP-CORE-0027 §3.5) — any role may message any other, so each role's
+gate must be able to recognise and name any of them.  A per-role subset
+would be narrower but would reintroduce the question this section
+exists to answer, one audience at a time.
+
+No secret material is involved at any point.  A CURVE public key is
+public by construction: a peer presents it during the handshake, so
+anything it connects to already holds it.  Replicating keys tells a
+role what it would learn anyway from a connection; replicating names is
+the part that is genuinely new, and the part this invariant bounds.
+
+### 4.9.4 Versions and confirmation use the admission ledger
+
+`VersionedAdmissionLedger` already expresses "an authorization set that
+changes, whose consumers confirm what they have applied," including
+revocation and monotonic versions, and it is already tested.  Channel
+allowlists hold one instance per channel; the hub-wide key list is one
+more instance, hub-scoped.
+
+The two cases differ in how much of it they exercise, not in what it
+means.  Channel admission asks the filtered question — *is this peer
+visible to that role yet* — because consumers arrive one at a time and
+a producer must not see a consumer before it has confirmed.  The hub
+roster asks only *is this role current*, because every role is entitled
+to the same list.
+
+That difference does not argue for a second mechanism.  Using part of a
+structure is ordinary; re-implementing the part you do use, untested, to
+avoid carrying the part you do not, is how one idea becomes two
+implementations that drift.  Reusing it also keeps one mental model: a
+reader who understands channel admission already understands this.
+
+The per-entry versions this case does not currently need are also what
+a delta would require — *since version 5: these added, these removed* —
+if the full-snapshot reply below ever becomes too coarse.  Building on
+the ledger leaves that open; building on a bare counter would foreclose
+it.
+
+A role reports the version it holds.  The hub answers with nothing when
+the role is current, and with a replacement snapshot when it is not.
+Being current is therefore cheap, which is what allows the check to run
+often.
+
+**I-ROSTER-VERSION-IN-SNAPSHOT.**  The version is carried *inside* the
+snapshot, not beside it.
+
+A version held in its own variable next to the snapshot is a second
+publication, and the two can be read out of step: a reader that loads
+the version and then the snapshot can pair version N with the contents
+of N-1, and report itself current while holding stale entries.  Since
+the snapshot is published by pointer swap, putting the version in it
+makes "which version am I holding" unanswerable-in-a-wrong-way — there
+is one load, and it yields both.  This is the same reason the authority
+index and its ZAP projection are one object rather than two.
+
+Confirmation is a side effect of that report, not extra machinery: the
+role must send its version to ask the question, so the hub learns which
+version each role holds by answering.  What the hub *stores* is a
+narrower question — it is worth recording only to answer the operator's
+"has this revocation taken effect everywhere yet," which is a real
+question during key rotation and unanswerable without it.  Storing it
+for any other purpose would be speculative; nothing in the hub's own
+decisions depends on a role's convergence, unlike channel admission
+where confirmation gates visibility.
+
+### 4.9.5 Convergence is replacement
+
+**I-ROSTER-REPLACE.**  A **side's** snapshot is replaced whole.  It is
+never edited in place, never merged into, and a replacement on one side
+never touches another side's.
+
+Merge cannot express removal.  A merged list grows monotonically, so a
+revoked key survives in every role that already held it, for as long as
+that role runs — the revocation reaches the hub and stops there.
+Replacement makes removal ordinary rather than a special case that must
+be remembered.
+
+**I-ROSTER-VERSION.**  Versions are monotonic **within one hub**.  A
+side never adopts a snapshot older than the one it holds, so a delayed
+or reordered reply cannot roll it backwards.
+
+Two consequences that are easy to get wrong:
+
+**Versions from different hubs are not comparable.**  Each hub counts
+its own, starting from its own beginning.  Hub A at version 7 and hub B
+at version 3 says nothing about which is newer or better informed; they
+are answers to different questions that happen to be spelled with
+integers.  A side compares only against what that same hub told it
+before.
+
+**A hub restart resets its count, and that is safe only because a lost
+hub is terminal for the role.**  A restarted hub begins counting again
+near zero, so a role still holding version 7 would refuse version 2 as
+"older" and never converge again — it would sit permanently on a roster
+from a hub instance that no longer exists.  That cannot happen today
+because losing the hub tears the role's connection down and the role
+does not silently re-establish it (§2.5.3); a role that comes back comes
+back with no prior version at all.
+
+This is a dependency between two decisions that look unrelated, so it is
+recorded here: **if a role is ever given the ability to reconnect in
+place, this rule breaks and needs a hub-instance identity alongside the
+version.**  Comparing versions across hub lifetimes is only meaningful
+if something distinguishes the lifetimes.
+
+**I-ROSTER-NAMED.**  Every replicated entry carries both uid and key.
+Key-only forms are derived views.
+
+**I-ROSTER-ONE-HOLDER.**  A role publishes exactly one snapshot per
+**side** — the input side holds what its hub sent, the output side holds
+what its hub sent.  Consumers derive views; they do not keep private
+copies.  Two copies of one side's list is two answers to one question.
+
+A role may be connected to more than one hub: a processor consumes from
+its input hub and produces to its output hub, and each side registers
+with, and heartbeats to, its own.  Each hub owns its own roster, so each
+side holds the roster its own hub sent, replaced whole and independently
+of the other.  A role with one side holds one list; nothing special is
+needed for the common case.
+
+Replacement is therefore per side, never per role.  A role-wide replace
+would let one hub's roster erase the other's, and the role would begin
+refusing legitimate senders from a hub that had told it nothing —
+a failure caused entirely by bookkeeping, on a connection that never
+changed.
+
+**I-ROSTER-COMBINE-ADMIT.**  Where a role has more than one side, a
+peer is admitted if **any** side's hub vouches for it.
+
+Admission is a question each hub may legitimately answer for itself: a
+processor's input hub and output hub are separate authorities, and a
+sender recognised by either is a sender this role is meant to talk to.
+Requiring both to agree would make each hub's roster silently dependent
+on the other's.
+
+**I-ROSTER-COMBINE-NAME.**  Attribution combines the same way: a key is
+named by any side whose hub recognises it.  Sides are consulted in a
+fixed order — input before output — so the answer is deterministic.
+
+If two hubs recognise one key under different names, both answers are
+legitimate: each hub is the authority for its own roster, and a role
+holding two rosters is not entitled to overrule either.  The
+disagreement is an operator's, created by configuring one key under two
+names across two hubs, and it belongs in a log where an operator can see
+it — not in a refusal that drops a message the hub said to accept.
+
+This is a mailbox.  A delivered message carrying a name one of the hubs
+vouched for is the correct outcome; a message discarded because two
+authorities disagreed about a label would trade a real delivery for a
+bookkeeping objection.  Within a single hub the stricter rule still
+holds — the authority builder refuses one key claimed by two subjects —
+because there a contradiction means that hub's own configuration is
+broken.
+
+**I-ROSTER-ASK-DONT-COPY.**  Consumers ask the published snapshots; no
+consumer is handed its own copy of the list.
+
+Both questions a role asks about a key — may this peer connect, and who
+is it — resolve through one call against the current snapshots, applying
+the combine rules above.  The connection-time check the transport
+performs is that same call; it is not a separate list that has to be
+kept in step.
+
+The alternative is to push a copy of the keys into whatever performs the
+connection check, and re-push it on every replacement.  That makes
+replacement two operations with a window between them, and the window
+has a direction: publish first and the check is briefly more permissive
+than the snapshot; re-seed first and it briefly refuses a peer the
+snapshot still recognises, turning a legitimate sender away with no
+record of why.  Ordering rules can make that window survivable, but the
+rule then has to be remembered at every future call site.
+
+Asking removes the window rather than managing it.  There is one list
+per side, one answer at any instant, and nothing to sequence — so no
+invariant is needed here at all, which is the best outcome an invariant
+can have.
+
+The volume permits it: these are connection-time and message-time
+lookups against an in-memory index, not a per-byte cost.
+
+### 4.9.6 What a role holds, and how it answers
+
+A role holds one list per side, and answers both of its questions by
+asking those lists.  Nothing else keeps a copy.
+
+```
+   ROLE (a processor, connected to two hubs)
+
+   input side  ── from in_hub  ──►  list  (in_hub's version 7)
+   output side ── from out_hub ──►  list  (out_hub's version 3)
+                                     │
+              ┌──────────────────────┴──────────────────────┐
+              ▼                                             ▼
+      "may this key connect?"                     "whose key is this?"
+       ask each side that exists                   ask each side that exists
+       YES if any says yes                         first one that knows, wins
+```
+
+A producer or a consumer has one side, and the same code runs — it just
+has one list to ask instead of two.
+
+```
+admits(key):
+    for side in [input, output] where side exists:
+        if side.list.admits(key): return ALLOW
+    return DENY                      // no list yet == DENY, see below
+
+name_of(key):
+    for side in [input, output] where side exists:    // input first
+        who = side.list.attribute(key)
+        if who.recognised:
+            if another side also recognises it as someone else:
+                log the disagreement                  // operator's to fix
+            return who.uid
+    return (unattributed)
+```
+
+**Before the first list arrives, everything is denied.**  A side that
+has not yet received a roster has an empty list, and an empty list
+recognises nobody.  This is the same bootstrap rule the hub itself uses
+(§4.8.4): a gate with no configuration admits no one, rather than
+admitting everyone until told otherwise.  It matters most at the moment
+a role starts, which is exactly when a mistake here would be least
+visible.
+
+### 4.9.7 When a role checks
+
+Replication rides the periodic work a role already does.  A role runs
+one periodic task, installed once on its control thread, which fans out
+to its presences internally (HEP-CORE-0023 §2.5).  The freshness check
+is a step in that task, so this adds no timer, no thread, and no
+cadence of its own.
+
+Two conditions cause a check:
+
+- **Periodically** — every Nth tick.  Bounds how long a role can hold a
+  stale list.  Because the tick is the heartbeat cadence, the bound is
+  expressed in beats: a deployment that slows its heartbeat lengthens
+  the window by the same factor, keeping list freshness proportional to
+  how live the system is.
+- **On refusal** — the admission gate turning away an unrecognised key
+  is the observable event that a role's list may be behind.  The gate
+  records that it happened; the next tick sees it and checks early.
+
+The refusal path deliberately sets a flag rather than issuing its own
+request.  The gate runs on the socket's authentication path, where a
+blocking round-trip would stall every other handshake behind it; and
+because the periodic task is what consumes the flag, the tick interval
+is already the rate limit.  An unknown peer knocking repeatedly cannot
+turn one role into a load generator against the hub.
+
+```mermaid
+sequenceDiagram
+    participant V as Hub vault
+    participant H as Hub
+    participant R as Role
+    participant G as Role's admission gate
+
+    V->>H: list changes
+    Note over H: build new snapshot,<br/>bump version
+    R->>H: periodic tick — "I hold version N"
+    H-->>R: replacement snapshot (version M)
+    Note over R: publish whole;<br/>never merge
+    R->>G: derive key-only view
+    Note over G: stranger refused —<br/>record it
+    G-->>R: flag
+    R->>H: next tick checks early
+```
+
+### 4.9.8 Relation to per-channel admission
+
+Two lists exist and they stay two lists.  They carry different data,
+move in opposite directions, and are alike only in how they are
+versioned.  Reading one as a variant of the other is the mistake this
+section exists to prevent.
+
+|                    | Per-channel admission                                     | Hub-wide roster                                     |
+|--------------------|-----------------------------------------------------------|-----------------------------------------------------|
+| Scope              | One list per channel                                      | One list per hub                                    |
+| Contents           | Which peers may attach to *this* channel                  | Every role the hub knows, as uid + key              |
+| Audience           | The roles on that channel                                 | Every registered role                               |
+| Direction          | Hub **pushes** when it changes                            | Role **asks** on its own schedule                   |
+| Per-role answers   | Yes — a peer is visible only once that role confirmed     | No — every role is entitled to the same list        |
+| Changes when       | A role attaches or detaches (often)                       | An operator edits the vault (rarely)                |
+| Versioning         | `VersionedAdmissionLedger`                                | The same type, its own instance                     |
+| Confirmation means | The hub may now let a producer see this consumer          | This role has converged; nothing waits on it        |
+
+**Why the directions differ, and why that is not an inconsistency.**
+
+The channel list is pushed because the hub has something to *withhold*.
+A producer must not be shown a consumer before that consumer has
+confirmed it is ready, so the hub holds the peer back and releases it on
+confirmation.  That makes it a coordination protocol: the hub is the
+party that must not act early, so the hub drives, and confirmation is
+what unblocks it.
+
+The roster withholds nothing.  No hub decision waits on whether a role
+has the current list; the role simply wants an accurate copy for its own
+gate.  When nobody is waiting, the cheaper arrangement is the one where
+the party that needs the data asks for it — the hub keeps no delivery
+state, no per-role timers, and no fan-out, and answers "you are current"
+in the overwhelmingly common case.
+
+Direction follows from who must wait.  It is the same rule producing two
+answers, not two conventions.
+
+The change frequencies point the same way.  Channel membership moves
+whenever a role attaches or detaches, which is often and is exactly when
+coordination is needed; the roster moves only when an operator edits the
+vault, which is rare and coordinated by nothing.  A push mechanism for a
+rarely-changing list would spend its cost on the case that almost never
+happens.
+
+**A consequence to accept deliberately:** with the role asking, a
+revocation reaches that role within one poll interval rather than
+immediately.  The refusal-triggered early check does not help here — a
+role finds out about a key that was *added* because someone knocks, but
+nobody knocks to announce a key is gone.  If bounded-delay revocation is
+ever insufficient, the answer is to add a push on change and keep the
+poll as the backstop for a missed push; it is not to reverse the
+direction, which would leave the hub tracking delivery for a list that
+changes a few times a year.
+
+### 4.9.9 Roles that hold no list
+
+A role's roster exists to gate its own inbox.  A role that runs no inbox
+has nothing to gate, and does not ask for the list at all — it neither
+polls nor holds a snapshot.
+
+Stated because the omission is easy to miss and the failure is quiet:
+such a role would otherwise poll forever for data it never reads, and
+the cost would show up as unexplained traffic rather than as anything
+identifiable.
+
+### 4.9.10 What a role may assume between checks
+
+A role's list is a snapshot of what the hub believed when the role last
+converged.  Between checks it may be stale in either direction: missing
+a key that is now legitimate, or holding one that has been revoked.
+
+That window is the cost of a local decision, and it is deliberate — the
+alternative is asking the hub per handshake, which makes every
+connection depend on the hub being responsive at that instant.
+
+No special behaviour is defined for a hub a role cannot reach.  A role
+that has lost its hub has lost more than roster freshness, and that
+condition is already terminal for the connection (HEP-CORE-0023
+§2.5.3).  Inventing a degraded mode here would add a state that only
+occurs when the system is already failing.
+
+### 4.9.11 What this enables
+
+Runtime roster reload (§4.8.5) is deferred, not refused.  It is
+deferred because a hub can change its own roster the moment it is
+asked, and until roles can notice, that change reaches the hub's own
+gate and no further.  This section is the missing half: with it, a
+reloaded roster converges everywhere; without it, reload is a hub-local
+edit wearing a system-wide name.
+
+The inbox plane (HEP-CORE-0027 §3.5) is the first consumer, and gains
+the ability to name a sender from the key it proved rather than from
+the string it wrote (§4.2.2).
+
+The federation propagation question in §1.6.3 is a different problem
+and is not answered here: this section defines replication from a hub
+to the roles it owns, not agreement between hubs.
 
 ## 5. hub.json fields when HEP-0035 lands
 

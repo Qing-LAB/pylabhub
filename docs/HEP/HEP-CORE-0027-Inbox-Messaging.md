@@ -398,6 +398,25 @@ that was too narrow for the inbox's purpose.
 - **Sender pins the receiver's identity pubkey.**  `ROLE_INFO_ACK` carries the
   receiver's identity pubkey alongside its inbox endpoint; the DEALER sets
   `curve_serverkey` to it.
+
+**The roster is a replicated authority snapshot (HEP-CORE-0035 §4.9).**
+The inbox is the first consumer of the general mechanism, and the
+distribution described above is its instance, not its own protocol.
+Three consequences bind here:
+
+- The roster carries `{uid, pubkey}` pairs, not bare keys (§4.9.3).  A
+  receiver that holds keys alone can admit a sender and cannot name it,
+  which is what forces the sender field, the replay key, and the
+  per-sender sequence state onto whatever string the sender chose to
+  send.  Those three are all questions about *who sent this*, and they
+  take their answer from the proven key via `attribute_sender`.
+- The role's copy is replaced whole, never merged (I-ROSTER-REPLACE).  A
+  merged inbox roster cannot drop a revoked key, so revocation would
+  reach the hub's gate and stop there while every running role kept
+  admitting the revoked sender.
+- The routing identity on the ROUTER frame is an ACK return address and
+  carries no authority.  It is chosen by the sender and proves nothing;
+  §4.9.3 is why it does not need to.
 - **Lifetime** — inbox lifetime ⊆ role lifetime (closes with role DEREG /
   HEP-0036 §5.7.2 cascade or BRC death, HEP-0036 I3).
 

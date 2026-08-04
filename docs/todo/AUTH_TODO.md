@@ -223,6 +223,49 @@ close structurally after SEC-Fold-2.
 
 ---
 
+## Auth-list replication — design landed, implementation open (task #101)
+
+`HEP-CORE-0035 §4.9` (2026-08-04) specifies how a role keeps a hub-owned
+key list current.  **This is not a bug fix.**  The hub's roster is built
+once at broker startup from the vault and never rebuilt, and runtime
+reload is deferred (§4.8.5), so no role can currently be out of date.
+It is the structurally-absent half of two deferred capabilities.
+
+Why it matters before either of them is built:
+
+- **Runtime roster reload (§4.8.5).**  Re-reading the vault updates the
+  hub's own gate and nothing else.  Roles hold their own copy, so a
+  revoked key stays admitted by every running role's inbox and an added
+  key stays refused.  Reload without replication is a hub-local edit
+  wearing a system-wide name.
+- **Inbox sender attribution (HEP-0027 §3.5).**  The roster ships bare
+  keys, so a receiver can admit a sender and cannot name it — which is
+  why `sender_uid`, the replay key, and the per-sender sequence state
+  all currently key off the string the sender wrote rather than the
+  identity it proved.
+
+The design reuses rather than adds: `PeerAuthority` is the replication
+unit on both ends (it is a pure security-layer type, so a role holds the
+same snapshot the hub does and asks it the same questions);
+`VersionedAdmissionLedger` supplies versions, confirmation, and revoke;
+`RosterEntry{uid,pubkey}` is the wire entry; the existing per-role
+periodic task carries the freshness check.  Nothing new is introduced at
+the framework level — the second list to be replicated should add a
+snapshot, not a protocol.
+
+Two things to know before starting:
+
+- The wire change is **3 sites**, not the ~40 files that mention
+  `known_roles`.  Two writers (`broker_service.cpp:2891,4064`) and one
+  reader (`role_api_base.cpp:521-529`).  Everything else by that name is
+  the operator's vault roster — vault, CLI, config, L4 vault tests — and
+  is untouched.  The name collision is what makes the change look risky;
+  consider renaming the wire field in the same commit, since it is
+  already breaking.
+- Role-side convergence must **replace**, never merge.  Today
+  `merge_inbox_known_roles` only ever inserts, so a merged roster cannot
+  drop a revoked key.
+
 ## Phase 1 — CURVE chain close (active critical path)
 
 Per `docs/TODO_MASTER.md`, the locked execution order is:
