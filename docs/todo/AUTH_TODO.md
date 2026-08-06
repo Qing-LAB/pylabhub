@@ -86,7 +86,7 @@ Both sweeps green after the last production changes: **Debug 2778/2778,
 Release 2775/2775** (the 3-test difference is the NDEBUG-gated helpers).
 Remaining: bookkeeping and the commit.  Full record, including the rejected
 alternatives and the reverted test backdoor, in
-`docs/tech_draft/PLAN_auth_list_replication.md`.
+`docs/archive/transient-2026-08-06/PLAN_auth_list_replication.md`.
 
 **🟡 PARTLY CLOSED — Verified peer identity (task #83; design ratified
 2026-07-27).**
@@ -278,7 +278,7 @@ close structurally after SEC-Fold-2.
 ## Auth-list replication — steps 1-6 of 9 built, uncommitted (task #101)
 
 **Status 2026-08-04.**  Execution order, current state, and what each step
-still owes live in `docs/tech_draft/PLAN_auth_list_replication.md` — that
+still owes live in `docs/archive/transient-2026-08-06/PLAN_auth_list_replication.md` — that
 file is the working record; this section is the why.  Built and passing but
 NOT committed: `PeerAuthority` carries its own version and `admits()`; the
 broker stamps snapshots from a hub-scoped `roster_ledger_`; both ACKs carry

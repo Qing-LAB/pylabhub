@@ -283,6 +283,26 @@ update the destination task's description, then delete the test.
 
 ## Current Focus — Open coverage gaps
 
+### ⚠ OPEN — "either side is enough" is unpinned: a processor's two sides need two hubs (#101, 2026-08-06)
+
+A processor holds one roster per side and its single inbox gate admits a key
+recognised by EITHER (`roster_admits` in `src/utils/service/role_api_base.cpp`),
+because its two hubs are separate authorities and requiring them to agree would
+make each depend on the other.
+
+`ZmqE2E_InboxProcessorHoldsARosterOnBothSides` pins what one hub can show: two
+independent holders, and a gate whose key set is the deduped UNION
+(`entries=3 gate_keys=3` on both sides — a sum bug reads 6).  It cannot pin the
+OR itself, because with both sides on one hub they hold identical content, so
+consulting one side and consulting both give the same verdict.
+
+What is needed: a processor whose input and output sides register with
+DIFFERENT hubs, with the sender known to only one of them.  Delivery then
+proves the OR, and the mutation — consulting a single side — fails it.  This is
+also the only configuration where I-ROSTER-ONE-HOLDER has teeth: a role-wide
+replace would let one hub's roster erase the other's, and one hub cannot show
+that either.
+
 ### ⚠ OPEN — `channel_broadcast` has no L3 three-engine parity test (#98, 2026-08-02)
 
 `api.channel_broadcast(...)` and `on_channel_broadcast(...)` are bound across

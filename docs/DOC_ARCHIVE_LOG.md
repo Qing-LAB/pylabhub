@@ -1669,3 +1669,29 @@ table below archives the one review where that left nothing open.
 - The 2026-07-18 log listed `REVIEW_FullModule_2026-04-06.md` under KEEP
   because "C-1/D-2 reproduce". C-1 is fixed and D-2 was already resolved when
   that note was written, so the KEEP rationale no longer holds.
+
+---
+
+## 2026-08-06 — auth-list replication plan (#101)
+
+### Transient → `archive/transient-2026-08-06/` (1)
+
+| Document | Why archived | Residual |
+|----------|--------------|----------|
+| `PLAN_auth_list_replication.md` | Execution record for HEP-CORE-0035 §4.9, complete and verified against code (Debug 2779/2779, Release 2776/2776, commit `6254b628`). Every lasting piece has a permanent home: the design in HEP-0035 §4.9, the connection/retry/script narrative and the interleaved two-level sequence in HEP-0027 §3.5/§4.2, the wire rows in HEP-0047 §3.2/§3.7, the coverage statement in `todo/AUTH_TODO.md`, and the test lessons in `todo/TESTING_TODO.md`. What remains in the archived file is execution state — the five-layer order, the rejected alternatives, the reverted test backdoor — which is history, not design. | **"Either side is enough" is unpinned** and moved to `todo/TESTING_TODO.md` § Current Focus before archiving: a processor's two roster sides need two HUBS to distinguish the OR from a single-side lookup, and one hub cannot show it. Recorded there rather than left in the plan, which is exactly how an open item disappears. |
+
+### Why this one is worth reading later
+
+Two results in it were negative, and both cost more to establish than the code
+they judged. **A test that appears to cover a fix, and does not**: the L4
+two-sender case passed with its fix disabled, because the periodic report
+rescues the hub's view inside any budget a subprocess test can use — a
+safety net makes the one-shot fix it backs up untestable by outcome. And **a
+proposal that reading the code refuted**: a role with two channels on one hub
+was supposed to receive two same-version REG_ACKs and hit the version guard
+deterministically; a producer has one channel, and a processor's two
+registrations land on different sides, so no such path exists.
+
+The arc's headline number belongs here too: **five substantive defects, all
+found by review or owner pushback, none by the suite** — which went 2774/2774
+with the first of them live.
