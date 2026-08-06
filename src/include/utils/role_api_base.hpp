@@ -386,6 +386,11 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// (consumer-side; defensive — broker doesn't send notifies there).
     void handle_channel_auth_notifies(std::vector<pylabhub::scripting::IncomingMessage> &msgs);
 
+    /// Adopt a `ROSTER_UPDATE_NOTIFY` as the inbox roster for whichever
+    /// side faces the hub it came from (HEP-CORE-0035 §4.9.7).  Called
+    /// from `handle_channel_auth_notifies`, which consumes the message.
+    void adopt_roster_update_(const pylabhub::scripting::IncomingMessage &msg);
+
     /// HEP-CORE-0036 §I11 + §6.5 — script-convenience snapshot of the
     /// producer-side allowlist for a channel.  Each entry is the
     /// `(role_uid, pubkey)` pair the broker emitted on the most recent
@@ -1210,6 +1215,14 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     void on_heartbeat_tick_();
     // M1.4 (2026-05-11): `on_metrics_report_tick_` deleted; metrics
     // piggyback on heartbeat per HEP-CORE-0019 §2.3 Phase 6.
+
+    /// Tell each hub which roster version this role holds for it
+    /// (HEP-CORE-0035 §4.9.7).  One message per side, sent from the
+    /// heartbeat tick; the hub answers `ROSTER_UPDATE_NOTIFY` only when
+    /// what we hold is stale.  Sides holding no roster are skipped, which
+    /// is what keeps a role with no inbox from polling for a list it would
+    /// never read (§4.9.9).
+    void send_roster_checks_();
 
     /// HEP-CORE-0041 1i-mig-4 (#272) — SHM-branch dispatch for
     /// `apply_consumer_reg_ack`.  Runs the §5.5 ZAP-CURVE dial against

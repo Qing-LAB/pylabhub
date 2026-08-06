@@ -105,6 +105,27 @@ update the destination task's description, then delete the test.
 
 ## Recent Completions
 
+- **2026-08-06 — #101 roster coverage; the layer a behaviour is testable at
+  is decided by who drives the clock.**  Two tests, one that covers what it
+  claims and one that was proven not to.
+  `Pattern4BrokerProtocolTest.UnconfirmedTargetIsRePushedTheSameRoster`
+  (L3) asks twice about a target that never confirms and asserts both
+  identical pushes arrive; `ZmqE2E_InboxTwoSendersOneUnconvergedReceiver`
+  (L4) was written for the same purpose and **disable-and-rerun showed it
+  passes with the fix removed**, because a live role responds in
+  microseconds and the periodic safety net closes the gap inside any budget
+  a subprocess test can use.
+  **The rule.**  A duplicate that only exists in the window between a push
+  and its answer cannot be forced where both ends are real — driving it
+  needs either a backdoor or a sleep, and both pin timing instead of
+  behaviour.  Where the test IS one of the ends, it simply declines to
+  answer and the duplicate becomes the only outcome.  So: when a race is
+  the trigger, move DOWN a layer until the test owns one side of it, rather
+  than widening the window at the layer you started on.
+  Corollary worth its own line: **the safety net masks the fault it is a
+  net for.**  A periodic reconciler makes the one-shot fix it backs up
+  untestable by outcome — only the mechanism distinguishes them.
+
 - **2026-08-02 — #96 broadcast-forgery and heartbeat-forgery pinned; the
   mutation check rewrote both tests.**  Three Pattern-4 cases:
   `Broadcast_AttributedToProvenKey_NotRoutingId` (a peer proving Alice's key

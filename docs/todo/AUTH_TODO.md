@@ -36,6 +36,58 @@ checklist is superseded → archived `transient-2026-07-22`). Per-operator
 sweep tests (`close_channel` ×2, `broadcast_hub_queue`) off their L3 RATIONALE
 stubs now that the admin CURVE socket + console client have landed.
 
+**🔄 IN PROGRESS — reachable inbox (task #101, HEP-CORE-0035 §4.9).**
+Two invariants, one arc: **I-ROSTER-PRESENT** (a replicated roster names
+roles the operator configured AND the hub currently has registered) and
+**I-INBOX-REACHABLE** (a hub discloses a role's inbox address only to a
+sender that role can already admit).  The second exists because a refused
+CURVE handshake is TERMINAL — libzmq tears the session down and the
+project's own socket policy independently forbids the retry — so an early
+knock costs a dropped message and a dead socket, not a delay.
+
+Implemented in five layers: one ledger answering both questions and moved
+only by wire evidence; every adoption acknowledged from the single adoption
+point; reachability decided where the address is disclosed; the four
+outcomes made distinguishable to the caller; tests.
+
+Design is consistent across HEP-CORE-0035 §4.9, HEP-CORE-0027 §3.5/§4.2
+(which now carries the full connection/retry/script narrative and the
+interleaved two-level sequence), and the HEP-CORE-0047 registry.
+
+**Five defects found by review, none by the suite** — which went 2774/2774
+with the first one live: a stale confirmation surviving revoke (a restarted
+role reported reachable before adopting anything); roles with no inbox
+polling their hub forever; a dead branch and two docs describing a removed
+path; a sleep-to-order spread into a new caller; and the version guard
+accepting EQUAL versions, which defeated the purpose of versioning and made
+every repeated push reparse, rebuild, republish and report back.
+**Versions now start at 1 and 0 means "no roster"** — the sentinel IS the
+version, so nothing can drift out of step with it.
+
+**Where the version guard is actually covered, and where it is not.**  The
+guard fires when a role is offered a roster it already holds, and the only
+thing that produces one is the hub re-pushing to a target that has not
+confirmed.  That is pinned at L3 — `UnconfirmedTargetIsRePushedTheSameRoster`
+drives two asks about one unconfirmed target and asserts both pushes arrive
+carrying the same version, with the coordinates still withheld.  It is
+deterministic because a wire client never confirms, and verified
+load-bearing by suppressing the push (test FAILS).
+
+The L4 companion, `ZmqE2E_InboxTwoSendersOneUnconvergedReceiver`, was
+written, kept, and **verified NOT to cover the guard**: a live role confirms
+the first push in microseconds and the periodic report rescues the hub's
+view within a tick, so the test passes with the fix disabled.  It is
+retained for the fan-in path it does cover, and its comment says so.  An
+earlier idea — that a role with two channels on one hub would receive two
+same-version REG_ACKs — is wrong: a producer has one channel, and a
+processor's two registrations land on different sides.
+
+Both sweeps green after the last production changes: **Debug 2778/2778,
+Release 2775/2775** (the 3-test difference is the NDEBUG-gated helpers).
+Remaining: bookkeeping and the commit.  Full record, including the rejected
+alternatives and the reverted test backdoor, in
+`docs/tech_draft/PLAN_auth_list_replication.md`.
+
 **🟡 PARTLY CLOSED — Verified peer identity (task #83; design ratified
 2026-07-27).**
 The CURVE handshake proves which key is on a connection, and the broker
@@ -223,7 +275,26 @@ close structurally after SEC-Fold-2.
 
 ---
 
-## Auth-list replication — design landed, implementation open (task #101)
+## Auth-list replication — steps 1-6 of 9 built, uncommitted (task #101)
+
+**Status 2026-08-04.**  Execution order, current state, and what each step
+still owes live in `docs/tech_draft/PLAN_auth_list_replication.md` — that
+file is the working record; this section is the why.  Built and passing but
+NOT committed: `PeerAuthority` carries its own version and `admits()`; the
+broker stamps snapshots from a hub-scoped `roster_ledger_`; both ACKs carry
+`{uid,pubkey}` pairs plus `known_roles_version`; the role publishes one
+`PeerAuthority` **per side** and replaces rather than merges; the duplicated
+roster emission collapsed into `roster_ack_block()`; and the inbox ROUTER's
+ZAP gate now ASKS the role (`set_admission_authority`) instead of holding a
+pushed copy — `InboxQueue::set_peer_allowlist` is inert.
+
+Open: attribution (step 7), refresh request/reply + periodic trigger
+(step 8), and tests (step 9).  **Step 9 is not "a test for the happy path"** —
+stale-version rejection, whole-roster refusal on a malformed entry, the
+two-sided OR, and the two step-6 deny paths (no authority bound, non-CURVE
+peer) are all uncovered today.  A version-0 hole in the monotonic guard
+shipped and survived a rewrite of the function around it precisely because
+none of those had a test.
 
 `HEP-CORE-0035 §4.9` (2026-08-04) specifies how a role keeps a hub-owned
 key list current.  **This is not a bug fix.**  The hub's roster is built
@@ -262,9 +333,10 @@ Two things to know before starting:
   is untouched.  The name collision is what makes the change look risky;
   consider renaming the wire field in the same commit, since it is
   already breaking.
-- Role-side convergence must **replace**, never merge.  Today
-  `merge_inbox_known_roles` only ever inserts, so a merged roster cannot
-  drop a revoked key.
+- Role-side convergence must **replace**, never merge.  The
+  pre-2026-08-04 `merge_inbox_known_roles` only ever inserted, so a merged
+  roster could not drop a revoked key.  Now `adopt_inbox_roster`, which
+  replaces one side per ACK.
 
 ## Phase 1 — CURVE chain close (active critical path)
 
@@ -703,7 +775,7 @@ considered these.
 
 | # | Decision | Affects | Tentative direction |
 |---|---|---|---|
-| P-InboxQueue | InboxQueue admission policy location | Phase E | **RE-DECIDED 2026-07-17 (HUB-WIDE, supersedes the 2026-06-10 channel-scoped answer):** the inbox is a hub-wide role<->role facility, so it admits any authenticated `known_role`, NOT just the parent channel's allowlist.  Broker distributes the roster on `REG_ACK`/`CONSUMER_REG_ACK.known_roles` (committed `90ec48a3`); the role unions it into a hub-wide inbox roster.  Single-key model — inbox ROUTER/DEALER reuse the role identity keypair (HEP-0036 §I6).  See HEP-CORE-0027 §3.5.  Task **#191**.  **Slice progress:** (0) broker roster distribution ✅ `90ec48a3`; L4 plaintext delivery + two schema-shape bug fixes ✅ `563cf6f4`; (1) role captures `known_roles` into the hub-wide inbox roster ✅ `26d5fcb3`; (2) InboxQueue ROUTER implements PeerAdmission + arms curve_server (`<uid>:inbox` domain, deny-all until seeded) and InboxClient DEALER arms curve_serverkey; role seeds the ROUTER ZAP from the roster in `merge_inbox_known_roles` ✅; (3) `ROLE_INFO_ACK` carries receiver identity pubkey, `open_inbox_client` pins it as curve_serverkey (hard-refuse plaintext) ✅; (4) L3 CURVE tests (`InboxQueueTest.CurveAuthorizedDelivers` / `CurveUnknownSenderDenied`) + L4 `ZmqE2E_InboxDelivery` over CURVE with `event=InboxAllowlistSeeded` ✅.  **DONE — inbox is CURVE-authenticated end-to-end, hub-wide known_roles.** |
+| P-InboxQueue | InboxQueue admission policy location | Phase E | **RE-DECIDED 2026-07-17 (HUB-WIDE, supersedes the 2026-06-10 channel-scoped answer):** the inbox is a hub-wide role<->role facility, so it admits any authenticated `known_role`, NOT just the parent channel's allowlist.  Broker distributes the roster on `REG_ACK`/`CONSUMER_REG_ACK.known_roles` (committed `90ec48a3`); the role unions it into a hub-wide inbox roster.  Single-key model — inbox ROUTER/DEALER reuse the role identity keypair (HEP-0036 §I6).  See HEP-CORE-0027 §3.5.  Task **#191**.  **Slice progress:** (0) broker roster distribution ✅ `90ec48a3`; L4 plaintext delivery + two schema-shape bug fixes ✅ `563cf6f4`; (1) role captures `known_roles` into the hub-wide inbox roster ✅ `26d5fcb3`; (2) InboxQueue ROUTER implements PeerAdmission + arms curve_server (`<uid>:inbox` domain, deny-all until seeded) and InboxClient DEALER arms curve_serverkey; role seeds the ROUTER ZAP from the roster in `merge_inbox_known_roles` ✅; (3) `ROLE_INFO_ACK` carries receiver identity pubkey, `open_inbox_client` pins it as curve_serverkey (hard-refuse plaintext) ✅; (4) L3 CURVE tests (`InboxQueueTest.CurveAuthorizedDelivers` / `CurveUnknownSenderDenied`) + L4 `ZmqE2E_InboxDelivery` over CURVE ✅.  **DONE — inbox is CURVE-authenticated end-to-end, hub-wide known_roles.**  **Amended 2026-08-04 (#101 step 6):** the queue no longer holds a pushed copy of the roster — `InboxQueue::set_admission_authority` binds the role's `roster_admits`, and `set_peer_allowlist` on an inbox is inert.  The retired `event=InboxAllowlistSeeded` marker is now `event=InboxAdmissionBound`; the seeding function named above became `adopt_inbox_roster`. |
 | P-Admin | AdminService — CURVE-wrap or loopback-only? | Phase E | Hard loopback-only for v1; CURVE-wrap is HEP-CORE-0035 §5 future work |
 | P-SHM-Identity | What is a PeerIdentity for SHM? | HEP-0041 Phase 1 | Capability path: peer identity = consumer pubkey verified during pre-attach `CONSUMER_ATTACH_REQ_SHM`.  Superseded the original "broker-issued `shm_secret`" answer. |
 | P-Demos | How existing demos migrate | Phase H | Transitional `--allow-anonymous-data` flag, gated to refuse-bind on non-loopback endpoints; demos updated incrementally |

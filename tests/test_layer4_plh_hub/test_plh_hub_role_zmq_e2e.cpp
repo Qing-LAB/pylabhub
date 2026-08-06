@@ -1860,6 +1860,72 @@ void write_inbox_sender_script(const fs::path &script_dir, const std::string &re
          "    api.log('info', 'inbox_send: stop')\n";
 }
 
+// Processor config + an inbox.  Built by patching the shared processor
+// helper rather than restating fifty lines of it, so a change to the
+// processor shape reaches this test instead of drifting away from it.
+//
+// Endpoints are `:0` — the documented "any free port" convention (the
+// resolved endpoint is published via ENDPOINT_UPDATE_REQ).  The rest of
+// this file derives ports from the pid, which is a guess that two
+// concurrent CI jobs can lose.
+void write_inbox_processor_config(const fs::path &cfg_path, const fs::path &hub_dir,
+                                  const std::string &uid, const std::string &in_channel,
+                                  const std::string &out_channel)
+{
+    // `fan-in` in, default out.  Both pick a topology whose OWNER is this
+    // processor, so it registers both sides with nothing else running: a
+    // fan-in channel is owned by its consumer, and a default channel by its
+    // producer.  Choosing `fan-in` for the output too would leave the
+    // producing side waiting on a downstream consumer this test has no
+    // reason to run.
+    write_zmq_processor_config(cfg_path, hub_dir, uid, in_channel, out_channel,
+                               /*in_topology=*/"fan-in", /*out_topology=*/"",
+                               /*in_port_hint=*/0, /*out_port_hint=*/0);
+
+    nlohmann::json j;
+    {
+        std::ifstream f(cfg_path);
+        f >> j;
+    }
+    j["processor"]["name"] = "L4InboxProcessor";
+    j["inbox_endpoint"] = "tcp://127.0.0.1:0";
+    j["inbox_schema"]["packing"] = "aligned";
+    j["inbox_schema"]["fields"] =
+        nlohmann::json::array({nlohmann::json{{"name", "value"}, {"type", "int32"}}});
+    std::ofstream f(cfg_path);
+    f << j.dump(2);
+}
+
+// Forwards like the plain processor script and logs inbox arrivals like
+// the inbox receiver script.  `inbox_recv:` is deliberately the SAME
+// prefix the receiver script uses — what the assertion needs is "a message
+// arrived from this sender", and that reads identically whichever role
+// holds the mailbox.
+void write_inbox_processor_script(const fs::path &script_dir)
+{
+    std::error_code ec;
+    fs::create_directories(script_dir, ec);
+    std::ofstream f(script_dir / "__init__.py");
+    f << "_iter = [0]\n\n"
+         "def on_init(api):\n"
+         "    api.log('info', 'proc_test: init')\n"
+         "\n"
+         "def on_process(rx, tx, messages, api):\n"
+         "    if rx.slot is None or tx.slot is None:\n"
+         "        return False\n"
+         "    tx.slot.value = float(rx.slot.value) + 1000.0\n"
+         "    _iter[0] += 1\n"
+         "    return True\n"
+         "\n"
+         "def on_inbox(msg, api):\n"
+         "    api.log('info', 'inbox_recv: GOT sender=' + str(msg.sender_uid) +\n"
+         "            ' value=' + str(msg.data.value))\n"
+         "    return True\n"
+         "\n"
+         "def on_stop(api):\n"
+         "    api.log('info', 'proc_test: stop iter=' + str(_iter[0]))\n";
+}
+
 TEST_F(PlhHubCliTest, ZmqE2E_InboxDelivery)
 {
     using std::chrono::seconds;
@@ -1974,31 +2040,58 @@ TEST_F(PlhHubCliTest, ZmqE2E_InboxDelivery)
     // not the marker's presence — the hub has exactly two local roles and
     // both belong in a role-to-role roster:
     //
-    //   total=1  the roster lost a legitimate role — the receiver would
-    //            then refuse the sender at its inbox ZAP, turning a
-    //            security regression into a silent delivery failure;
-    //   total=2  correct.
+    //   gate_keys=1  the roster lost a legitimate role — the receiver would
+    //                then refuse the sender at its inbox ZAP, turning a
+    //                security regression into a silent delivery failure;
+    //   gate_keys=2  correct.
     //
-    // The roster is projected from the static operator roster, not from
-    // who has registered so far, so both roles see the same numbers
-    // regardless of registration order — HEP-CORE-0027 §3.5 notes that a
-    // role registering AFTER you is absent from your roster until a
-    // refresh, which is why order-independence here is a property of the
-    // static config rather than luck.
-    ASSERT_TRUE(wait_for_role_marker(recv_dir, recv,
-                                     "event=InboxKnownRolesMerged added=2 total=2", seconds(10)))
-        << "receiver's roster is not exactly the two local roles:\n"
+    // `entries` is what this hub listed and `gate_keys` is what the gate
+    // admits across every side; both roles here are single-sided, so the two
+    // agree, and pinning both catches a future side from diverging silently.
+    //
+    // The event name and the side are pinned along with the counts: a bare
+    // `entries=2 gate_keys=2` would be satisfied by any future line that happens
+    // to carry those numbers, and `side=` is the axis that decides WHICH hub's
+    // roster was replaced — a role adopting its output hub's list into the
+    // input slot would still show the right counts.  Both roles here run as
+    // producers, so both adopt on the output side.
+    //
+    // The version is deliberately NOT pinned: it counts admissions into the
+    // hub ledger and is an implementation detail of how the list is versioned,
+    // not of what the list contains.
+    //
+    // The roster is the operator's vault entries INTERSECTED with the roles
+    // the hub currently has registered (HEP-CORE-0035 §4.9.2,
+    // I-ROSTER-PRESENT), so it depends on registration order rather than
+    // being independent of it.  The receiver registers first and its REG_ACK
+    // therefore names only itself; reaching two entries is evidence the
+    // refresh path ran after the sender appeared — the hub noticed, sent a
+    // replacement, and the receiver adopted it.
+    ASSERT_TRUE(wait_for_role_marker(
+        recv_dir, recv, "event=InboxRosterAdopted side=output entries=2 gate_keys=2", seconds(10)))
+        << "receiver never converged on both local roles — the refresh path did not run:\n"
         << read_role_log(recv_dir);
-    ASSERT_TRUE(wait_for_role_marker(send_dir, send,
-                                     "event=InboxKnownRolesMerged added=2 total=2", seconds(10)))
-        << "sender's roster is not exactly the two local roles:\n"
+
+    // The SENDER holds no roster at all, and that is the contract rather
+    // than an accident: a roster exists to gate a mailbox, and this role
+    // owns none — it only dials the receiver's (§4.9.9).  Holding one would
+    // make it report its version to the hub on every tick forever for a list
+    // it never reads, which is the unexplained traffic that section exists
+    // to prevent.  Pinned positively, because "no adoption line appears" is
+    // also what a silently broken adoption looks like.
+    ASSERT_TRUE(
+        wait_for_role_marker(send_dir, send, "event=InboxRosterSkipped side=output", seconds(10)))
+        << "sender was expected to decline a roster it has no mailbox to gate:\n"
         << read_role_log(send_dir);
 
-    // Slice 2 (HEP-CORE-0027 §3.5): the receiver seeds its inbox ROUTER's
-    // CURVE/ZAP allowlist from the roster, lifting it off the S1 deny-all
-    // default.  This is the gate that admits the authorized sender below.
-    ASSERT_TRUE(wait_for_role_marker(recv_dir, recv, "event=InboxAllowlistSeeded", seconds(10)))
-        << "receiver never seeded its inbox ROUTER ZAP allowlist:\n"
+    // HEP-CORE-0027 §3.5: the receiver's inbox ROUTER asks the role's roster
+    // at handshake time rather than holding a pushed copy, so what has to be
+    // true before the delivery below is that the two are wired together.  The
+    // gate is still deny-all at this point and stays that way until the
+    // adoption above — this pins the wiring, the assertion above pins the
+    // contents, and neither alone would catch the other going missing.
+    ASSERT_TRUE(wait_for_role_marker(recv_dir, recv, "event=InboxAdmissionBound", seconds(10)))
+        << "receiver never wired its inbox ROUTER ZAP gate to its roster:\n"
         << read_role_log(recv_dir);
 
     // Delivery: sender discovers the receiver's inbox and sends value=42; the
@@ -2011,10 +2104,361 @@ TEST_F(PlhHubCliTest, ZmqE2E_InboxDelivery)
         << "receiver's on_inbox never fired for the sent message:\n"
         << read_role_log(recv_dir) << recv.get_stderr();
 
+    // The sender held a roster on NEITHER side, checked here rather than
+    // earlier so several heartbeat ticks have gone by — the window this
+    // covers is real rather than nominal.
+    //
+    // This is the half that matters.  The periodic version report is skipped
+    // for a side whose roster is null, so "holds none" is precisely what
+    // stops this role reporting to its hub on every tick for the rest of its
+    // life.  The marker above proves the decision was reached; this proves
+    // nothing adopted by some other path afterwards.
+    EXPECT_EQ(read_role_log(send_dir).find("event=InboxRosterAdopted"), std::string::npos)
+        << "a role with no mailbox must hold no roster on any side — holding one is what makes "
+           "it poll its hub forever for a list it never reads (HEP-CORE-0035 §4.9.9):\n"
+        << read_role_log(send_dir);
+
     send.send_signal(SIGTERM);
     send.wait_for_exit(10);
     recv.send_signal(SIGTERM);
     recv.wait_for_exit(10);
+    hub.send_signal(SIGTERM);
+    EXPECT_EQ(hub.wait_for_exit(10), 0) << hub.get_stderr();
+
+    ::unsetenv("PYLABHUB_HUB_PASSWORD");
+    ::unsetenv("PYLABHUB_ROLE_PASSWORD");
+}
+
+// ─── Two senders reaching one receiver that has not converged yet ──────────
+//
+// The hub sends a roster whenever a sender asks for an inbox whose owner has
+// not confirmed one (HEP-CORE-0035 §4.9.7).  With two senders asking, the
+// second push can land on a version the receiver ALREADY holds — and the
+// receiver must decline to re-apply it (nothing changed) while still
+// answering with the version it holds.
+//
+// **What this covers, stated honestly.**  Fan-in through the reachability
+// gate: two roles independently locating and reaching a third that had not
+// converged when they asked.  That path is not otherwise exercised — every
+// other inbox test has exactly one sender.
+//
+// **What it does NOT cover, verified rather than assumed.**  It does not
+// pin the confirmation-on-decline behaviour.  Disabling that code leaves
+// this test passing, because the periodic version report rescues the hub's
+// view within a tick — well inside any delivery budget a subprocess test
+// can reasonably use.  So both senders arrive either way, and an assertion
+// on their arrival cannot distinguish the two implementations.
+//
+// Recorded here rather than discovered later: a test that appears to cover
+// a fix, and does not, is worse than an absent one.  The decline itself is
+// logged below when the race produces it, but it is evidence for a reader,
+// not a gate — whether the second push lands before the receiver's
+// confirmation is timing, and asserting it would pin timing.
+TEST_F(PlhHubCliTest, ZmqE2E_InboxTwoSendersOneUnconvergedReceiver)
+{
+    using std::chrono::seconds;
+
+    const std::string recv_channel = "lab.l4.inbox2.recv";
+    const std::string a_channel = "lab.l4.inbox2.a";
+    const std::string b_channel = "lab.l4.inbox2.b";
+    const std::string recv_uid = "prod.l4inbox2.recv12345678";
+    const std::string a_uid = "prod.l4inbox2.senda12345678";
+    const std::string b_uid = "prod.l4inbox2.sendb12345678";
+    const int recv_port = 23000 + (::getpid() % 900);
+    const int a_port = 24000 + (::getpid() % 900);
+    const int b_port = 25000 + (::getpid() % 900);
+
+    const fs::path hub_dir = tmp("inbox2_hub");
+    {
+        WorkerProcess init(plh_hub_binary(), "--init", {hub_dir.string(), "--name", "L4Inbox2Hub"});
+        ASSERT_EQ(init.wait_for_exit(), 0) << init.get_stderr();
+    }
+    {
+        nlohmann::json j;
+        {
+            std::ifstream f(hub_dir / "hub.json");
+            f >> j;
+        }
+        j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+        j["admin"]["enabled"] = false;
+        j["script"]["path"] = "";
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+    ::setenv("PYLABHUB_HUB_PASSWORD", "inbox2-pw", /*overwrite=*/1);
+    {
+        WorkerProcess kg(plh_hub_binary(), "--config",
+                         {(hub_dir / "hub.json").string(), "--keygen"});
+        ASSERT_EQ(kg.wait_for_exit(), 0) << kg.get_stderr();
+    }
+
+    const fs::path recv_dir = tmp("inbox2_recv");
+    const fs::path a_dir = tmp("inbox2_senda");
+    const fs::path b_dir = tmp("inbox2_sendb");
+    std::error_code ec;
+    fs::create_directories(recv_dir / "vault", ec);
+    fs::create_directories(a_dir / "vault", ec);
+    fs::create_directories(b_dir / "vault", ec);
+
+    write_inbox_receiver_config(recv_dir / "producer.json", hub_dir, recv_uid, recv_channel,
+                                recv_port);
+    write_inbox_receiver_script(recv_dir / "script" / "python");
+    write_zmq_producer_config(a_dir / "producer.json", hub_dir, a_uid, a_channel, a_port);
+    write_inbox_sender_script(a_dir / "script" / "python", recv_uid);
+    write_zmq_producer_config(b_dir / "producer.json", hub_dir, b_uid, b_channel, b_port);
+    write_inbox_sender_script(b_dir / "script" / "python", recv_uid);
+
+    ::setenv("PYLABHUB_ROLE_PASSWORD", "inbox2-role-pw", /*overwrite=*/1);
+    const std::string recv_pubkey =
+        keygen_role_and_read_pubkey(recv_dir, "producer", recv_uid, "inbox2-role-pw");
+    const std::string a_pubkey =
+        keygen_role_and_read_pubkey(a_dir, "producer", a_uid, "inbox2-role-pw");
+    const std::string b_pubkey =
+        keygen_role_and_read_pubkey(b_dir, "producer", b_uid, "inbox2-role-pw");
+    add_known_role(hub_dir, "inbox2_recv", recv_uid, "producer", recv_pubkey);
+    add_known_role(hub_dir, "inbox2_a", a_uid, "producer", a_pubkey);
+    add_known_role(hub_dir, "inbox2_b", b_uid, "producer", b_pubkey);
+
+    WorkerProcess hub(plh_hub_binary(), hub_dir.string(), {});
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir, "Broker: listening on")) << "hub never bound.  Log:\n"
+                                                                      << read_hub_log(hub_dir);
+    const std::string bound_ep = extract_bound_endpoint(read_hub_log(hub_dir));
+    ASSERT_FALSE(bound_ep.empty()) << "no bound endpoint in hub log";
+    {
+        nlohmann::json j;
+        {
+            std::ifstream f(hub_dir / "hub.json");
+            f >> j;
+        }
+        j["network"]["broker_endpoint"] = bound_ep;
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+
+    // Receiver first, so both senders are the ones arriving late — the
+    // ordering that makes them ask about a role whose roster predates them.
+    WorkerProcess recv(plh_role_binary(), "--role", {"producer", recv_dir.string()});
+    ASSERT_TRUE(wait_for_role_marker(recv_dir, recv, "event=RegAckReceived", seconds(15)))
+        << "receiver never registered:\n"
+        << recv.get_stderr();
+
+    // Both senders started WITHOUT waiting for the first to register.  The
+    // race is the point: two ROLE_INFO_REQs for one unconfirmed target is
+    // what produces a second push of a version the receiver already holds.
+    WorkerProcess send_a(plh_role_binary(), "--role", {"producer", a_dir.string()});
+    WorkerProcess send_b(plh_role_binary(), "--role", {"producer", b_dir.string()});
+
+    // Both deliver.  This is the fan-in path itself — two senders locating
+    // and reaching one target through the gate — not a proxy for anything
+    // subtler; see the header comment for what it deliberately does not
+    // claim to cover.
+    ASSERT_TRUE(wait_for_role_marker(a_dir, send_a, "inbox_send: SENT rc=0", seconds(20)))
+        << "sender A never delivered:\n"
+        << read_role_log(a_dir) << send_a.get_stderr();
+    ASSERT_TRUE(wait_for_role_marker(b_dir, send_b, "inbox_send: SENT rc=0", seconds(20)))
+        << "sender B never delivered:\n"
+        << read_role_log(b_dir) << send_b.get_stderr();
+
+    ASSERT_TRUE(
+        wait_for_role_marker(recv_dir, recv, "inbox_recv: GOT sender=" + a_uid, seconds(15)))
+        << "receiver never saw sender A:\n"
+        << read_role_log(recv_dir);
+    ASSERT_TRUE(
+        wait_for_role_marker(recv_dir, recv, "inbox_recv: GOT sender=" + b_uid, seconds(15)))
+        << "receiver never saw sender B:\n"
+        << read_role_log(recv_dir);
+
+    // Supporting evidence, not the gate.  Whether the second push lands
+    // before or after the receiver's confirmation is a race, so a hard
+    // assertion here would pin timing rather than behaviour.  When it does
+    // land, this is the line that says the duplicate was declined rather
+    // than re-applied — and the delivery assertions above already prove the
+    // decline did not swallow the answer.
+    if (read_role_log(recv_dir).find("event=InboxRosterNotNewer") != std::string::npos)
+    {
+        LOGGER_INFO("[L4] observed the duplicate-push path: receiver declined a roster it "
+                    "already held and still confirmed it");
+    }
+
+    send_a.send_signal(SIGTERM);
+    send_a.wait_for_exit(10);
+    send_b.send_signal(SIGTERM);
+    send_b.wait_for_exit(10);
+    recv.send_signal(SIGTERM);
+    recv.wait_for_exit(10);
+    hub.send_signal(SIGTERM);
+    EXPECT_EQ(hub.wait_for_exit(10), 0) << hub.get_stderr();
+
+    ::unsetenv("PYLABHUB_HUB_PASSWORD");
+    ::unsetenv("PYLABHUB_ROLE_PASSWORD");
+}
+
+// ─── A processor holds a roster on BOTH sides, and the gate combines them ──
+//
+// Every other inbox test has a one-sided receiver.  A processor registers
+// twice — a consuming presence and a producing presence — so it holds two
+// rosters, one per side (I-ROSTER-ONE-HOLDER), and its single inbox gate
+// answers from both: `roster_admits` says yes if EITHER side recognises the
+// key, because a processor's two hubs are separate authorities and
+// requiring them to agree would make each depend on the other.
+//
+// Three roles: an upstream producer feeding the processor's input channel
+// (without it the consuming side has no live producer to attach to and
+// never registers, so there would be no second side to test), the
+// processor itself, and a sender that reaches its mailbox.
+//
+// **What the log can show here, and what it cannot.**  Both sides are on
+// ONE hub, so both hold copies of the same roster.  That pins:
+//   - two independent holders — an adoption line per side;
+//   - the gate's key set is the deduped UNION, `gate_keys` equal to one
+//     side's `entries` rather than their sum;
+//   - the combined answer admits the sender — the message arrives.
+// It does NOT pin the "either side is enough" rule itself: with identical
+// content, consulting one side and consulting both give the same verdict.
+// Distinguishing those needs a processor whose two sides are DIFFERENT
+// hubs, with the sender known to only one.  Recorded rather than implied,
+// so this test is not read as covering more than it does.
+TEST_F(PlhHubCliTest, ZmqE2E_InboxProcessorHoldsARosterOnBothSides)
+{
+    using std::chrono::seconds;
+
+    const std::string ch_in = "lab.l4.inboxproc.in";
+    const std::string ch_out = "lab.l4.inboxproc.out";
+    const std::string snd_channel = "lab.l4.inboxproc.snd";
+    const std::string up_uid = "prod.l4inboxproc.up12345678";
+    const std::string proc_uid = "proc.l4inboxproc.mid12345678";
+    const std::string snd_uid = "prod.l4inboxproc.snd12345678";
+
+    const fs::path hub_dir = tmp("inboxproc_hub");
+    {
+        WorkerProcess init(plh_hub_binary(), "--init",
+                           {hub_dir.string(), "--name", "L4InboxProcHub"});
+        ASSERT_EQ(init.wait_for_exit(), 0) << init.get_stderr();
+    }
+    {
+        nlohmann::json j;
+        {
+            std::ifstream f(hub_dir / "hub.json");
+            f >> j;
+        }
+        j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+        j["admin"]["enabled"] = false;
+        j["script"]["path"] = "";
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+    ::setenv("PYLABHUB_HUB_PASSWORD", "inboxproc-pw", /*overwrite=*/1);
+    {
+        WorkerProcess kg(plh_hub_binary(), "--config",
+                         {(hub_dir / "hub.json").string(), "--keygen"});
+        ASSERT_EQ(kg.wait_for_exit(), 0) << kg.get_stderr();
+    }
+
+    const fs::path up_dir = tmp("inboxproc_up");
+    const fs::path proc_dir = tmp("inboxproc_mid");
+    const fs::path snd_dir = tmp("inboxproc_snd");
+    std::error_code ec;
+    fs::create_directories(up_dir / "vault", ec);
+    fs::create_directories(proc_dir / "vault", ec);
+    fs::create_directories(snd_dir / "vault", ec);
+
+    write_zmq_producer_config(up_dir / "producer.json", hub_dir, up_uid, ch_in, /*port=*/0,
+                              /*channel_topology=*/"fan-in");
+    write_zmq_producer_script(up_dir / "script" / "python", /*n_slots=*/200);
+    write_inbox_processor_config(proc_dir / "processor.json", hub_dir, proc_uid, ch_in, ch_out);
+    write_inbox_processor_script(proc_dir / "script" / "python");
+    write_zmq_producer_config(snd_dir / "producer.json", hub_dir, snd_uid, snd_channel, /*port=*/0);
+    write_inbox_sender_script(snd_dir / "script" / "python", proc_uid);
+
+    ::setenv("PYLABHUB_ROLE_PASSWORD", "inboxproc-role-pw", /*overwrite=*/1);
+    const std::string up_pubkey =
+        keygen_role_and_read_pubkey(up_dir, "producer", up_uid, "inboxproc-role-pw");
+    const std::string proc_pubkey =
+        keygen_role_and_read_pubkey(proc_dir, "processor", proc_uid, "inboxproc-role-pw");
+    const std::string snd_pubkey =
+        keygen_role_and_read_pubkey(snd_dir, "producer", snd_uid, "inboxproc-role-pw");
+    add_known_role(hub_dir, "inboxproc_up", up_uid, "producer", up_pubkey);
+    add_known_role(hub_dir, "inboxproc_mid", proc_uid, "processor", proc_pubkey);
+    add_known_role(hub_dir, "inboxproc_snd", snd_uid, "producer", snd_pubkey);
+
+    WorkerProcess hub(plh_hub_binary(), hub_dir.string(), {});
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir, "Broker: listening on")) << "hub never bound.  Log:\n"
+                                                                      << read_hub_log(hub_dir);
+    const std::string bound_ep = extract_bound_endpoint(read_hub_log(hub_dir));
+    ASSERT_FALSE(bound_ep.empty()) << "no bound endpoint in hub log";
+    {
+        nlohmann::json j;
+        {
+            std::ifstream f(hub_dir / "hub.json");
+            f >> j;
+        }
+        j["network"]["broker_endpoint"] = bound_ep;
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+
+    // Processor first — it owns both its channels (fan-in in, default out),
+    // and a channel's owner registers before anyone joins it.  Waiting for
+    // BOTH acks is what makes the rest of this test meaningful: two
+    // registrations is what gives a processor two roster sides.
+    WorkerProcess proc(plh_role_binary(), "--role", {"processor", proc_dir.string()});
+    ASSERT_TRUE(wait_for_role_marker(proc_dir, proc, "event=ConsumerRegAckReceived", seconds(15)))
+        << "the processor's consuming side never registered:\n"
+        << read_role_log(proc_dir) << proc.get_stderr();
+    ASSERT_TRUE(wait_for_role_marker(proc_dir, proc, "event=RegAckReceived", seconds(15)))
+        << "the processor's producing side never registered:\n"
+        << read_role_log(proc_dir) << proc.get_stderr();
+
+    WorkerProcess up(plh_role_binary(), "--role", {"producer", up_dir.string()});
+    ASSERT_TRUE(wait_for_role_marker(up_dir, up, "event=RegAckReceived", seconds(15)))
+        << "upstream producer never joined the processor's input channel:\n"
+        << read_role_log(up_dir) << up.get_stderr();
+
+    WorkerProcess snd(plh_role_binary(), "--role", {"producer", snd_dir.string()});
+
+    // Both sides adopt, independently.  `entries=3` is every role the
+    // operator configured that the hub currently has registered
+    // (I-ROSTER-PRESENT) — the processor counts once, by uid, though it
+    // registers twice.
+    //
+    // `gate_keys=3` is the assertion that matters: it is the DEDUPED union
+    // across both sides, so the sum-instead-of-union bug reads 6 here.
+    //
+    // What the processor's log looks like when this passes, in order:
+    //   side=input  entries=1 gate_keys=1 version=1
+    //   side=output entries=1 gate_keys=1 version=1
+    //   … as the other two roles register …
+    //   side=input  entries=3 gate_keys=3 version=3
+    //   side=output entries=3 gate_keys=3 version=3
+    // The pair at version=1 is the processor alone on the hub, and their
+    // sharing a version shows its second registration did not bump the
+    // ledger — admission is idempotent per uid, not per presence.
+    ASSERT_TRUE(wait_for_role_marker(
+        proc_dir, proc, "event=InboxRosterAdopted side=input entries=3 gate_keys=3", seconds(30)))
+        << "the consuming side never adopted a full roster:\n"
+        << read_role_log(proc_dir) << proc.get_stderr();
+    ASSERT_TRUE(wait_for_role_marker(
+        proc_dir, proc, "event=InboxRosterAdopted side=output entries=3 gate_keys=3", seconds(30)))
+        << "the producing side never adopted a full roster — a processor holds one per side:\n"
+        << read_role_log(proc_dir) << proc.get_stderr();
+
+    // The combined answer, exercised rather than inspected: the sender's
+    // CURVE handshake is authorized by `roster_admits`, which consults both
+    // sides, and a wrong answer costs the connection outright.
+    ASSERT_TRUE(wait_for_role_marker(snd_dir, snd, "inbox_send: SENT rc=0", seconds(30)))
+        << "sender never delivered to the processor's mailbox:\n"
+        << read_role_log(snd_dir) << snd.get_stderr();
+    ASSERT_TRUE(
+        wait_for_role_marker(proc_dir, proc, "inbox_recv: GOT sender=" + snd_uid, seconds(20)))
+        << "the processor's gate did not admit a sender both its rosters name:\n"
+        << read_role_log(proc_dir);
+
+    snd.send_signal(SIGTERM);
+    snd.wait_for_exit(10);
+    proc.send_signal(SIGTERM);
+    proc.wait_for_exit(10);
+    up.send_signal(SIGTERM);
+    up.wait_for_exit(10);
     hub.send_signal(SIGTERM);
     EXPECT_EQ(hub.wait_for_exit(10), 0) << hub.get_stderr();
 

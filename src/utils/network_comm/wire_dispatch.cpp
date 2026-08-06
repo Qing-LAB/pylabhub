@@ -302,6 +302,19 @@ struct has_role_type<T, std::void_t<decltype(std::declval<const T &>().role_type
 {
 };
 
+// SFINAE probe: does BodyClass name a channel?  ROSTER_CHECK_NOTIFY does
+// not — the roster is hub-wide, so there is no channel to name and the
+// grammar gate has nothing to check.  Left absent rather than sent empty
+// so the body cannot carry a field that means nothing for it.
+template <typename T, typename = void> struct has_channel_name : std::false_type
+{
+};
+template <typename T>
+struct has_channel_name<T, std::void_t<decltype(std::declval<const T &>().channel_name())>>
+    : std::true_type
+{
+};
+
 template <typename BodyClass, typename ValidatedT>
 ReceivedMessage validate_control_with_role_uid(::pylabhub::wire::WireEnvelope env,
                                                ::nlohmann::json body_json,
@@ -311,7 +324,11 @@ ReceivedMessage validate_control_with_role_uid(::pylabhub::wire::WireEnvelope en
     {
         BodyClass typed(std::move(body_json));
         std::string role_uid = typed.role_uid();
-        std::string channel_name = typed.channel_name();
+        std::string channel_name;
+        if constexpr (has_channel_name<BodyClass>::value)
+        {
+            channel_name = typed.channel_name();
+        }
         std::string role_type;
         if constexpr (has_role_type<BodyClass>::value)
         {
@@ -492,6 +509,8 @@ enum class Tier
     Control_Disc,                     // no role_uid — envelope-only in effect
     Control_EnvelopeWithRoleUid,      // body role_uid = caller's uid
                                       // (identity_match + grammar + tag)
+    Control_RosterCheckNotify,        // body role_uid = caller's own uid,
+                                      // plus the roster version it holds
     Control_EnvelopeWithQueryRoleUid, // body role_uid = queried subject
                                       // (grammar + tag; NO identity_match)
     Control_ChannelBroadcastSend,     // no sender in the body — the broker
@@ -516,7 +535,7 @@ struct DispatchRow
 // I-MSG-TYPE-TAXONOMY (fire-and-forget requires _NOTIFY suffix); the
 // broker→recipient fan-out `_NOTIFY` was renamed to `_DELIVER_NOTIFY`
 // to disambiguate.
-constexpr std::array<DispatchRow, 21> kDispatchTable = {{
+constexpr std::array<DispatchRow, 22> kDispatchTable = {{
     // REG_REQ family — full gates.  Producer + consumer paths use
     // distinct body classes per C1 resolution.
     {"REG_REQ", Tier::RegReq},
@@ -534,6 +553,14 @@ constexpr std::array<DispatchRow, 21> kDispatchTable = {{
     {"HEARTBEAT_NOTIFY", Tier::Control_HeartbeatNotify},
     {"GET_CHANNEL_AUTH_REQ", Tier::Control_GetChannelAuth},
     {"DISC_REQ", Tier::Control_Disc},
+
+    // Roster replication (HEP-CORE-0035 §4.9).  Fire-and-forget in both
+    // directions: the role reports the version it holds, and the hub
+    // answers ROSTER_UPDATE_NOTIFY only when that version is stale.
+    // Its own tier rather than Control_EnvelopeWithRoleUid because the
+    // body is typed — the version is the whole point of the message and
+    // a body without one must be refused, not read as zero.
+    {"ROSTER_CHECK_NOTIFY", Tier::Control_RosterCheckNotify},
 
     // Control_EnvelopeWithRoleUid — body role_uid = CALLER's own uid.
     // Runs identity_match (I-DEALER-IDENTITY) + grammar + role-tag
@@ -605,6 +632,8 @@ std::string_view tier_name(Tier t) noexcept
         return "Control_GetChannelAuth";
     case Tier::Control_Disc:
         return "Control_Disc";
+    case Tier::Control_RosterCheckNotify:
+        return "Control_RosterCheckNotify";
     case Tier::Control_EnvelopeWithRoleUid:
         return "Control_EnvelopeWithRoleUid";
     case Tier::Control_EnvelopeWithQueryRoleUid:
@@ -687,6 +716,10 @@ ReceivedMessage receive_and_validate(::zmq::multipart_t &&raw, const ::zmq::sock
             std::move(env), std::move(body_copy), admission_ctx);
     case Tier::Control_Disc:
         return validate_disc_req(std::move(env), std::move(body_copy), admission_ctx);
+    case Tier::Control_RosterCheckNotify:
+        return validate_control_with_role_uid<::pylabhub::wire::RosterCheckNotifyBody,
+                                              ValidatedRosterCheckNotify>(
+            std::move(env), std::move(body_copy), admission_ctx);
     case Tier::Control_EnvelopeWithRoleUid:
         return envelope_with_role_uid(std::move(env), std::move(body_copy), admission_ctx);
     case Tier::Control_EnvelopeWithQueryRoleUid:

@@ -299,6 +299,11 @@ inline constexpr NotificationEntry kNotificationTable[static_cast<std::size_t>(
     /* ChannelCount       */ {nullptr, nullptr, nullptr},
     /* ChannelBroadcast   */
     {"on_channel_broadcast", &invoke_user_channel_broadcast, &default_channel_broadcast},
+    // RosterUpdate is INFRASTRUCTURE-ONLY (HEP-CORE-0035 §4.9.7):
+    // `RoleAPIBase::handle_channel_auth_notifies` adopts it and removes it
+    // from the msgs list before dispatch runs, so this row's handlers
+    // should never fire.  Row kept so Count stays the array size.
+    /* RosterUpdate       */ {nullptr, nullptr, nullptr},
 };
 
 /// Single-pass dispatcher.  For each known msg: fire the user

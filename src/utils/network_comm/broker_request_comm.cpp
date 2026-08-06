@@ -1121,6 +1121,21 @@ void BrokerRequestComm::send_heartbeat(const std::string &channel, const std::st
     pImpl->cmd_queue.push(std::move(cmd));
 }
 
+void BrokerRequestComm::send_roster_check(const std::string &role_uid, std::uint64_t held_version)
+{
+    // HEP-CORE-0035 §4.9.7.  Both fields are required by
+    // `RosterCheckNotifyBody` — the version is the whole message, so it
+    // is written unconditionally rather than omitted when zero.
+    nlohmann::json payload;
+    payload["role_uid"] = role_uid;
+    payload["known_roles_version"] = held_version;
+    SendCmd cmd;
+    cmd.msg_type = "ROSTER_CHECK_NOTIFY";
+    cmd.correlation_id = make_random_hex16();
+    cmd.payload = std::move(payload);
+    pImpl->cmd_queue.push(std::move(cmd));
+}
+
 // M1.4 (2026-05-11): `BrokerRequestComm::send_metrics_report` deleted.
 // Metrics piggyback on `send_heartbeat(channel, uid, role_type, metrics)`
 // per HEP-CORE-0019 §2.3 Phase 6.

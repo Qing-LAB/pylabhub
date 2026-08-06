@@ -158,6 +158,17 @@ TEST_F(InboxQueueTest, CurveUnknownSenderDenied)
     ExpectWorkerOk(w);
 }
 
+// The deny path the two CURVE tests above cannot reach: both bind an
+// authority first, so neither can tell a working gate from one that admits
+// whoever it is asked about.  This one binds none — the state between
+// `start()` and the role adopting its first roster — and a peer holding a
+// valid keypair must still be refused.
+TEST_F(InboxQueueTest, CurveNoAuthorityBoundDeniesEveryone)
+{
+    auto w = SpawnWorker("hub_inbox_queue.inbox_curve_no_authority_denies");
+    ExpectWorkerOk(w);
+}
+
 // A receiver stuck at its high-water mark must make send() FAIL, not block the
 // caller: libzmq reports a socket with no writable peer as EAGAIN, and its
 // default SNDTIMEO of -1 turns that into an unbounded wait.  The same EAGAIN

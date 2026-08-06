@@ -152,7 +152,12 @@ future format/type expansion has exactly one place to change per surface.
 | `ROLE_REGISTERED_NOTIFY` — **planned, NOT implemented** | B→ | FF | HEP-CORE-0007 §12 | none (no wire literal in `src`); planned for federation role-presence propagation |
 | `ROLE_DEREGISTERED_NOTIFY` — **planned, NOT implemented** | B→ | FF | HEP-CORE-0007 §12 | none (planned; sibling of `ROLE_REGISTERED_NOTIFY`) |
 
-### 3.2 Channel admission / auth-changed
+### 3.2 Admission / auth-changed — channel-scoped and hub-wide
+
+The first four rows are per-channel.  The last two are the hub-wide role
+roster that gates every inbox (HEP-CORE-0035 §4.9): both are fire-and-forget,
+because the role reports the version it holds and the hub answers only when
+that version is stale — being current costs nothing on the return path.
 
 | Message | Dir | Cat | Primary HEP | Code anchor |
 |---|---|---|---|---|
@@ -161,6 +166,9 @@ future format/type expansion has exactly one place to change per surface.
 | `GET_CHANNEL_AUTH_REQ` / `GET_CHANNEL_AUTH_ACK` | →B / B→ | RA | HEP-CORE-0042 / -0036 ⟳ | Tier::Control_GetChannelAuth |
 | `CONSUMER_ATTACH_REQ_SHM` / `CONSUMER_ATTACH_ACK_SHM` | →B / B→ | RA | HEP-CORE-0041 §9 D4 / -0042 §6.1 | **producer**-initiated pre-attach gate (broker_proto 6→7): producer asks whether a consumer is authorized before sending the SHM capability fd; stateless read-only query. `handle_consumer_attach_req_shm` (`broker_service.cpp:4039`, dispatched `:1703`). **Not** in `kDispatchTable` (ungated). |
 | `CONSUMER_ATTACH_REQ_ZMQ` / `CONSUMER_ATTACH_ACK_ZMQ` | →B / B→ | RA | HEP-CORE-0042 §6.2 / §5.4 | **consumer**-initiated pre-attach gate: consumer asks whether producer P's ZAP cache is caught up; fast-path `success` or wait-path (`{status:pending}`, enqueue + fire `CHANNEL_AUTH_CHANGED_NOTIFY`). `handle_consumer_attach_req_zmq` (`broker_service.cpp:4196`, dispatched `:1719`). **Not** in `kDispatchTable` (ungated). |
+
+| `ROSTER_CHECK_NOTIFY` — body `{role_uid, known_roles_version}` | →B | FF | HEP-CORE-0035 §4.9.7 | Tier::Control_RosterCheckNotify.  Sent once per side on the periodic tick, AND immediately on adopting a pushed roster.  Doubles as the ledger confirmation — there is no separate confirm message. |
+| `ROSTER_UPDATE_NOTIFY` — body `{known_roles[], known_roles_version}` | B→ | FF | HEP-CORE-0035 §4.9.7 | Sent only when the reported version is stale, or when a sender's `ROLE_INFO_REQ` finds the target unconfirmed.  Same block as the REG_ACK roster (`roster_ack_block`). |
 
 ### 3.3 Liveness & control
 
@@ -203,7 +211,7 @@ future format/type expansion has exactly one place to change per surface.
 | Message | Dir | Cat | Primary HEP | Code anchor |
 |---|---|---|---|---|
 | `ROLE_PRESENCE_REQ` / `ROLE_PRESENCE_ACK` | →B / B→ | RA | HEP-CORE-0039 / -0033 ⟳ | Tier::Control_EnvelopeWithQueryRoleUid |
-| `ROLE_INFO_REQ` / `ROLE_INFO_ACK` | →B / B→ | RA | HEP-CORE-0039 / -0033 ⟳ | Tier::Control_EnvelopeWithQueryRoleUid |
+| `ROLE_INFO_REQ` / `ROLE_INFO_ACK` | →B / B→ | RA | HEP-CORE-0039 / -0033 ⟳ | Tier::Control_EnvelopeWithQueryRoleUid.  **Also the inbox reachability gate** (HEP-CORE-0035 §4.9.7, I-INBOX-REACHABLE): the inbox coordinates in the ACK are withheld until the queried role has confirmed a roster naming the asker.  The asker's identity on this tier is claimed, not proven — reachability only, never access control. |
 | `SCHEMA_REQ` / `SCHEMA_ACK` | →B / B→ | RA | HEP-CORE-0016 / -0034 ⟳ | Tier::EnvelopeOnly |
 | `CHANNEL_LIST_REQ` / `CHANNEL_LIST_ACK` | →B / B→ | RA | HEP-CORE-0039 / -0007 ⟳ | Tier::EnvelopeOnly |
 | `METRICS_REQ` / `METRICS_ACK` | →B / B→ | RA | HEP-CORE-0019 | Tier::EnvelopeOnly |

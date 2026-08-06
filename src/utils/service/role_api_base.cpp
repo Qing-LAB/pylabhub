@@ -22,6 +22,7 @@
 #include "utils/schema_utils.hpp"
 #include "utils/security/attach_protocol.hpp"        // HEP-0041 1i-mig-4 (#272)
 #include "utils/security/key_store.hpp"              // HEP-0041 1i-mig-4 (#272)
+#include "utils/security/pubkey_origin.hpp"          // RosterEntry, PeerAuthority (HEP-0035 §4.9)
 #include "utils/security/shm_capability_channel.hpp" // HEP-0041 1i-mig-4 (#272)
 #include "plh_version_registry.hpp"                  // HEP-0032 §8 ABI fingerprint
 #include "utils/shared_memory_spinlock.hpp"
@@ -34,6 +35,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <shared_mutex> // #317 D2 broker_observer_pubkey_mu
 #include <span>
 #include <stdexcept>
@@ -285,19 +287,104 @@ struct RoleAPIBase::Impl
     PeerCache allowlist_cache;
     PeerCache producer_peer_cache;
 
-    // HEP-CORE-0027 §3.5 — hub-wide `known_roles` roster for the inbox ZAP.
+    // HEP-CORE-0027 §3.5 — the roster each hub sends, for the inbox ZAP.
     // The inbox is a hub-wide role<->role facility (any role may message any
-    // other role), so its authorization boundary is known_roles membership,
-    // NOT the data channel's allowlist (that lives in `allowlist_cache`
-    // above, channel-scoped).  The role does not hold the hub's roster
-    // otherwise, so the broker distributes it on every
-    // REG_ACK/CONSUMER_REG_ACK as a flat array of Z85 pubkeys; `apply_*_
-    // reg_ack` unions it here.  UNION across presences/hubs — a multi-hub
-    // role admits any known_role from any hub it registered with.  Consumed
-    // by the inbox ROUTER's ZAP arm.  Mutex-guarded: written on the BRC-poll
-    // thread as ACKs arrive, read when the inbox facility is armed.
-    mutable std::mutex inbox_known_roles_mu;
-    std::unordered_set<std::string> inbox_known_roles; // Z85 pubkeys
+    // other role), so its authorization boundary is hub-wide rather than the
+    // data channel's allowlist (that lives in `allowlist_cache` above,
+    // channel-scoped).
+    //
+    // Membership is the operator's vault roster INTERSECTED with the roles
+    // the hub currently has registered (HEP-CORE-0035 §4.9.2,
+    // I-ROSTER-PRESENT) — not the vault alone.  A configured role that is
+    // not running is not admissible, so it is not replicated.  That is why
+    // this moves at runtime and arrives on more than REG_ACK.
+    //
+    // Mutex-guarded: written by the role host's registration path as each
+    // ACK is applied, read when the inbox facility is armed.  A dual-hub
+    // processor applies its two ACKs in straight-line order on that one
+    // thread (`processor_role_host.cpp`), so the sides do not currently race
+    // — the mutex is what keeps that a property of the code rather than of
+    // the current call order.
+    /// Which hub connection a replicated roster came from (HEP-CORE-0035 §4.9).
+    ///
+    /// A role may span two hubs — a processor consumes from its input hub and
+    /// produces to its output hub — and each hub owns its own roster.  The
+    /// side is not a label on the data: it is which authority answered, and
+    /// replacing one must never touch the other.
+    enum RosterSide : std::size_t
+    {
+        kInputSide = 0,  ///< The hub this role consumes from (CONSUMER_REG_ACK).
+        kOutputSide = 1, ///< The hub this role produces to (REG_ACK).
+        kSideCount = 2
+    };
+
+    /// Which side, for a log reader who does not have the enum in front of them.
+    [[nodiscard]] static constexpr const char *side_name(RosterSide side) noexcept
+    {
+        return side == kInputSide ? "input" : "output";
+    }
+
+    /// Which side a presence of this kind faces.  A consuming presence reads
+    /// FROM its hub, so its hub is the input side; a producing presence
+    /// writes TO its hub.  This is the same mapping the two registration ACK
+    /// handlers apply by being on different code paths, written once so the
+    /// periodic check and the ACKs cannot disagree about it.
+    [[nodiscard]] static constexpr RosterSide side_for(RoleKind kind) noexcept
+    {
+        return kind == RoleKind::Consumer ? kInputSide : kOutputSide;
+    }
+
+    /// One published roster per side.
+    ///
+    /// A single-sided role fills one slot and leaves the other null; null
+    /// means "this side has no hub," not "this side admits everyone."  Both
+    /// null is the bootstrap state and denies everything, which is the same
+    /// rule the hub applies to itself (§4.8.4).
+    ///
+    /// The version is NOT stored beside these.  It rides inside each
+    /// `PeerAuthority` (I-ROSTER-VERSION-IN-SNAPSHOT), so reading the pointer
+    /// yields both the contents and the revision they are — a second field
+    /// here would be the two-loads pairing the invariant exists to forbid.
+    mutable std::mutex inbox_roster_mu;
+    std::shared_ptr<const pylabhub::utils::security::PeerAuthority> inbox_roster_[kSideCount];
+
+    /// What version this side holds; 0 when it holds no roster at all.
+    /// Caller holds `inbox_roster_mu`.
+    /// 0 means "this side holds no roster"; real versions start at 1.
+    ///
+    /// The sentinel is the version itself rather than a separate flag, so
+    /// there is no second fact to fall out of step with the first.  Any real
+    /// version beats it, which is what makes the first adoption work without
+    /// the comparison needing a special case.
+    [[nodiscard]] std::uint64_t roster_version_locked_(RosterSide side) const
+    {
+        return inbox_roster_[side] ? inbox_roster_[side]->version() : 0;
+    }
+
+    /// Does any side's hub vouch for this key?  (I-ROSTER-COMBINE-ADMIT.)
+    ///
+    /// Either hub answering yes is a real yes: a processor's two hubs are
+    /// separate authorities, and a sender recognised by either is one this
+    /// role is meant to hear from.  Requiring both to agree would make each
+    /// hub's roster silently depend on the other's.
+    [[nodiscard]] bool roster_admits(const std::string &pubkey_z85) const
+    {
+        namespace sec = pylabhub::utils::security;
+        sec::Z85PublicKey key;
+        try
+        {
+            key = sec::Z85PublicKey::validate(pubkey_z85);
+        }
+        catch (const std::invalid_argument &)
+        {
+            return false; // not a key at all; no authority can recognise it
+        }
+        std::lock_guard<std::mutex> lk(inbox_roster_mu);
+        for (const auto &side : inbox_roster_)
+            if (side && side->admits(key))
+                return true;
+        return false;
+    }
 
     // HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY (lines 1834-1838) —
     // binding-side live-peer map maintained by phase=live / phase=left
@@ -511,53 +598,283 @@ struct RoleAPIBase::Impl
         return handler_ ? handler_->brc_for_band(band) : nullptr;
     }
 
-    // HEP-CORE-0027 §3.5 — union REG_ACK/CONSUMER_REG_ACK `known_roles`
-    // (flat array of Z85 pubkeys) into the hub-wide inbox roster.  Called
-    // from both ACK handlers.  A missing/non-array field contributes
-    // nothing (enforcement that an inbox-configured role has a non-empty
-    // roster belongs at the inbox-arm site, not here).
-    void merge_inbox_known_roles(const nlohmann::json &ack)
+    /// Does @p side hold a roster once a failed adoption is over?
+    ///
+    /// The single outcome test behind `adopt_inbox_roster`'s return value on
+    /// its failure paths: an absent field, a malformed entry and a stale
+    /// version are three faults with one consequence, so the question asked
+    /// is about the OUTCOME rather than about any particular way of
+    /// arriving at it.  Keeping an earlier roster is survivable; ending the
+    /// attempt with none, on a role whose mailbox is armed, is not.
+    ///
+    /// Only reachable when this role owns an inbox — see the function body.
+    [[nodiscard]] bool gated_or_refuse_(RosterSide side) const
     {
-        if (!ack.contains("known_roles") || !ack.at("known_roles").is_array())
-            return;
-        namespace sec = pylabhub::utils::security;
-        std::size_t added = 0;
-        std::size_t total = 0;
-        sec::PeerAllowlist allowlist; // built only when a re-seed is due
+        // No `inbox_queue == nullptr` case here.  Every caller is a failure
+        // path inside `adopt_inbox_roster`, which returns before any of them
+        // when this role has no inbox (§4.9.9) — so reaching this function
+        // already means there is a mailbox to gate.  Repeating the test
+        // would put one rule in two places, and the copy that is never
+        // executed is the one that rots.
         {
-            std::lock_guard<std::mutex> lk(inbox_known_roles_mu);
+            std::lock_guard<std::mutex> lk(inbox_roster_mu);
+            if (inbox_roster_[side] != nullptr)
+                return true;
+        }
+        LOGGER_ERROR("[{}] event=InboxUngated side={} — this role owns an inbox and holds no "
+                     "roster for that hub, so its mailbox would deny every sender and record "
+                     "nothing about why (HEP-CORE-0035 §4.9.6)",
+                     short_tag, side_name(side));
+        return false;
+    }
+
+    /// Adopt the roster the hub on @p side sent (HEP-CORE-0035 §4.9).
+    /// Called from both ACK handlers.
+    ///
+    /// Returns false when this role owns an inbox and, after this attempt,
+    /// still holds no roster for @p side.  Such a role would report a
+    /// successful start with a mailbox that denies every sender and says
+    /// nothing about why: the sender sees a connection that never completes,
+    /// the receiver logs an absence.  A role with no inbox never gets that
+    /// far: it declines the roster outright and returns true (§4.9.9), so
+    /// there is nothing for it to hold, keep current, or fail to hold.
+    ///
+    /// The check is deliberately on the OUTCOME rather than on any single
+    /// way of failing.  An absent field, a malformed entry, and a stale
+    /// version are three different faults with one consequence that matters —
+    /// an ungated mailbox — and enumerating the causes is how one of them
+    /// gets missed.
+    ///
+    /// ONE parse into ONE object.  The published `PeerAuthority` is what this
+    /// side holds, and it is the only thing that holds it — the inbox gate
+    /// asks `roster_admits` rather than being handed a copy.  An earlier
+    /// revision kept a parallel set of bare keys and parsed twice — the two
+    /// passes disagreed about what was acceptable, so an entry with a key but
+    /// no uid was refused by one and admitted by the other.  One list, one
+    /// parse, one answer.
+    ///
+    /// REPLACES this side, never merges (I-ROSTER-REPLACE): a merge cannot
+    /// express removal, so a revoked key would outlive the revocation for as
+    /// long as this process ran.  Replaces only THIS side (I-ROSTER-ONE-HOLDER):
+    /// a role-wide replace would let one hub's roster erase the other's and
+    /// start refusing senders from a hub that said nothing.
+    [[nodiscard]] bool adopt_inbox_roster(const nlohmann::json &ack, RosterSide side)
+    {
+        namespace sec = pylabhub::utils::security;
+
+        // A role with no inbox holds no roster (HEP-CORE-0035 §4.9.9).  The
+        // roster exists to gate a mailbox; without one there is nothing to
+        // gate, nothing to attribute, and nothing to keep current.
+        //
+        // Not merely tidy: holding one makes this role report its version on
+        // every tick for the rest of its life, for a list it never reads —
+        // the "poll forever for data it never reads" §4.9.9 exists to
+        // prevent, showing up as unexplained traffic rather than as anything
+        // identifiable.  The inbox is armed before registration, so this is
+        // decided by the time the first ACK lands.
+        if (inbox_queue == nullptr)
+        {
+            // INFO, like the adoption it stands in for: one line per side at
+            // startup, and the only positive evidence that this role
+            // declined a roster rather than failing to get one.  At DEBUG it
+            // is absent from the role log, where "no roster line" and "no
+            // roster line because the level hid it" read identically.
+            LOGGER_INFO("[{}] event=InboxRosterSkipped side={} — this role runs no inbox, so it "
+                        "holds no roster and never polls for one (HEP-CORE-0035 §4.9.9)",
+                        short_tag, side_name(side));
+            return true;
+        }
+
+        if (!ack.contains("known_roles") || !ack.at("known_roles").is_array())
+        {
+            LOGGER_WARN("[{}] event=InboxRosterAbsent side={} (hub sent no roster)", short_tag,
+                        side_name(side));
+            return gated_or_refuse_(side);
+        }
+
+        std::uint64_t incoming = 0;
+
+        // Built off to the side and published only if it builds cleanly.  A
+        // malformed entry anywhere leaves this side on the roster it already
+        // had: stale is recoverable on the next check, half-applied is not
+        // and would mean silently admitting a prefix of the list.
+        sec::PeerAuthority::Builder builder;
+        std::size_t count = 0;
+        try
+        {
+            // Read INSIDE the try, with the entries it describes.  A
+            // wrong-typed version is the same class of fault as a wrong-typed
+            // entry and earns the same outcome — keep what we hold and log it.
+            // Read outside, it threw past this function and failed the entire
+            // registration, so one half of this block was recoverable and the
+            // other was terminal for no stated reason.
+            incoming = ack.value("known_roles_version", std::uint64_t{0});
             for (const auto &e : ack.at("known_roles"))
             {
-                if (!e.is_string())
+                if (!e.is_object())
                     continue;
-                auto z85 = e.get<std::string>();
-                if (z85.empty())
-                    continue;
-                if (inbox_known_roles.insert(std::move(z85)).second)
-                    ++added;
+                sec::RosterEntry entry{e.value("uid", std::string{}),
+                                       e.value("pubkey", std::string{})};
+                // An entry missing either half is not a roster entry.  It is
+                // refused here and therefore cannot be admitted anywhere,
+                // because there is no second path into the published object.
+                if (entry.uid.empty() || entry.pubkey_z85.empty())
+                    throw std::runtime_error("roster entry missing uid or pubkey");
+                builder.add_local_role(entry);
+                ++count;
             }
-            total = inbox_known_roles.size();
-            // Build the ZAP allowlist from the FULL roster only when the
-            // roster grew AND this role owns an inbox ROUTER to gate.
-            if (added > 0 && inbox_queue != nullptr)
-                for (const auto &pk : inbox_known_roles)
-                    allowlist.peers.insert(sec::PeerIdentity{sec::kCurveMechanism, pk});
         }
-        if (added == 0)
-            return;
-        LOGGER_INFO("[{}] event=InboxKnownRolesMerged added={} total={} "
-                    "(HEP-CORE-0027 §3.5 hub-wide inbox roster)",
-                    short_tag, added, total);
-        // Seed the inbox ROUTER's ZAP allowlist so the roster and the CURVE
-        // gate move together (HEP-CORE-0027 §3.5 S3 — lifts the ROUTER off
-        // its deny-all default).  Inert for roles without an inbox.
-        if (inbox_queue != nullptr)
+        catch (const std::exception &ex)
         {
-            inbox_queue->set_peer_allowlist(std::move(allowlist));
-            LOGGER_INFO("[{}] event=InboxAllowlistSeeded size={} "
-                        "(HEP-CORE-0027 §3.5 inbox ROUTER ZAP)",
-                        short_tag, total);
+            LOGGER_ERROR("[{}] event=InboxRosterRejected side={} version={} reason='{}' "
+                         "(keeping previous roster — HEP-CORE-0035 §4.9.5)",
+                         short_tag, side_name(side), incoming, ex.what());
+            return gated_or_refuse_(side);
         }
+
+        auto adopted =
+            std::make_shared<const sec::PeerAuthority>(std::move(builder).build(incoming));
+
+        // Both sides as they stand after publication, so the count below can
+        // be computed with the lock released.
+        std::shared_ptr<const sec::PeerAuthority> published[kSideCount];
+        {
+            std::unique_lock<std::mutex> lk(inbox_roster_mu);
+            // Monotonic within ONE hub (I-ROSTER-VERSION).  Compared only
+            // against this side's own previous version — versions from a
+            // different hub count from a different beginning and are not
+            // comparable.
+            //
+            // **Zero means "no roster".  Real versions start at 1.**  The
+            // ledger issues 1 on its first admission, and a hub builds a
+            // registration ACK AFTER admitting the role it is answering — so
+            // a role never receives 0 on an ACK, and a side that holds
+            // nothing reports 0 and is beaten by any real version.  One
+            // number, two ends, no separate "is anything held" flag to
+            // disagree with it.
+            //
+            // Equal is REJECTED, which is what having a version is for.  The
+            // same version means the same list, so re-applying it would
+            // reparse, rebuild, republish and report back — work whose only
+            // product is a duplicate of what this side already holds.  That
+            // is not hypothetical: the hub sends a roster whenever a sender
+            // asks about a target that has not confirmed, so several senders
+            // asking about the same target push the same version repeatedly.
+            const std::uint64_t held = roster_version_locked_(side);
+            if (incoming == 0)
+            {
+                LOGGER_WARN(
+                    "[{}] event=InboxRosterVersionZero side={} — a roster version of 0 "
+                    "means 'none', so there is nothing here to adopt (HEP-CORE-0035 §4.9.5)",
+                    short_tag, side_name(side));
+                return gated_or_refuse_(side);
+            }
+            if (incoming <= held)
+            {
+                LOGGER_INFO("[{}] event=InboxRosterNotNewer side={} held={} offered={} — nothing "
+                            "to do",
+                            short_tag, side_name(side), held, incoming);
+                // Declining the CONTENT is not declining to answer.  The hub
+                // sends a roster when it believes this role has not confirmed
+                // one, and it does not know which version we hold — so a
+                // push of what we already have means our last report did not
+                // arrive (they are fire-and-forget).  Staying silent here
+                // would leave the hub believing we are behind, refusing
+                // senders on our behalf until the next periodic tick
+                // happened to say otherwise.  Answering closes that in one
+                // exchange, and repeating a confirmation is free.
+                //
+                // Sent OUTSIDE this lock — `report_roster_version_` takes it.
+                lk.unlock();
+                report_roster_version_(side);
+                return gated_or_refuse_(side);
+            }
+            inbox_roster_[side] = adopted;
+            for (std::size_t i = 0; i < kSideCount; ++i)
+                published[i] = inbox_roster_[i];
+        }
+
+        // How many distinct keys the inbox gate now answers yes for, deduped
+        // across sides because a processor whose two hubs both know a peer
+        // admits it once, not twice.  Computed with the lock RELEASED: the
+        // ZAP pump thread blocks on this mutex for every handshake, and
+        // building two key projections inside it would stall authentication
+        // across the process for the length of a log line's arithmetic.
+        std::size_t gate_keys = 0;
+        {
+            std::set<sec::PeerIdentity> distinct;
+            for (const auto &s : published)
+                if (s)
+                    for (const auto &peer : s->zap_allowlist().peers)
+                        distinct.insert(peer);
+            gate_keys = distinct.size();
+        }
+        // Two counts, and they differ: `entries` is what THIS side's hub
+        // listed, `gate_keys` is what the inbox gate admits once both sides
+        // are counted together.  They match for a single-sided role, which is
+        // exactly when a reader would otherwise assume they always do.
+        //
+        // `version` trails them deliberately: what a reader — and the L4
+        // marker assertion — identifies this line by is the event, the side,
+        // and the sizes.  Those stay contiguous so one substring pins them;
+        // the version varies with how many admissions the hub has recorded and
+        // is not part of what the roster CONTAINS.
+        LOGGER_INFO("[{}] event=InboxRosterAdopted side={} entries={} gate_keys={} version={} "
+                    "(HEP-CORE-0035 §4.9 replicated roster)",
+                    short_tag, side_name(side), count, gate_keys, incoming);
+
+        // Every adoption is acknowledged, from the one place adoption
+        // happens (HEP-CORE-0035 §4.9.7).  The hub cannot disclose this
+        // role's inbox to a sender until it knows which version this role
+        // has applied, and this report is what tells it — the same message
+        // the periodic tick sends, so there is no second protocol.
+        //
+        // Immediately, not at the next tick.  Waiting would leave the hub
+        // unable to learn this role had converged for up to a full
+        // heartbeat interval, which is the delay the rule exists to remove.
+        report_roster_version_(side);
+        return true;
+    }
+
+    /// Tell this side's hub which roster version this role now holds
+    /// (HEP-CORE-0035 §4.9.7).  Serves the periodic tick and every
+    /// adoption; a side holding no roster has nothing to report, which is
+    /// how a role with no inbox stays silent (§4.9.9).
+    void report_roster_version_(RosterSide side) const
+    {
+        auto *bc = resolve_bc_for_side(side);
+        if (bc == nullptr)
+            return;
+        std::uint64_t held = 0;
+        {
+            std::lock_guard<std::mutex> lk(inbox_roster_mu);
+            if (inbox_roster_[side] == nullptr)
+                return; // no roster on this side — nothing to keep current
+            held = roster_version_locked_(side);
+        }
+        // Sent with the lock RELEASED.  The inbox gate's callback takes this
+        // mutex on the ZAP pump thread for every handshake, and queueing a
+        // wire message under it would put authentication for the whole
+        // process behind a send.
+        bc->send_roster_check(uid, held);
+    }
+
+    /// The connection facing @p side's hub.  A role's roster is per hub, so
+    /// several presences on one hub resolve to one connection and owe that
+    /// hub one report rather than one each.
+    [[nodiscard]] hub::BrokerRequestComm *resolve_bc_for_side(RosterSide side) const noexcept
+    {
+        if (!handler_)
+            return nullptr;
+        for (const auto &p : handler_->presences())
+        {
+            if (side_for(p.role_kind) != side)
+                continue;
+            if (p.connection == nullptr || p.connection->brc == nullptr)
+                continue;
+            return p.connection->brc.get();
+        }
+        return nullptr;
     }
 };
 
@@ -1219,9 +1536,13 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
                     pImpl->short_tag, ack.value("channel_name", "?"), ack.value("status", "?"),
                     producers_dump);
 
-        // HEP-CORE-0027 §3.5 — capture the hub-wide inbox roster from this
+        // HEP-CORE-0027 §3.5 — adopt the roster this hub sent (replaces, never merges) from this
         // presence's CONSUMER_REG_ACK before it seeds the inbox ROUTER ZAP arm.
-        pImpl->merge_inbox_known_roles(ack);
+        // Consuming presence: this is the hub this role reads FROM.
+        // Refusing here fails the registration rather than starting a role
+        // whose mailbox silently admits nobody (HEP-CORE-0035 §4.9.6).
+        if (!pImpl->adopt_inbox_roster(ack, RoleAPIBase::Impl::kInputSide))
+            return false;
 
         // HEP-CORE-0032 §8 — verify + log broker's ABI envelope echoed
         // on CONSUMER_REG_ACK.  Symmetric with the producer-side path.
@@ -2065,9 +2386,13 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
                     "instance_id={} (HEP-CORE-0042 §5.5.3)",
                     pImpl->short_tag, channel_name, instance_id);
 
-        // HEP-CORE-0027 §3.5 — capture the hub-wide inbox roster from this
+        // HEP-CORE-0027 §3.5 — adopt the roster this hub sent (replaces, never merges) from this
         // presence's REG_ACK before it seeds the inbox ROUTER ZAP arm.
-        pImpl->merge_inbox_known_roles(ack);
+        // Producing presence: this is the hub this role writes TO.
+        // Refusing here fails the registration rather than starting a role
+        // whose mailbox silently admits nobody (HEP-CORE-0035 §4.9.6).
+        if (!pImpl->adopt_inbox_roster(ack, RoleAPIBase::Impl::kOutputSide))
+            return false;
 
         // HEP-CORE-0036 §3.6 REG_ACK note + §I11.1 cache architecture:
         // seed the script-side `allowlist_cache` from REG_ACK.initial_allowlist
@@ -2513,6 +2838,45 @@ bool RoleAPIBase::is_channel_ready(const std::string &channel) const noexcept
     return false;
 }
 
+void RoleAPIBase::adopt_roster_update_(const pylabhub::scripting::IncomingMessage &msg)
+{
+    // Which side does this hub face?  Derived from the presence list rather
+    // than remembered when the check went out, so this path and the send
+    // path read the same source and cannot come to disagree about which hub
+    // is which.
+    //
+    // A processor whose two sides happen to be the SAME hub adopts on both.
+    // That is correct rather than wasteful: one hub owns one roster, and the
+    // two sides are holding copies of it.
+    if (!pImpl->handler_)
+        return;
+
+    bool adopted = false;
+    bool done[Impl::kSideCount] = {false, false};
+    for (const auto &p : pImpl->handler_->presences())
+    {
+        if (p.connection == nullptr || p.connection->broker_endpoint != msg.source_hub_uid)
+            continue;
+        const auto side = Impl::side_for(p.role_kind);
+        if (done[side])
+            continue;
+        done[side] = true;
+        // The return value gates a registration, and there is no
+        // registration here to gate — this role already holds a roster for
+        // this side, which is the only reason it asked.  `adopt_inbox_roster`
+        // logs every way an update can be refused, and refusing one leaves
+        // the roster this role already has.
+        (void)pImpl->adopt_inbox_roster(msg.details, side);
+        adopted = true;
+    }
+
+    if (!adopted)
+        LOGGER_WARN("[{}/{}] event=RosterUpdateUnrouted hub='{}' — a roster update arrived "
+                    "from a hub this role holds no presence on, so there is no side to "
+                    "adopt it into (HEP-CORE-0035 §4.9.7)",
+                    pImpl->short_tag, pImpl->uid, msg.source_hub_uid);
+}
+
 void RoleAPIBase::handle_channel_auth_notifies(
     std::vector<pylabhub::scripting::IncomingMessage> &msgs)
 {
@@ -2539,6 +2903,16 @@ void RoleAPIBase::handle_channel_auth_notifies(
                              "consumers={} (#74 CHANNEL_COUNT_NOTIFY)",
                              pImpl->short_tag, pImpl->uid, channel, pc, cc);
             }
+            it = msgs.erase(it);
+            continue;
+        }
+        // HEP-CORE-0035 §4.9.7 ROSTER_UPDATE_NOTIFY — infrastructure-only:
+        // the hub answering a freshness check that came back stale.  Adopt
+        // it as this side's inbox roster; no script callback, because who
+        // may reach a mailbox is not the script's decision.  Consume it.
+        if (it->notification_id == NotificationId::RosterUpdate)
+        {
+            adopt_roster_update_(*it);
             it = msgs.erase(it);
             continue;
         }
@@ -3041,6 +3415,25 @@ void RoleAPIBase::close_queues()
 void RoleAPIBase::set_inbox_queue(hub::InboxQueue *q)
 {
     pImpl->inbox_queue = q;
+    if (q == nullptr)
+        return;
+
+    // Wire the inbox ROUTER's ZAP gate to this role's rosters
+    // (HEP-CORE-0035 §4.9.6).  Bound at wiring time rather than at the first
+    // adoption, so the gate is never up with nobody to ask: it answers no
+    // until a roster arrives, which is the same deny-all the bind installs.
+    //
+    // Capturing `pImpl` raw is safe because the queue dies first —
+    // `RoleHostFrame::teardown_infrastructure_` stops and destroys
+    // `inbox_queue_` before it touches the API, and `inbox_queue_` is a
+    // derived-class member destroyed ahead of the base that owns the API.
+    // Stopping the queue unregisters its ZAP domain, so no handshake can be
+    // in the callback afterwards.
+    q->set_admission_authority([impl = pImpl.get()](const std::string &pubkey_z85)
+                               { return impl->roster_admits(pubkey_z85); });
+    LOGGER_INFO("[{}] event=InboxAdmissionBound "
+                "(HEP-CORE-0027 §3.5 inbox ROUTER ZAP asks the role's roster)",
+                pImpl->short_tag);
 }
 // set_uid removed — see note above.
 void RoleAPIBase::set_name(std::string name)
@@ -3774,8 +4167,32 @@ void RoleAPIBase::on_heartbeat_tick_()
         pImpl->heartbeats_sent_.fetch_add(1, std::memory_order_relaxed);
     }
 
+    send_roster_checks_();
+
     if (eng && eng->has_callback("on_heartbeat"))
         eng->invoke("on_heartbeat");
+}
+
+void RoleAPIBase::send_roster_checks_()
+{
+    // HEP-CORE-0035 §4.9.7 — the periodic half of "every side reports what
+    // it holds".  This rides the tick the role already fires; it adds no
+    // timer and no thread.
+    //
+    // Once per SIDE, not once per presence: a role's roster is per hub, so
+    // three channels on one hub owe that hub one report, not three.
+    //
+    // What keeps a role that stopped from being admitted forever is this
+    // tick, not the adoption-time report — nobody asks about a departed
+    // role, so nothing prompts its peers to refresh.  The two reports have
+    // different jobs and neither replaces the other.
+    //
+    // A role with no inbox is silent here because it adopted no roster
+    // (§4.9.9, enforced in `adopt_inbox_roster`), so every side reads null
+    // and reports nothing.  That is one rule applied once, not a second
+    // check repeating it.
+    for (std::size_t s = 0; s < Impl::kSideCount; ++s)
+        pImpl->report_roster_version_(static_cast<Impl::RosterSide>(s));
 }
 
 // M1.4 (2026-05-11): `on_metrics_report_tick_` deleted.  Metrics
@@ -4364,6 +4781,7 @@ void RoleAPIBase::install_handler_for_test_(std::unique_ptr<RoleHandler> handler
     // absent in Release / non-test builds.
     pImpl->handler_ = std::move(handler);
 }
+
 #endif
 
 bool RoleAPIBase::any_presence_authorized() const noexcept
@@ -4687,6 +5105,11 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
             // inbox_schema → fall to next connection.
             nlohmann::json info;
             bool found = false;
+            // Why the last hub said no.  The hub distinguishes a target that
+            // does not exist from one that exists but cannot admit this
+            // sender yet (HEP-CORE-0035 §4.9.7) — those call for opposite
+            // reactions, and a bare "nothing" cannot tell them apart.
+            std::string last_reason;
             for (const auto &conn : conns)
             {
                 auto *bc = conn.brc.get();
@@ -4702,9 +5125,29 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
                     found = true;
                     break;
                 }
+                auto reason = resp->value("reason", std::string{});
+                if (!reason.empty())
+                    last_reason = std::move(reason);
             }
             if (!found)
+            {
+                // A clearing condition and a permanent one look identical to
+                // the caller, so they must not look identical in the log.
+                if (last_reason == "not_reachable_yet")
+                    LOGGER_INFO("[api] open_inbox('{}'): not reachable yet — the target has not "
+                                "confirmed a roster naming this role.  The hub has sent it one; "
+                                "this clears on retry (HEP-CORE-0035 §4.9.7)",
+                                target_uid);
+                else if (last_reason == "sender_not_registered")
+                    LOGGER_WARN("[api] open_inbox('{}'): this role holds no registration on the "
+                                "hub that owns that inbox, so it can never be admitted there.  "
+                                "Retrying will not help (HEP-CORE-0035 §4.9.7)",
+                                target_uid);
+                else
+                    LOGGER_INFO("[api] open_inbox('{}'): no inbox found (reason='{}')", target_uid,
+                                last_reason.empty() ? "unknown" : last_reason);
                 return std::nullopt;
+            }
 
             auto inbox_schema = info.value("inbox_schema", nlohmann::json{});
             if (!inbox_schema.is_object() || !inbox_schema.contains("fields"))
@@ -4751,8 +5194,12 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
             }
             // HEP-CORE-0027 §3.5 — arm CURVE-client BEFORE start(): present
             // this sender's identity keypair, pin the receiver's pubkey as
-            // curve_serverkey.  The receiver ROUTER admits us iff our pubkey
-            // is in its hub-wide known_roles roster.
+            // curve_serverkey.  The receiver's ROUTER admits us iff our
+            // pubkey is on the roster IT holds — the hub's roles that are
+            // both configured and currently registered (HEP-CORE-0035
+            // §4.9.2).  Reaching this line already means the hub judged that
+            // roster to name us (§4.9.7), which is why the dial below is
+            // expected to succeed rather than hoped to.
             client_ptr->set_curve_client_identity(
                 std::string(pylabhub::utils::security::kRoleIdentityName),
                 std::move(inbox_receiver_pubkey));

@@ -135,6 +135,13 @@ enum class NotificationId : std::uint8_t
                             ///< `data` plus the sender the BROKER stamped from
                             ///< the proven CURVE key, never a sender the caller
                             ///< claimed (HEP-CORE-0035 §4.2.2).
+    RosterUpdate = 13,      ///< ROSTER_UPDATE_NOTIFY (HEP-CORE-0035 §4.9.7).
+                            ///< INFRASTRUCTURE-ONLY: the hub's answer to a
+                            ///< roster freshness check that came back stale.
+                            ///< The worker thread adopts it as the inbox
+                            ///< roster for the side facing that hub; there is
+                            ///< no script callback, because who may reach a
+                            ///< mailbox is the framework's decision.
     Count                   ///< sentinel — must be last
 };
 
@@ -167,6 +174,8 @@ enum class NotificationId : std::uint8_t
         return NotificationId::BandLost;
     if (type == "CHANNEL_AUTH_CHANGED_NOTIFY")
         return NotificationId::ChannelAuthChanged;
+    if (type == "ROSTER_UPDATE_NOTIFY")
+        return NotificationId::RosterUpdate;
     return NotificationId::Unknown;
 }
 

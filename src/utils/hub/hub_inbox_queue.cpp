@@ -101,12 +101,13 @@ struct InboxQueueImpl
     std::string identity_key_name_; ///< KeyStore key (kRoleIdentityName).
     std::string zap_domain_;        ///< Distinct inbox ZAP domain ("<uid>:inbox").
 
-    // Hub-wide known_roles roster (COW snapshot) consulted by the ZapRouter
-    // pump thread via is_peer_allowed.  nullptr == deny-all (secure default
-    // between the S1 bind and the S3 set_peer_allowlist seed).  Written by
-    // set_peer_allowlist (any thread), read on the pump thread — atomic.
-    std::atomic<std::shared_ptr<const pylabhub::utils::security::PeerAllowlist>> allowlist_{
-        nullptr};
+    // The authority is_peer_allowed asks (HEP-CORE-0035 §4.9.6).  nullptr ==
+    // deny-all (secure default between the S1 bind and the role binding
+    // itself in).  Written by set_admission_authority (any thread), read on
+    // the ZapRouter pump thread — atomic, so the read is lock-free as the
+    // reentrance contract prefers, and the shared_ptr keeps the callable
+    // alive for the duration of a call that races a rebind.
+    std::atomic<std::shared_ptr<const InboxQueue::AdmitsPubkey>> admits_{nullptr};
 
     // RAII registration with the process ZapRouter; destructor unregisters
     // the domain.  Engaged in start() (register_domain before bind), reset
@@ -415,9 +416,9 @@ bool InboxQueue::start()
         // secure().keys() (secret never leaves the module — flows into
         // libzmq inside the with_seckey callback), curve_server=1, a
         // DISTINCT inbox zap_domain, and register_domain BEFORE bind so
-        // the ZapRouter can gate the first handshake.  Until
-        // set_peer_allowlist seeds the hub roster, `allowlist_` is
-        // nullptr → is_peer_allowed denies all (secure default).
+        // the ZapRouter can gate the first handshake.  Until a role binds
+        // its roster in, `admits_` is nullptr → is_peer_allowed denies all
+        // (secure default).
         // CURVE is not optional and there is no unarmed shape to fall back
         // to.  This used to be `if (!identity_key_name_.empty())`, which
         // silently built a PLAINTEXT ROUTER when the caller forgot to arm —
@@ -777,36 +778,45 @@ void InboxQueue::set_curve_server_identity(std::string identity_key_name, std::s
     pImpl->zap_domain_ = std::move(zap_domain);
 }
 
-bool InboxQueue::set_peer_allowlist(pylabhub::utils::security::PeerAllowlist allowlist)
+void InboxQueue::set_admission_authority(AdmitsPubkey admits)
 {
     if (!pImpl)
-        return false;
-    pImpl->allowlist_.store(
-        std::make_shared<const pylabhub::utils::security::PeerAllowlist>(std::move(allowlist)),
-        std::memory_order_release);
-    return true;
+        return;
+    pImpl->admits_.store(std::make_shared<const AdmitsPubkey>(std::move(admits)),
+                         std::memory_order_release);
+}
+
+bool InboxQueue::set_peer_allowlist(pylabhub::utils::security::PeerAllowlist /*allowlist*/)
+{
+    LOGGER_WARN("[hub::InboxQueue::set_peer_allowlist] inert (queue='{}') — the inbox gate "
+                "holds no list; bind an authority with set_admission_authority() instead "
+                "(HEP-CORE-0035 §4.9.6)",
+                pImpl ? pImpl->endpoint : std::string{});
+    return false;
 }
 
 std::optional<pylabhub::utils::security::PeerAllowlist> InboxQueue::peer_allowlist_snapshot() const
 {
-    if (!pImpl)
-        return std::nullopt;
-    auto snap = pImpl->allowlist_.load(std::memory_order_acquire);
-    if (!snap)
-        return std::nullopt;
-    return *snap;
+    // No stored list, and the authority answers one key at a time — there is
+    // nothing to enumerate.  `nullopt` is the interface's own spelling of
+    // "this instance does not expose its state".
+    return std::nullopt;
 }
 
 bool InboxQueue::is_peer_allowed(const pylabhub::utils::security::PeerIdentity &peer) const
 {
     if (!pImpl)
         return false;
-    // nullptr roster == deny-all (secure default between the S1 bind and
-    // the S3 set_peer_allowlist seed).
-    auto snap = pImpl->allowlist_.load(std::memory_order_acquire);
-    if (!snap)
+    // The ROUTER is a CURVE server and nothing else, so a peer arriving under
+    // any other mechanism is not one this gate has an opinion about.
+    if (peer.kind != pylabhub::utils::security::kCurveMechanism)
         return false;
-    return snap->contains(peer);
+    // No authority bound == deny-all (secure default between the S1 bind and
+    // the role binding itself in).
+    auto admits = pImpl->admits_.load(std::memory_order_acquire);
+    if (!admits || !*admits)
+        return false;
+    return (*admits)(peer.data);
 }
 
 // ============================================================================

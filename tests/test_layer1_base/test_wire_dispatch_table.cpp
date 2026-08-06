@@ -45,6 +45,12 @@ const std::unordered_map<std::string_view, std::string_view> kExpectedTiers = {
     {"GET_CHANNEL_AUTH_REQ", "Control_GetChannelAuth"},
     {"DISC_REQ", "Control_Disc"},
 
+    // Control_RosterCheckNotify — typed body carrying the caller's uid
+    // and the roster version it holds (HEP-CORE-0035 §4.9.7).  A row
+    // slipping to EnvelopeOnly would read a missing version as zero and
+    // make the hub resend the roster to a role that is already current.
+    {"ROSTER_CHECK_NOTIFY", "Control_RosterCheckNotify"},
+
     // Control_EnvelopeWithRoleUid — body role_uid = caller's own uid;
     // identity_match + grammar + role-tag policy.  A row slipping to
     // plain EnvelopeOnly loses role_uid grammar + identity match —

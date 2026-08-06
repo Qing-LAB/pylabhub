@@ -545,28 +545,29 @@ struct BrokerHandle; // Defined above in the outer anonymous namespace.
 // The 50 ms post-send sleep gives the broker poll loop one cycle to
 // pick up the heartbeat before the test's next REQ; mirrors the pattern
 // in the legacy pid-mismatch test where this contract was first pinned.
-void raw_heartbeat(const std::string &endpoint, const std::string &server_pubkey,
-                   const std::string &channel, const std::string &producer_uid,
-                   uint64_t producer_pid = pylabhub::platform::get_pid())
+// raw_notify: send ONE fire-and-forget message as `role_uid`, then give the
+// broker a poll cycle to consume it.
+//
+// Every NOTIFY needs the same dealer: CURVE armed from the keystore under
+// the caller's role, `routing_id` set per I-DEALER-IDENTITY, bounded linger
+// so the destructor flushes rather than blocks, and a correlation id.  That
+// setup lives here once; callers below supply only the msg_type and body.
+void raw_notify(const std::string &endpoint, const std::string &server_pubkey,
+                const std::string &role_uid, const std::string &msg_type,
+                const nlohmann::json &body)
 {
     constexpr size_t kZ85KeyLen = 40;
-    nlohmann::json hb_req;
-    hb_req["channel_name"] = channel;
-    hb_req["producer_pid"] = producer_pid;
-    hb_req["role_uid"] = producer_uid;
-    hb_req["role_type"] = "producer";
 
     namespace sec = pylabhub::utils::security;
     zmq::context_t ctx(1);
     zmq::socket_t dealer(ctx, zmq::socket_type::dealer);
-    // Bounded linger so the destructor flushes the heartbeat to the
-    // kernel before close (libzmq's default linger=-1 would block on
-    // shutdown).
+    // Bounded linger so the destructor flushes the message to the kernel
+    // before close (libzmq's default linger=-1 would block on shutdown).
     dealer.set(zmq::sockopt::linger, 100);
     if (server_pubkey.size() == kZ85KeyLen)
     {
         dealer.set(zmq::sockopt::curve_serverkey, server_pubkey);
-        const std::string ks_name = pylabhub::tests::role_keystore_name(producer_uid);
+        const std::string ks_name = pylabhub::tests::role_keystore_name(role_uid);
         sec::secure().keys().with_keypair_z85(
             ks_name,
             [&](std::string_view pub_z85, std::string_view sec_z85)
@@ -575,12 +576,12 @@ void raw_heartbeat(const std::string &endpoint, const std::string &server_pubkey
                 dealer.set(zmq::sockopt::curve_secretkey, std::string(sec_z85));
             });
     }
-    // HEP-CORE-0046 I-DEALER-IDENTITY — routing_id = producer_uid so
-    // broker's envelope parse sees a Frame 0 identity matching the
-    // caller's role.  HEARTBEAT_NOTIFY is NOT REG-family (no security
-    // triple), but I-CORRELATION-STABLE requires non-empty
-    // correlation_id on any non-NOTIFY message.
-    dealer.set(zmq::sockopt::routing_id, producer_uid);
+    // HEP-CORE-0046 I-DEALER-IDENTITY — routing_id = role_uid so the
+    // broker's envelope parse sees a Frame 0 identity matching the caller's
+    // role.  A correlation id is stamped regardless: NOTIFY msg_types do not
+    // require one, but the encoder accepts it and it makes a single message
+    // traceable through the broker log.
+    dealer.set(zmq::sockopt::routing_id, role_uid);
     dealer.connect(endpoint);
 
     std::array<std::uint8_t, 16> corr_raw{};
@@ -589,19 +590,49 @@ void raw_heartbeat(const std::string &endpoint, const std::string &server_pubkey
     sec::secure().bin2hex(corr_hex, sizeof(corr_hex), corr_raw.data(), corr_raw.size());
     const std::string correlation_id(corr_hex, 32);
     ::pylabhub::wire::adapter::EncodeContext enc_ctx;
-    enc_ctx.dealer_role_uid = producer_uid;
+    enc_ctx.dealer_role_uid = role_uid;
     enc_ctx.correlation_id = correlation_id;
     try
     {
         zmq::multipart_t wire =
-            ::pylabhub::wire::adapter::encode_dealer_send("HEARTBEAT_NOTIFY", enc_ctx, hb_req);
+            ::pylabhub::wire::adapter::encode_dealer_send(msg_type, enc_ctx, body);
         wire.send(dealer);
     }
     catch (const std::exception &)
     {
-        // Best-effort — a rejected encode isn't fatal for a heartbeat.
+        // Best-effort — a rejected encode is not fatal for a NOTIFY.
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
+}
+
+void raw_heartbeat(const std::string &endpoint, const std::string &server_pubkey,
+                   const std::string &channel, const std::string &producer_uid,
+                   uint64_t producer_pid = pylabhub::platform::get_pid())
+{
+    nlohmann::json hb_req;
+    hb_req["channel_name"] = channel;
+    hb_req["producer_pid"] = producer_pid;
+    hb_req["role_uid"] = producer_uid;
+    hb_req["role_type"] = "producer";
+    raw_notify(endpoint, server_pubkey, producer_uid, "HEARTBEAT_NOTIFY", hb_req);
+}
+
+// Confirm the roster version this role holds, so the hub will disclose its
+// inbox coordinates to the roles that version names (HEP-CORE-0035 §4.9.7,
+// I-INBOX-REACHABLE).  A live role reports this on every adoption and every
+// tick; a raw wire client has neither, so it sends the same production
+// message explicitly.
+//
+// Confirm AFTER every role that must reach this one has registered: what is
+// being confirmed is the version this role's REG_ACK carried, and only roles
+// admitted at or before it are covered.
+void raw_roster_confirm(const std::string &endpoint, const std::string &server_pubkey,
+                        const std::string &role_uid, std::uint64_t known_roles_version)
+{
+    nlohmann::json body;
+    body["role_uid"] = role_uid;
+    body["known_roles_version"] = known_roles_version;
+    raw_notify(endpoint, server_pubkey, role_uid, "ROSTER_CHECK_NOTIFY", body);
 }
 
 // Hex string of N zero bytes (schema_hash placeholder for anonymous channels).
@@ -1644,7 +1675,7 @@ int broker_sch_inbox_invalid_json()
             // B.2: hub::parse_schema_json runs in the ctor), so the wire
             // code is BODY_SCHEMA_VIOLATION, not a handler-level reject.
             auto reg = baseline_reg_req(channel, uid);
-            reg["inbox_endpoint"] = "tcp://127.0.0.1:9993";
+            reg["inbox_endpoint"] = "tcp://127.0.0.1:0"; // never bound — this REG is rejected
             reg["inbox_schema_json"] = "not-json";
             auto r = raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey,
                              "prod.broker.ibj.uid00000001");
@@ -1660,7 +1691,7 @@ int broker_sch_inbox_invalid_json()
             // uid000000011 wire identity for the uid000000011 payload.
             const std::string uid2 = uid + "1"; // "prod.broker.ibj.uid000000011"
             auto reg2 = baseline_reg_req(channel + ".obj", uid2);
-            reg2["inbox_endpoint"] = "tcp://127.0.0.1:9994";
+            reg2["inbox_endpoint"] = "tcp://127.0.0.1:0"; // never bound — this REG is rejected
             // Non-canonical shape (no "fields" array / no in-object
             // packing) — parse_schema_json rejects at the boundary.
             reg2["inbox_schema_json"] = R"({"type":"float64"})";
@@ -1730,7 +1761,7 @@ int broker_sch_inbox_invalid_packing()
             const std::string uid = "prod.broker.ibp.uid00000001";
 
             auto reg = baseline_reg_req(channel, uid);
-            reg["inbox_endpoint"] = "tcp://127.0.0.1:9997";
+            reg["inbox_endpoint"] = "tcp://127.0.0.1:0"; // never bound — this REG is rejected
             // Packing lives IN-OBJECT (HEP-0046 B.2 / HEP-0034 §6.2 — the
             // separate `inbox_packing` wire field is retired).  An invalid
             // packing value is rejected by the canonical parse at the
@@ -1843,16 +1874,29 @@ int broker_sch_inbox_discovery_roundtrip()
             {
                 // Admit the sender: the inbox binds deny-all, so without this
                 // the discovered-schema delivery below would be denied at ZAP.
-                pylabhub::utils::security::PeerAllowlist inbox_allow;
-                inbox_allow.peers.insert(
-                    pylabhub::utils::security::PeerIdentity{"curve", inbox_send_pub});
-                ASSERT_TRUE(q->set_peer_allowlist(inbox_allow));
+                // Stands in for the role, which binds this authority to its
+                // replicated roster (HEP-CORE-0035 §4.9.6).
+                q->set_admission_authority(
+                    [admitted = inbox_send_pub](const std::string &pubkey_z85)
+                    { return pubkey_z85 == admitted; });
             }
             const std::string inbox_ep = q->actual_endpoint();
             ASSERT_FALSE(inbox_ep.empty());
 
             auto [broker] = setup_broker_test({recv_uid, send_uid},
                                               "broker.broker_sch_inbox_discovery_roundtrip");
+
+            // 0. The SENDER registers first.  A hub discloses an inbox only
+            //    to a sender the target can already admit (HEP-CORE-0035
+            //    §4.9.7), and the roster the receiver confirms in step 1b is
+            //    the one its own REG_ACK carried — so the sender has to be in
+            //    the ledger before that REG_ACK is built.  This is the
+            //    ordinary "receiver starts after sender" ordering.
+            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ",
+                              baseline_reg_req(channel + ".snd", send_uid), 2000, broker.pubkey,
+                              send_uid)
+                          .value("status", std::string{}),
+                      "success");
 
             // 1. Receiver registers, advertising its inbox.
             auto reg = baseline_reg_req(channel, recv_uid);
@@ -1861,18 +1905,40 @@ int broker_sch_inbox_discovery_roundtrip()
             // derives the ROLE_INFO `inbox_packing` echo from the parsed spec
             // (HEP-0046 B.2) — asserted below.
             reg["inbox_schema_json"] = inbox_schema_json;
-            ASSERT_EQ(raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, recv_uid)
-                          .value("status", std::string{}),
-                      "success");
+            const auto recv_ack =
+                raw_req(broker.endpoint, "REG_REQ", reg, 2000, broker.pubkey, recv_uid);
+            ASSERT_EQ(recv_ack.value("status", std::string{}), "success");
+
+            // 1b. Receiver confirms the roster it just received — the step a
+            //     live role performs on adoption.  Without it the hub cannot
+            //     know which list the receiver applied, and correctly refuses
+            //     to hand its address to anyone.
+            raw_roster_confirm(broker.endpoint, broker.pubkey, recv_uid,
+                               recv_ack.value("known_roles_version", std::uint64_t{0}));
 
             // 2. Sender discovers the inbox via ROLE_INFO_REQ — schema comes back
             //    as a JSON object whose fields match what the receiver advertised.
+            //
+            //    Polled, not asserted once.  The confirmation above is
+            //    fire-and-forget on its own connection, so nothing orders it
+            //    against this query except time — and ordering on time is what
+            //    makes a suite flake under load.  Retrying discovery until it
+            //    succeeds is also exactly what the design asks a caller to do
+            //    when it is told "not reachable yet" (HEP-CORE-0027 §4.2.3),
+            //    so this exercises the contract instead of working around it.
             nlohmann::json rinfo;
             rinfo["role_uid"] = recv_uid;
-            auto info =
-                raw_req(broker.endpoint, "ROLE_INFO_REQ", rinfo, 2000, broker.pubkey, send_uid);
-            ASSERT_FALSE(info.is_null());
-            EXPECT_EQ(info.value("found", false), true) << info.dump();
+            nlohmann::json info;
+            ASSERT_TRUE(helper::poll_until(
+                [&]
+                {
+                    info = raw_req(broker.endpoint, "ROLE_INFO_REQ", rinfo, 2000, broker.pubkey,
+                                   send_uid);
+                    return !info.is_null() && info.value("found", false);
+                },
+                std::chrono::seconds{5}))
+                << "receiver never became reachable to the sender; last ROLE_INFO_ACK="
+                << (info.is_null() ? std::string{"<null>"} : info.dump());
             EXPECT_EQ(info.value("inbox_endpoint", std::string{}), inbox_ep);
             EXPECT_EQ(info.value("inbox_packing", std::string{}), "packed");
             ASSERT_TRUE(info.contains("inbox_schema") && info["inbox_schema"].is_object())

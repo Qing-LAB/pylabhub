@@ -575,7 +575,7 @@ that was tried and found wanting.**
    receives only keys can see that a message came from some key and has no way
    to learn whose — so it cannot name the sender to the application, keep
    per-sender sequence state, or key replay tracking (HEP-CORE-0027 §3.6).
-   The REG_ACK wire field still carries bare keys; migrating it is the inbox
+   The REG_ACK wire field carries {uid, key} pairs plus a version; see the inbox
    slice's protocol change across broker and role.
 
 **Where it lives — DECIDED 2026-08-02.**  Owned by `BrokerServiceImpl`, as
@@ -1544,10 +1544,17 @@ The operator runbook for this migration lives in
 
 ### 4.9.1 What this is, in plain terms
 
-The hub owns the answer to "which keys are legitimate, and whose are
-they."  Roles need that answer locally, because a role gates its own
-inbox and must decide about a connecting peer without asking anyone.
-So the answer is copied to every role.
+The hub owns the answer to "which keys may reach a role's inbox, and
+whose are they."  Roles need that answer locally, because a role gates
+its own inbox and must decide about a connecting peer without asking
+anyone.  So the answer is copied to every role.
+
+That answer has two halves and both are the hub's to give.  A key is
+legitimate because the operator put it in the vault.  It is worth
+admitting *right now* because the role holding it is currently
+registered with this hub.  A role that is not here cannot be the peer
+dialling in, so admitting its key buys nothing and costs something —
+§4.9.2 makes that precise.
 
 A copy of an answer that can change is only useful if it can be
 corrected.  This section defines how a role gets a hub-owned list, how
@@ -1589,6 +1596,62 @@ This is the reason the mechanism is defined once here rather than per
 consumer: the second list to be replicated adds a snapshot, not a
 protocol.
 
+**What the snapshot contains.**  The vault says who may ever exist on
+this hub.  The registration registry says who is here at this moment.
+Admission wants both, and the roster is where the two meet.
+
+**I-ROSTER-PRESENT.**  A replicated entry names a role whose key the
+operator configured AND whose registration this hub currently holds.
+Membership is the intersection; neither half alone is sufficient.
+
+A hub configured with forty roles and running three would otherwise
+tell every mailbox to accept forty keys.  Thirty-seven of them cannot
+legitimately be the peer dialling in, because the roles holding them
+are not running.  Keeping that surface open permanently costs
+something and buys nothing — it is the difference between "this key is
+allowed to exist" and "this key can plausibly be knocking."
+
+What the intersection changes, stated precisely so it is not oversold:
+
+- **It does not stop a stolen key.**  The credential that lets an
+  attacker send also lets them register, and a registered attacker is
+  present by definition.  Nothing here defeats possession of a private
+  key.
+- **It forces the attempt through a place the hub is watching.**  Inbox
+  traffic is role-to-role and never reaches the broker, so a key leaked
+  from a decommissioned role is otherwise usable against every mailbox
+  on the hub, indefinitely, leaving no record anywhere.  Requiring
+  presence means the holder must first register — an event the hub
+  authenticates, records, and can refuse.  The attack stops being
+  invisible.
+- **It shrinks the window rather than closing it.**  Between a role
+  stopping and every other role noticing, that role's key is still
+  admitted.  §4.9.7 bounds the interval; §4.9.10 states what a role may
+  assume inside it.
+
+**The keys come from the vault, not from the registry.**  The roster is
+built by taking the vault's `{uid, key}` entries and keeping those whose
+uid is currently registered.  It is NOT built by reading keys off the
+registration records.  The vault is the only place key material is
+authoritative; the registry contributes exactly one thing — the set of
+uids that are present.  Built the other way, the roster would replicate
+whatever key a registration happened to carry, which is a weaker claim
+wearing the same shape.
+
+The intersection's first half needs no separate test.  Registration is
+already refused for a key this hub has no record of (§4.2), so a
+registered role is necessarily a known role.  The roster is therefore
+assembled from the live registry against vault keys, and the
+intersection is maintained upstream rather than re-checked here.
+Re-checking it would be a second gate free to disagree with the first.
+
+**The cost is that membership now moves.**  Before this rule the list
+changed only when an operator edited the vault, which is rare.  Now it
+changes whenever any role starts or stops.  Everything downstream that
+assumed a nearly-static list has to hold under one that moves: §4.9.7
+covers how a role notices, §4.9.8 covers why it still asks rather than
+being told.
+
 ### 4.9.3 Entries carry names, not only keys
 
 Replicated entries are `{uid, pubkey}` pairs (`RosterEntry`).
@@ -1616,12 +1679,19 @@ reach roles by default — widening the projection is a disclosure
 decision and should read like one in the diff.
 
 What replication does disclose, and why it is accepted: every role
-learns the identity behind every key, including roles it will never
-exchange a message with.  That follows from the inbox being hub-wide
-(HEP-CORE-0027 §3.5) — any role may message any other, so each role's
-gate must be able to recognise and name any of them.  A per-role subset
-would be narrower but would reintroduce the question this section
-exists to answer, one audience at a time.
+learns the identity behind every key it may admit, including roles it
+will never exchange a message with.  That follows from the
+inbox being hub-wide (HEP-CORE-0027 §3.5) — any role may message any
+other, so each role's gate must be able to recognise and name any of
+them.  A per-role subset would be narrower but would reintroduce the
+question this section exists to answer, one audience at a time.
+
+The audience is bounded by I-ROSTER-PRESENT rather than by the vault:
+what travels is the roles currently registered, not every role the
+operator ever configured.  A role that has never run, or has stopped,
+is not named to anyone.  That is a narrowing of disclosure and it comes
+free — it is the same rule admission already needs, not a second
+mechanism added for privacy.
 
 No secret material is involved at any point.  A CURVE public key is
 public by construction: a peer presents it during the handshake, so
@@ -1637,18 +1707,57 @@ revocation and monotonic versions, and it is already tested.  Channel
 allowlists hold one instance per channel; the hub-wide key list is one
 more instance, hub-scoped.
 
-The two cases differ in how much of it they exercise, not in what it
-means.  Channel admission asks the filtered question — *is this peer
-visible to that role yet* — because consumers arrive one at a time and
-a producer must not see a consumer before it has confirmed.  The hub
-roster asks only *is this role current*, because every role is entitled
-to the same list.
+**What moves the roster ledger.**  A role becoming present is admitted;
+a role ceasing to be present is revoked.  Both halves of the ledger are
+therefore live: this is not a counter that only counts up, and
+revocation is the ordinary case rather than a capability held in
+reserve.
 
-That difference does not argue for a second mechanism.  Using part of a
-structure is ordinary; re-implementing the part you do use, untested, to
-avoid carrying the part you do not, is how one idea becomes two
-implementations that drift.  Reusing it also keeps one mental model: a
-reader who understands channel admission already understands this.
+**The ledger tracks role identities, not keys.**  Presence is a property
+of the role; the key that identity maps to is the vault's to supply
+(§4.9.2).  Keeping the two apart means a departure needs nothing looked
+up — the hub is told which role left, and that is exactly what the
+ledger is keyed on — and it leaves the vault as the single place a key
+is ever resolved.
+
+Two properties of the ledger carry real weight here rather than being
+incidental:
+
+- **Admission is idempotent and does not advance the version.**  A role
+  that registers a second presence — a processor holding one on each of
+  its two hubs, or a reconnect that arrives before the old registration
+  is reaped — re-admits an identity already admitted.  The ledger returns
+  its original version and does not move.  Roles holding the list stay
+  current instead of being told to re-fetch something identical to what
+  they have.
+- **A revoke followed by a re-admit issues a NEW, higher version.**  A
+  role that stops and starts again is not silently restored to where it
+  was; every other role sees a version it has not seen and adopts.  This
+  is what makes a restart converge rather than depend on nobody having
+  noticed the gap.
+
+Both cases ask the ledger the same two questions, for the same reasons.
+
+*Is this holder current?* — answered from the version alone.  For a
+roster that is what a role's periodic report resolves, and it is why
+being current is cheap.
+
+*Has this holder confirmed a version that includes this subject?* —
+the filtered question.  Channel admission asks it because a producer
+must not see a consumer before that consumer has confirmed.  The roster
+asks the identical question for a different actor: a sender must not be
+given a receiver's inbox address before that receiver has confirmed a
+list naming the sender (§4.9.7).  One primitive, one query, two callers.
+
+That is also why the confirmation half is not decoration.  A role's
+reported version *is* its confirmation — the same message serves both —
+so the map is maintained by traffic that already flows, and the gate in
+§4.9.7 reads it without adding a protocol.
+
+Reusing the structure keeps one mental model: a reader who understands
+channel admission already understands this.  Re-implementing the half
+you use, untested, to avoid carrying the half you do not, is how one
+idea becomes two implementations that drift.
 
 The per-entry versions this case does not currently need are also what
 a delta would require — *since version 5: these added, these removed* —
@@ -1695,9 +1804,34 @@ that role runs — the revocation reaches the hub and stops there.
 Replacement makes removal ordinary rather than a special case that must
 be remembered.
 
-**I-ROSTER-VERSION.**  Versions are monotonic **within one hub**.  A
-side never adopts a snapshot older than the one it holds, so a delayed
-or reordered reply cannot roll it backwards.
+**I-ROSTER-VERSION.**  Versions are monotonic **within one hub**, start
+at **1**, and **0 means "no roster"**.  A side adopts a snapshot only
+when it is strictly newer than the one it holds, so a delayed or
+reordered reply cannot roll it backwards — and an unchanged one cannot
+cost anything.
+
+The zero is the point of the rule rather than a detail of it.  "I hold
+nothing" and "I hold revision zero" are different states, and letting
+one number mean both forces the comparison to carry an exemption for
+the case it cannot distinguish — which is how a guard ends up admitting
+what it exists to reject.  Reserving 0 makes the sentinel *be* the
+version: a side holding nothing reports 0, any real version beats it,
+and the first adoption needs no special case.
+
+**Equal is not adopted.**  The same version denotes the same list, so
+re-applying it would reparse, rebuild, republish and report back to
+produce a duplicate of what the side already holds.  That is what a
+version is for, and it is not a hypothetical saving: a hub sends the
+roster whenever a sender asks about a target that has not confirmed
+(§4.9.7), so several senders asking about one target push the same
+version repeatedly.
+
+A role never legitimately receives 0.  A hub's count reaches 1 on its
+first admission, and a registration answer is assembled *after* the
+role it answers has been admitted — so the version on it always names a
+list containing at least that role.  A 0 on the wire therefore means
+the sender had no roster to give, and is refused rather than adopted as
+an empty one.
 
 Two consequences that are easy to get wrong:
 
@@ -1851,40 +1985,154 @@ to its presences internally (HEP-CORE-0023 §2.5).  The freshness check
 is a step in that task, so this adds no timer, no thread, and no
 cadence of its own.
 
-Two conditions cause a check:
+**The check runs on every tick.**  Each presence reports the version it
+holds for its own side; the hub answers "you are current," or sends a
+replacement.  In the common case that is one integer out and one word
+back, on a timer the role was going to fire anyway.
 
-- **Periodically** — every Nth tick.  Bounds how long a role can hold a
-  stale list.  Because the tick is the heartbeat cadence, the bound is
-  expressed in beats: a deployment that slows its heartbeat lengthens
-  the window by the same factor, keeping list freshness proportional to
-  how live the system is.
-- **On refusal** — the admission gate turning away an unrecognised key
-  is the observable event that a role's list may be behind.  The gate
-  records that it happened; the next tick sees it and checks early.
+Every tick rather than every Nth, because under I-ROSTER-PRESENT the
+interval is no longer a freshness preference.  It is how long a role
+that has stopped keeps being admitted at every other role's inbox
+(§4.9.10).  Checking every Nth tick multiplies that exposure by N to
+save a message whose payload is an integer.
 
-The refusal path deliberately sets a flag rather than issuing its own
-request.  The gate runs on the socket's authentication path, where a
-blocking round-trip would stall every other handshake behind it; and
-because the periodic task is what consumes the flag, the tick interval
-is already the rate limit.  An unknown peer knocking repeatedly cannot
-turn one role into a load generator against the hub.
+The bound is expressed in beats: a deployment that slows its heartbeat
+lengthens the window by the same factor, keeping list freshness
+proportional to how live the system is.
+
+**Nothing is triggered from inside the admission gate.**  A refusal is
+evidence that a list may be behind, which invites a design where the
+gate flags it so the role checks early.  Two things are wrong with that.
+A flag consumed by the next tick cannot make anything happen sooner than
+the tick already would, so it buys nothing.  A flag acted on promptly
+hands an unauthenticated stranger a lever on a role's outbound traffic,
+which then needs a limiter of its own.
+
+The hub-initiated send under I-INBOX-REACHABLE is not that trigger and
+must not be read as one.  It is initiated by the hub, on behalf of a
+role that is already connected and asking a legitimate question, and
+only while that role's target is unconfirmed — once confirmed there is
+nothing to send, so repeating the question costs nothing.  It is bounded
+by real membership changes rather than by a rate limit, which is the
+stronger property and is why no limiter appears anywhere in this
+section.
+
+**The gate never consults the hub.**  It answers from the list the role
+holds, and a key that is not on it gets `no`.  It does not hold the
+connection open to check first.  Three reasons, of which the first is
+decisive:
+
+- The ZAP handler is a **process-wide singleton served by one pump
+  thread** (`src/include/utils/security/zap_router.hpp`).  A hub
+  round-trip inside an admission decision would stall not this
+  mailbox's handshakes but *every handshake in the process* — data
+  channels, control plane, every other socket — for its duration.
+- The admission contract requires the decision synchronously on that
+  thread, so "answer later from a worker" is not available either: a
+  worker calling back into the router defeats its reentrance guard.
+- It would make an unauthenticated stranger the trigger for outbound
+  hub traffic.
+
+**A refusal is terminal, which is why the hub does not allow one to
+happen.**  A denied handshake is not a retryable condition.  The
+receiving peer answers the authentication request with an error and
+tears the connection down, and the sender's session is terminated rather
+than retried — at the transport layer, and independently by this
+project's own socket policy, which stops retrying a connection whose
+handshake failed.  Nothing reconnects at any layer.  A sender refused
+once stays refused until something above the socket dials again.
+
+That makes the ordering window real rather than cosmetic.  A role that
+starts after another has already converged is absent from that peer's
+list, and a first knock in that state is not merely late — it is lost,
+along with whatever it was carrying.  So the window is closed at the one
+place that can see both sides of it.
+
+**I-INBOX-REACHABLE.**  A hub discloses a role's inbox coordinates only
+to a sender that role can already admit.
+
+*This section states the rule and why it exists.  What it looks like from
+a caller — the two phases of opening, the four distinct refusals and which
+of them clear, what the framework retries (nothing) and what a script
+therefore owes, and the interleaved application/transport sequence — is
+HEP-CORE-0027 §4.2 and §4.3.1.*
+
+A sender cannot dial an inbox it cannot locate, and it locates one by
+asking the hub: the address, the message schema, and the receiver's
+public key all arrive in that answer.  The hub therefore already stands
+between the two at exactly the moment that matters, holding both facts —
+which version admitted the sender, and which version the receiver has
+confirmed.  When the receiver is behind, the hub sends it the current
+list and tells the sender to ask again.  When it is not, the sender
+dials and is admitted on its first attempt.
+
+Two consequences follow, and both are deliberate:
+
+- **A receiver confirms when it adopts, not at its next tick.**
+  Reporting only on the tick would leave the hub unable to learn that a
+  receiver had converged for up to a full interval — reintroducing the
+  delay this rule exists to remove.  Adoption is acknowledged
+  immediately, and the acknowledgement is the same version report the
+  tick already sends.
+- **Failure surfaces where the caller is prepared for it.**  A sender
+  that cannot yet reach a peer learns so from the request that locates
+  it, which can already fail for several reasons, rather than from a
+  message that leaves and is never spoken of again.
+
+**The gate fails closed.**  Every branch that cannot establish
+reachability withholds.  A hub whose presence record is empty — for any
+reason, including one that has not started serving — therefore discloses
+no inbox at all rather than disclosing every inbox.  Inbox messaging
+stops, loudly and per request, instead of quietly admitting strangers.
+That is the same direction §4.8.4 takes for the hub's own gate, and the
+same direction §4.9.6 takes for a role holding no list yet: absence of
+information denies.
+
+**The scope of the guarantee, stated exactly.**  The hub takes the
+asking role's identity from its own claim on that request, which is not
+proof.  This is a reachability mechanism, not an access control: the
+control is the receiver's own gate, which decides on the key the sender
+proved during the handshake.  A caller that misidentifies itself
+receives a reachability answer about someone else and is then refused on
+dialling — gaining nothing and spending its own first attempt.  The
+guarantee is therefore: **the first dial succeeds for a caller that
+identified itself honestly.**  It must not be read, or implemented, as a
+statement about callers that did not.
 
 ```mermaid
 sequenceDiagram
-    participant V as Hub vault
+    participant O as Vault + registry
     participant H as Hub
-    participant R as Role
-    participant G as Role's admission gate
+    participant R as Receiving role
+    participant G as R's admission gate
+    participant S as Sending role
 
-    V->>H: list changes
-    Note over H: build new snapshot,<br/>bump version
-    R->>H: periodic tick — "I hold version N"
-    H-->>R: replacement snapshot (version M)
-    Note over R: publish whole;<br/>never merge
-    R->>G: derive key-only view
-    Note over G: stranger refused —<br/>record it
-    G-->>R: flag
-    R->>H: next tick checks early
+    O->>H: a role registers or stops,<br/>or the operator edits the vault
+    Note over H: rebuild snapshot,<br/>version moves
+
+    rect rgb(240,240,240)
+    Note over R,H: staying current — every tick
+    R->>H: "I hold version N"
+    H-->>R: nothing if current,<br/>else a replacement snapshot
+    Note over R: publish whole; never merge
+    end
+
+    rect rgb(240,240,240)
+    Note over S,H: reaching an inbox — I-INBOX-REACHABLE
+    S->>H: "where is R's inbox?"
+    alt R has confirmed a version naming S
+        H-->>S: address + schema + R's public key
+        S->>G: CURVE handshake
+        G->>R: "may this key connect?"
+        R-->>G: yes — from the held list,<br/>never by asking the hub
+        Note over S,G: admitted on the first attempt
+    else R has not
+        H->>R: replacement snapshot
+        R->>H: "I now hold version N+1" (on adopt, not on tick)
+        H-->>S: not reachable yet — ask again
+        Note over S: no dial attempted,<br/>so nothing is lost
+    end
+    end
 ```
 
 ### 4.9.8 Relation to per-channel admission
@@ -1899,11 +2147,11 @@ section exists to prevent.
 | Scope              | One list per channel                                      | One list per hub                                    |
 | Contents           | Which peers may attach to *this* channel                  | Every role the hub knows, as uid + key              |
 | Audience           | The roles on that channel                                 | Every registered role                               |
-| Direction          | Hub **pushes** when it changes                            | Role **asks** on its own schedule                   |
-| Per-role answers   | Yes — a peer is visible only once that role confirmed     | No — every role is entitled to the same list        |
-| Changes when       | A role attaches or detaches (often)                       | An operator edits the vault (rarely)                |
+| Direction          | Hub **pushes** when it changes                            | Role **asks** on its own schedule; hub sends when a sender needs it to |
+| Per-role answers   | Yes — a peer is visible only once that role confirmed     | The list, no — everyone gets the same one.  Reachability, yes |
+| Changes when       | A role attaches or detaches (often)                       | A role registers or stops; the vault is edited (often) |
 | Versioning         | `VersionedAdmissionLedger`                                | The same type, its own instance                     |
-| Confirmation means | The hub may now let a producer see this consumer          | This role has converged; nothing waits on it        |
+| Confirmation means | The hub may now let a producer see this consumer          | This role can now be reached — the hub may disclose its inbox |
 
 **Why the directions differ, and why that is not an inconsistency.**
 
@@ -1914,32 +2162,54 @@ confirmation.  That makes it a coordination protocol: the hub is the
 party that must not act early, so the hub drives, and confirmation is
 what unblocks it.
 
-The roster withholds nothing.  No hub decision waits on whether a role
-has the current list; the role simply wants an accurate copy for its own
-gate.  When nobody is waiting, the cheaper arrangement is the one where
-the party that needs the data asks for it — the hub keeps no delivery
-state, no per-role timers, and no fan-out, and answers "you are current"
-in the overwhelmingly common case.
+The roster withholds something too, and it is not the list.  Every role
+is entitled to the whole list and gets it by asking, because no hub
+decision waits on a role holding it.  What the hub holds back is one
+role's inbox *address*, from a sender that role cannot yet admit
+(§4.9.7).
 
-Direction follows from who must wait.  It is the same rule producing two
-answers, not two conventions.
+So one rule produces both arrangements: **the party that must not act
+early is the party that drives.**  On a channel the hub must not show a
+producer an unconfirmed consumer, so the hub pushes and waits for
+confirmation.  For the roster the *sender* must not dial an unprepared
+receiver, so the hub withholds the address until the receiver has
+confirmed.  The list itself, which nobody waits on, is simply asked for
+on a schedule — and the hub keeps no delivery state, no per-role timers,
+and no fan-out for it.
 
-The change frequencies point the same way.  Channel membership moves
-whenever a role attaches or detaches, which is often and is exactly when
-coordination is needed; the roster moves only when an operator edits the
-vault, which is rare and coordinated by nothing.  A push mechanism for a
-rarely-changing list would spend its cost on the case that almost never
-happens.
+Direction follows from who must wait.  Two answers, one rule.
 
-**A consequence to accept deliberately:** with the role asking, a
-revocation reaches that role within one poll interval rather than
-immediately.  The refusal-triggered early check does not help here — a
-role finds out about a key that was *added* because someone knocks, but
-nobody knocks to announce a key is gone.  If bounded-delay revocation is
-ever insufficient, the answer is to add a push on change and keep the
-poll as the backstop for a missed push; it is not to reverse the
-direction, which would leave the hub tracking delivery for a list that
-changes a few times a year.
+**Change frequency does not decide the direction — cost does.**  Both
+lists now move often: channel membership when a role attaches, the
+roster when a role registers or stops (I-ROSTER-PRESENT).  So "the
+roster changes rarely, therefore asking is enough" is not the argument
+and must not be relied on.
+
+The argument is that the two costs scale differently.  A check rides a
+message the role already sends and carries one integer, so its cost is
+set by the heartbeat cadence and is **independent of how often the list
+changes** — a hub whose membership is churning answers "you are
+current" exactly as cheaply as one that is idle.  A push, by contrast,
+costs a full roster to every registered role on every membership event,
+and membership events cluster precisely when the system is busiest: a
+deployment starting N roles would send on the order of N² rosters
+during bring-up, when nothing yet depends on any of them being
+delivered.  The hub also stays free of delivery state — no per-role
+timers, no fan-out bookkeeping, no retry for a push that failed to a
+role that just died.
+
+**A consequence to accept deliberately:** a role that stops is still
+admitted at other roles' inboxes until they next check — one tick, not
+immediately.
+
+That bound is the point rather than a regret.  Without I-ROSTER-PRESENT
+a departed role's key is admitted **indefinitely**, until an operator
+edits the vault and the hub is restarted.  Trading unbounded for
+one-poll-interval is the substance of the rule.  If that interval is
+ever too long for a deployment, the answer is to add a push on change
+and keep the poll as the backstop for a missed push — not to reverse
+the direction, which would put the hub in the business of guaranteeing
+delivery to roles that may already be gone.
 
 ### 4.9.9 Roles that hold no list
 
@@ -1956,11 +2226,35 @@ identifiable.
 
 A role's list is a snapshot of what the hub believed when the role last
 converged.  Between checks it may be stale in either direction: missing
-a key that is now legitimate, or holding one that has been revoked.
+a key that is now admissible, or holding one that no longer is.
+
+The two directions are not equally consequential, because only one of
+them is reachable.  A key **missing** from the list cannot cost anything
+at the gate: a sender is not given this role's address until this role
+has confirmed a list naming it (§4.9.7), so no dial arrives that the
+list would wrongly refuse.  That direction is stale in bookkeeping only.
+A key **retained** after it ceased to be admissible is the direction
+that matters, and the rest of this section is about it.
+
+Under I-ROSTER-PRESENT "no longer admissible" has two causes and they
+behave differently.  An operator revoking a key from the vault is rare
+and deliberate.  A role stopping is ordinary and happens constantly —
+so the stale-in-the-holding-direction case is now the common one, not
+the exotic one.  Concretely: a role that exits keeps being admitted at
+every other role's inbox until each of them next checks.
 
 That window is the cost of a local decision, and it is deliberate — the
 alternative is asking the hub per handshake, which makes every
-connection depend on the hub being responsive at that instant.
+connection depend on the hub being responsive at that instant, on a
+process-wide authentication thread that would then be blocked for
+everyone (§4.9.7).
+
+What a role must NOT do with this window is treat admission as proof of
+liveness.  Being on the list means the hub believed this role was
+present at the last check; it does not mean the peer is running now, and
+nothing downstream may infer a channel, a session, or a delivery
+guarantee from it.  Admission answers "may this key connect," and that
+is the whole of what it answers.
 
 No special behaviour is defined for a hub a role cannot reach.  A role
 that has lost its hub has lost more than roster freshness, and that
@@ -1970,12 +2264,25 @@ occurs when the system is already failing.
 
 ### 4.9.11 What this enables
 
-Runtime roster reload (§4.8.5) is deferred, not refused.  It is
-deferred because a hub can change its own roster the moment it is
-asked, and until roles can notice, that change reaches the hub's own
-gate and no further.  This section is the missing half: with it, a
-reloaded roster converges everywhere; without it, reload is a hub-local
-edit wearing a system-wide name.
+Two things change a hub's roster, and they arrive separately.
+
+**Presence changes are live.**  A role registering or stopping moves the
+roster today, under I-ROSTER-PRESENT, so every part of this section —
+the version, the monotonic guard, replacement-not-merge, the periodic
+check — does real work from the moment it exists.  None of it is
+scaffolding waiting for a feature.
+
+**Vault edits still require a reload** (§4.8.5), which is deferred, not
+refused.  A hub can change its own roster the moment it is asked; until
+roles can notice, that change reaches the hub's own gate and no
+further.  This section is the missing half: with it, a reloaded roster
+converges everywhere; without it, reload is a hub-local edit wearing a
+system-wide name.
+
+Because presence already exercises the whole path continuously, reload
+arrives as one more reason to rebuild a snapshot — not as new
+machinery, and not as the first real test of machinery that has never
+run.
 
 The inbox plane (HEP-CORE-0027 §3.5) is the first consumer, and gains
 the ability to name a sender from the key it proved rather than from

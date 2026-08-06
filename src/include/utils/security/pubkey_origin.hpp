@@ -38,6 +38,7 @@
 #include "utils/security/peer_admission.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <set>
 #include <string>
@@ -123,10 +124,9 @@ struct PYLABHUB_UTILS_EXPORT AttributedSender
 /// keys can see that a message came from `BBBB` and has no way to learn
 /// that `BBBB` is alice — so it cannot name the sender to the application,
 /// cannot keep per-sender sequence state, and cannot key replay tracking.
-/// That is the defect the inbox plane has today (HEP-CORE-0027 §3.6), and
-/// it is why this projection carries pairs even though the wire has not
-/// migrated yet: nothing new should be written against the shape that is
-/// already known to be wrong.
+/// That is why both this projection and the wire that replicates it carry
+/// pairs (HEP-CORE-0027 §3.6, HEP-CORE-0035 §4.9): a receiver cannot be
+/// asked to name a sender from a list that never told it any names.
 struct PYLABHUB_UTILS_EXPORT RosterEntry
 {
     std::string uid;
@@ -205,13 +205,46 @@ class PYLABHUB_UTILS_EXPORT PeerAuthority
         ///         different subject, or is not a 40-char Z85 key.
         void add_local_role(const ::pylabhub::broker::KnownRole &role);
 
+        /// Same, from the replicated form (HEP-CORE-0035 §4.9).
+        ///
+        /// This overload is what a ROLE builds from — it receives roster
+        /// entries, never operator records.  Both overloads reach the same
+        /// insert, because `KnownRole`'s other two fields were never read
+        /// here; the difference is what a caller is able to supply.
+        ///
+        /// That is I-ROSTER-MINIMAL made structural rather than written
+        /// down: the role-side path cannot carry the operator's label or
+        /// role-type field, because the type it accepts has no room for
+        /// them.  Widening what roles learn then requires changing this
+        /// signature, which is a visible decision rather than a field that
+        /// rode along.
+        void add_local_role(const RosterEntry &entry);
+
         /// @throws std::runtime_error under the same conditions.
         void add_federation_peer(std::string_view peer_uid, std::string_view pubkey_z85);
 
         /// Hand over the finished authority.  Consumes the builder, so a
         /// half-built authority cannot be published and the builder cannot
         /// keep editing what it already handed out.
-        [[nodiscard]] PeerAuthority build() &&;
+        ///
+        /// @param version  which revision of the source list this is.  Carried
+        ///        INSIDE the result (I-ROSTER-VERSION-IN-SNAPSHOT): held
+        ///        beside it, a reader could load the version and the contents
+        ///        separately and pair version N with the contents of N-1 —
+        ///        reporting itself current while holding stale entries.  One
+        ///        load yields both, so that pairing cannot be expressed.
+        ///        Monotonic within one hub only; see §4.9.5.
+        ///
+        ///        **Omit it when the result is not a replicated snapshot.**
+        ///        Two different things are built from this type: a hub's
+        ///        vault index, which gates the hub's own door and names
+        ///        senders and is replicated to nobody, and a role's roster
+        ///        snapshot, which is.  Only the second has a revision to
+        ///        state; stamping the first puts a number on an object that
+        ///        is not the thing the number describes.  `version()` has
+        ///        exactly one reader, on the role side — a default here is a
+        ///        deliberate "unversioned", not an omission.
+        [[nodiscard]] PeerAuthority build(std::uint64_t version = 0) &&;
 
       private:
         void insert_(std::string_view pubkey_z85, PubkeyOrigin origin);
@@ -299,25 +332,55 @@ class PYLABHUB_UTILS_EXPORT PeerAuthority
     /// pins unstable for no reason.
     [[nodiscard]] std::set<RosterEntry> local_role_roster() const;
 
+    /// Is this key one this authority recognises at all?
+    ///
+    /// The admission question, answered directly rather than by handing out
+    /// a copy of the keys (I-ROSTER-ASK-DONT-COPY).  A consumer that holds
+    /// its own copy must be re-seeded on every replacement, which makes an
+    /// update two operations with a window between them where the copy and
+    /// the authority disagree.  Asking removes the window instead of
+    /// sequencing it: there is one list and one answer at any instant.
+    ///
+    /// Says nothing about WHO — `attribute_sender` answers that, and a
+    /// caller that needs a name must ask for one rather than infer it from
+    /// having been admitted.
+    [[nodiscard]] bool admits(const Z85PublicKey &key) const noexcept;
+
+    /// Which revision of the source list this is (HEP-CORE-0035 §4.9).
+    ///
+    /// Meaningful only against versions from the SAME hub.  Two hubs count
+    /// independently from their own beginnings, so comparing one hub's 7
+    /// with another's 3 compares answers to different questions.
+    [[nodiscard]] std::uint64_t version() const noexcept { return version_; }
+
     [[nodiscard]] std::size_t size() const noexcept { return by_pubkey_.size(); }
     [[nodiscard]] bool empty() const noexcept { return by_pubkey_.empty(); }
 
   private:
-    explicit PeerAuthority(std::unordered_map<Z85PublicKey, PubkeyOrigin> by_pubkey) noexcept
-        : by_pubkey_(std::move(by_pubkey))
+    explicit PeerAuthority(std::unordered_map<Z85PublicKey, PubkeyOrigin> by_pubkey,
+                           std::uint64_t version) noexcept
+        : by_pubkey_(std::move(by_pubkey)), version_(version)
     {
     }
 
     /// Internal. Deliberately not exposed — callers get verdicts.
     [[nodiscard]] const PubkeyOrigin *resolve_(const AttestedKey &attested) const;
 
-    /// The ONLY stored state.  Keyed on the validated key type, so a lookup
-    /// cannot be performed with — nor an entry stored from — an unvalidated
-    /// string.  Everything else this class exposes is a view over this map,
-    /// computed on demand: these are control-plane operations (a handful per
-    /// second at most, and per-registration for the roster), so there is
-    /// nothing here worth trading memory or a second container for.
+    /// The only stored MEMBERSHIP.  Keyed on the validated key type, so a
+    /// lookup cannot be performed with — nor an entry stored from — an
+    /// unvalidated string.  Every question this class answers about who is
+    /// admitted is a view over this map, computed on demand: these are
+    /// control-plane operations (a handful per second at most, and
+    /// per-registration for the roster), so there is nothing here worth
+    /// trading memory or a second container for.
     std::unordered_map<Z85PublicKey, PubkeyOrigin> by_pubkey_;
+
+    /// Which revision the map above is.  Not membership — the stamp on it.
+    /// Immutable with the rest of the object: a version that could be set
+    /// after publication would reintroduce the two-loads problem the single
+    /// constructor exists to prevent.  Declared after `by_pubkey_` so the
+    /// member-init order matches the constructor's.
+    std::uint64_t version_{0};
 };
 
 } // namespace pylabhub::utils::security

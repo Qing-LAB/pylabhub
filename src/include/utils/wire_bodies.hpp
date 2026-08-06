@@ -803,6 +803,29 @@ public:
 }
 ;
 
+// **RosterCheckNotifyBody** — "here is the roster version I hold"
+// (HEP-CORE-0035 §4.9.7).  A role sends one per hub on the periodic tick
+// it already runs; the hub answers with `ROSTER_UPDATE_NOTIFY` only when
+// the version differs, so staying current costs nothing on the way back.
+//
+// `known_roles_version` is REQUIRED, not optional-defaulting-to-zero.  A
+// role that holds no roster yet has a version — it is 0 — so a body
+// without the field is a sender that did not know what it was reporting,
+// and reading it as 0 would make the hub resend a roster to a role that
+// may already be current.
+PLH_WIRE_BODY_CLASS(RosterCheckNotifyBody)
+public:
+[[nodiscard]] std::string role_uid() const
+{
+    return detail::read_string(body_, "role_uid");
+}
+[[nodiscard]] std::uint64_t known_roles_version() const
+{
+    return detail::read_u64(body_, "known_roles_version");
+}
+}
+;
+
 // **ChannelBroadcastSendBody** — a member's broadcast to everyone on a
 // data channel (HEP-CORE-0007 §"Broker Notifications", HEP-CORE-0030 §9.1).
 //

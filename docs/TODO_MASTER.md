@@ -37,6 +37,23 @@ post-reconcile shipped-sprint detail).
 > and `ready_miss_heartbeats` keep their spelling: they are config keys, and
 > renaming them would change a user's config file.
 
+> **Auth-list replication shipped 2026-08-06 (#101, HEP-CORE-0035 §4.9).**
+> Roles now converge on the hub-owned key list, and a hub discloses a role's
+> inbox address only to a sender that role can already admit — because a
+> refused CURVE handshake is terminal (libzmq tears the session down and the
+> project's socket policy independently forbids the retry), so an early knock
+> costs a dropped message and a dead socket rather than a delay.  Debug
+> 2779/2779, Release 2776/2776.
+>
+> Two things worth carrying forward.  **Five substantive defects were found by
+> review or owner pushback and none by the suite**, which went 2774/2774 with
+> the first of them live.  And **two tests were disproved rather than trusted**:
+> disable-and-rerun showed one L4 case passing with its fix removed, because
+> the periodic safety net closes the gap inside any budget a subprocess test
+> can use — the net masks the fault it is a net for.  That case now states what
+> it does and does not cover, and the behaviour is pinned at L3 instead, where
+> the test owns one end of the wire and the duplicate is not a race.
+
 **Closed lines** (detail in the completions index above):
 - **Line 1 — CURVE auth chain:** 🟢 Phase 1 production-ready (REVIEW-E); + vault
   `known_roles` (HEP-0035 §4.8) + inbox replay defense (HEP-0027 §3.6).

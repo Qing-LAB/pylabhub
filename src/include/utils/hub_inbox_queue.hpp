@@ -56,6 +56,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -126,12 +127,12 @@ class PYLABHUB_UTILS_EXPORT InboxQueue : public pylabhub::utils::security::PeerA
   public:
     /**
      * @brief Factory: create an InboxQueue that RECORDS @p endpoint as the bind target.
-     *        `start()` performs the bind and arms CURVE with an EMPTY (deny-all) ZAP
-     *        allowlist — called by production role-host setup at S1 (HEP-CORE-0027 §4.1:
-     *        binding early resolves port-0 endpoints before REG_REQ advertises them; the
-     *        deny-all arm admits no peer until the roster arrives).  Only the allowlist
-     *        seed (`set_peer_allowlist` via master approval) happens at S3 —
-     *        `apply_master_approval` never binds.
+     *        `start()` performs the bind and arms CURVE with NO admission authority
+     *        bound — called by production role-host setup at S1 (HEP-CORE-0027 §4.1:
+     *        binding early resolves port-0 endpoints before REG_REQ advertises them;
+     *        an unbound gate admits no peer until the role wires itself in via
+     *        `set_admission_authority`, and answers no until that role's first
+     *        roster arrives).
      *
      * @param endpoint    ZMQ endpoint to bind (e.g. "tcp://0.0.0.0:5592" or "tcp://0.0.0.0:0").
      *                    Port 0 causes the OS to assign a free port; retrieve it via
@@ -259,10 +260,13 @@ class PYLABHUB_UTILS_EXPORT InboxQueue : public pylabhub::utils::security::PeerA
      *
      * The inbox is a hub-wide role↔role facility, so the ROUTER binds
      * as a CURVE server under its OWN @p zap_domain (distinct from the
-     * data channel's), authorizing against the hub-wide `known_roles`
-     * roster rather than any channel allowlist.  Until
-     * set_peer_allowlist() seeds that roster, start() binds deny-all
-     * (secure default — no peer completes the handshake).
+     * data channel's), authorizing against the hub-wide roster rather
+     * than any channel allowlist.  That roster is the operator's vault
+     * entries intersected with the roles the hub currently has
+     * registered (HEP-CORE-0035 §4.9.2), and it lives on the role, not
+     * here — see set_admission_authority().  Until one is bound,
+     * start() binds deny-all (secure default — no peer completes the
+     * handshake).
      *
      * @param identity_key_name  KeyStore key name for the role's
      *        identity keypair (security::kRoleIdentityName — the same
@@ -273,11 +277,40 @@ class PYLABHUB_UTILS_EXPORT InboxQueue : public pylabhub::utils::security::PeerA
     void set_curve_server_identity(std::string identity_key_name, std::string zap_domain);
 
     // ── PeerAdmission (HEP-CORE-0036 §7) — inbox ROUTER ZAP gate ──────────
-    // The hub-wide known_roles roster is installed via set_peer_allowlist;
-    // the ZapRouter pump thread consults is_peer_allowed at handshake time.
+    // The gate asks; it does not hold.  The hub-wide roster lives on the
+    // role (HEP-CORE-0035 §4.9.6), and the ZapRouter pump thread reaches it
+    // through the bound authority below at handshake time.
+
+    /// Does any authority the role holds vouch for this key?
+    ///
+    /// Takes the key alone, not a `PeerIdentity`: the mechanism is this
+    /// transport's business, and the role answers about keys.
+    using AdmitsPubkey = std::function<bool(const std::string &pubkey_z85)>;
+
+    /// Bind the question above.  Callable before or after `start()`, and
+    /// concurrently with `is_peer_allowed`.
+    ///
+    /// A role binds this instead of pushing its roster down, because a copy
+    /// parked here would be a second representation of the hub's key list,
+    /// free to disagree with the role's own — and the stale one would be the
+    /// one the ZAP handler consults.  Until an authority is bound the gate
+    /// denies everyone, which is the same rule the hub applies to itself
+    /// (HEP-CORE-0035 §4.8.4): no configuration admits no one.
+    void set_admission_authority(AdmitsPubkey admits);
+
+    /// Inert — returns false.  This gate keeps no list to replace; see
+    /// `set_admission_authority`.  Refused rather than accepted-and-ignored
+    /// so a caller expecting the push to gate something finds out.
     bool set_peer_allowlist(pylabhub::utils::security::PeerAllowlist allowlist) override;
+
+    /// Always `std::nullopt` — there is no stored list to hand back, and
+    /// the authority answers about one key at a time by design (it cannot
+    /// be enumerated).
     [[nodiscard]] std::optional<pylabhub::utils::security::PeerAllowlist>
     peer_allowlist_snapshot() const override;
+
+    /// CURVE peers only; delegates to the bound authority.  Runs on the ZAP
+    /// pump thread — synchronously, as the reentrance contract requires.
     [[nodiscard]] bool
     is_peer_allowed(const pylabhub::utils::security::PeerIdentity &peer) const override;
 
@@ -410,8 +443,12 @@ class PYLABHUB_UTILS_EXPORT InboxClient
      *
      * The DEALER presents the sender role's identity keypair and pins
      * the receiver's identity pubkey as `curve_serverkey`.  The receiver
-     * pubkey is discovered via ROLE_INFO_ACK (the receiver ROUTER admits
-     * this sender iff its pubkey is in the hub-wide known_roles roster).
+     * pubkey is discovered via ROLE_INFO_ACK, which the hub answers only
+     * once the receiver holds a roster naming this sender (HEP-CORE-0035
+     * §4.9.7) — so by the time this is armed, the receiver's ROUTER is
+     * expected to admit it.  A refusal is terminal: libzmq tears the
+     * connection down and nothing retries it, which is why reachability
+     * is settled before the dial rather than discovered by attempting.
      *
      * @param identity_key_name  KeyStore key name for the sender's
      *        identity keypair (security::kRoleIdentityName).

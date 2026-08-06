@@ -141,12 +141,13 @@ inline InboxCurve arm_inbox_queue(InboxQueue &q, const char *domain)
 /// Admit the sender and arm the dialing DEALER.  Call AFTER `q.start()`
 /// (the queue binds deny-all) and BEFORE `c.start()`.  A `ZapPumpThread` must
 /// be alive in the worker for the handshake to be serviced.
+///
+/// Stands in for the role, which is what binds the authority in production
+/// (`RoleAPIBase::set_inbox_queue`) and answers out of its replicated roster.
 inline void admit_sender(InboxQueue &q, const InboxCurve &k)
 {
-    namespace sec = pylabhub::utils::security;
-    sec::PeerAllowlist allow;
-    allow.peers.insert(sec::PeerIdentity{"curve", k.send_pub});
-    q.set_peer_allowlist(allow);
+    q.set_admission_authority([admitted = k.send_pub](const std::string &pubkey_z85)
+                              { return pubkey_z85 == admitted; });
 }
 
 inline void admit_and_arm_client(InboxQueue &q, InboxClient &c, const InboxCurve &k)
@@ -1153,9 +1154,11 @@ int checksum_none_roundtrip()
 
 // ─── Inbox CURVE auth (HEP-CORE-0027 §3.5, HEP-CORE-0036 §9.3) ───────────────
 // The inbox ROUTER binds as a CURVE server under a distinct "<uid>:inbox"
-// ZAP domain and admits ONLY pubkeys in its hub-wide known_roles roster
-// (installed via set_peer_allowlist).  These two workers pin both sides of
-// that gate against the real InboxQueue + InboxClient + ZapRouter — no mocks.
+// ZAP domain and admits ONLY pubkeys its hub-wide known_roles roster vouches
+// for.  The roster lives on the role; the gate reaches it through the
+// authority bound by set_admission_authority.  These two workers pin both
+// sides of that gate against the real InboxQueue + InboxClient + ZapRouter —
+// no mocks.
 
 int inbox_curve_authorized_delivers()
 {
@@ -1172,11 +1175,10 @@ int inbox_curve_authorized_delivers()
             ASSERT_NE(q, nullptr);
             q->set_curve_server_identity("inbox_recv_id", "test.inbox.curve.pos");
             ASSERT_TRUE(q->start());
-            // Seed the roster: alice is authorized (mirrors the S3 roster
-            // seed the role does off REG_ACK.known_roles).
-            sec::PeerAllowlist allow;
-            allow.peers.insert(sec::PeerIdentity{"curve", alice_pub});
-            ASSERT_TRUE(q->set_peer_allowlist(allow));
+            // Stand in for the role's roster: alice is authorized (the role
+            // builds this answer out of REG_ACK.known_roles).
+            q->set_admission_authority([admitted = alice_pub](const std::string &pubkey_z85)
+                                       { return pubkey_z85 == admitted; });
 
             sec::ZapPumpThread pump; // authorizes CURVE handshakes via ZapRouter
 
@@ -1217,6 +1219,72 @@ int inbox_curve_authorized_delivers()
         "hub_inbox_queue::inbox_curve_authorized_delivers", PLH_INBOX_MODS);
 }
 
+// Deny-all until a roster is bound (HEP-CORE-0035 §4.9.6, §4.8.4).
+//
+// `InboxQueue::start()` registers its ZAP domain BEFORE bind precisely so no
+// handshake can arrive un-gated — but a gate with nothing to ask is only safe
+// if "nothing to ask" means DENY.  The sibling test above proves a peer in the
+// roster is admitted and the one below proves a peer outside it is refused;
+// neither can tell those apart from a gate that admits whoever it is asked
+// about, because both bind an authority first.  This one binds none.
+//
+// The peer here holds a perfectly good keypair.  It is refused for the only
+// reason under test: the receiver has not yet been told who it may admit.
+int inbox_curve_no_authority_denies()
+{
+    return run_gtest_worker(
+        []
+        {
+            namespace sec = pylabhub::utils::security;
+            const auto [recv_pub, recv_sec] = make_keypair();
+            const auto [peer_pub, peer_sec] = make_keypair();
+            sec::secure().keys().add_identity_from_z85("inbox_recv_id", recv_pub, recv_sec);
+            sec::secure().keys().add_identity_from_z85("peer_id", peer_pub, peer_sec);
+
+            auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
+            ASSERT_NE(q, nullptr);
+            q->set_curve_server_identity("inbox_recv_id", "test.inbox.curve.noauth");
+            ASSERT_TRUE(q->start());
+            // Deliberately NO set_admission_authority.  This is the state
+            // between bind and the role adopting its first roster.
+
+            sec::ZapPumpThread pump;
+
+            auto c =
+                InboxClient::connect_to(q->actual_endpoint(), "peer.uid00000001", uint32_schema());
+            ASSERT_NE(c, nullptr);
+            c->set_curve_client_identity("peer_id", recv_pub);
+            ASSERT_TRUE(c->start()); // socket-level connect succeeds; ZAP denies
+
+            void *buf = c->acquire();
+            ASSERT_NE(buf, nullptr);
+            uint32_t val = 0xDEAD;
+            std::memcpy(buf, &val, sizeof(val));
+
+            const InboxItem *item = nullptr;
+            auto fut = std::async(std::launch::async,
+                                  [&]
+                                  {
+                                      item = q->recv_one(ms{700});
+                                      if (item)
+                                          q->send_ack(0);
+                                      return item != nullptr;
+                                  });
+            std::this_thread::sleep_for(ms{30});
+            const uint8_t ack = c->send(ms{500});
+
+            EXPECT_FALSE(fut.get())
+                << "an inbox with no authority bound must admit NOBODY — a gate that cannot say "
+                   "who is allowed must not fall open (HEP-CORE-0035 §4.9.6)";
+            EXPECT_EQ(item, nullptr);
+            EXPECT_NE(ack, 0u) << "a denied send must not report success";
+
+            c->stop();
+            q->stop();
+        },
+        "hub_inbox_queue::inbox_curve_no_authority_denies", PLH_INBOX_MODS);
+}
+
 int inbox_curve_unknown_denied()
 {
     return run_gtest_worker(
@@ -1236,9 +1304,8 @@ int inbox_curve_unknown_denied()
             ASSERT_TRUE(q->start());
             // Roster holds ONLY alice — bob is a known-keypair peer that the
             // hub does NOT know (its pubkey is not in known_roles).
-            sec::PeerAllowlist allow;
-            allow.peers.insert(sec::PeerIdentity{"curve", alice_pub});
-            ASSERT_TRUE(q->set_peer_allowlist(allow));
+            q->set_admission_authority([admitted = alice_pub](const std::string &pubkey_z85)
+                                       { return pubkey_z85 == admitted; });
 
             sec::ZapPumpThread pump;
 
@@ -1558,6 +1625,8 @@ struct HubInboxQueueRegistrar
                     return checksum_none_roundtrip();
                 if (sc == "inbox_curve_authorized_delivers")
                     return inbox_curve_authorized_delivers();
+                if (sc == "inbox_curve_no_authority_denies")
+                    return inbox_curve_no_authority_denies();
                 if (sc == "inbox_curve_unknown_denied")
                     return inbox_curve_unknown_denied();
                 if (sc == "inbox_backpressure_bounded_and_edge_logged")

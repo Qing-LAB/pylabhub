@@ -29,6 +29,7 @@ int checksum_enforced_roundtrip();
 int checksum_manual_no_stamp_receiver_rejects();
 int checksum_none_roundtrip();
 int inbox_curve_authorized_delivers();
+int inbox_curve_no_authority_denies();
 int inbox_curve_unknown_denied();
 int inbox_backpressure_bounded_and_edge_logged();
 int inbox_stale_ack_not_attributed_to_next_send();

@@ -37,10 +37,20 @@ namespace pylabhub::hub
 {
 
 /// Versioned admission ledger.  Two parameterized types:
-///   - `PubkeyT`  — the admitted peer's identity (std::string z85 in
-///                  production; int / std::string used in unit tests).
-///   - `RoleUidT` — the confirming role's identity (std::string uid in
+///   - `PubkeyT`  — the ADMITTED SUBJECT's identity.  What names a subject
+///                  depends on what is being admitted: a channel allowlist
+///                  admits keys and uses a z85 pubkey; the hub-wide roster
+///                  (HEP-CORE-0035 §4.9) admits ROLES and uses a role uid,
+///                  because presence is a property of the role and the key
+///                  it maps to is the vault's to supply.  Unit tests use
+///                  int / std::string.  The parameter name is historical —
+///                  this axis is "whatever identifies the thing admitted."
+///   - `RoleUidT` — the CONFIRMING HOLDER's identity (std::string uid in
 ///                  production).
+///
+/// Both production instances therefore parameterize as
+/// `<std::string, std::string>`; that they are the same C++ type does not
+/// make them the same axis, and the two must never be swapped at a call.
 ///
 /// Both types must be hashable + equality-comparable + copyable.
 ///

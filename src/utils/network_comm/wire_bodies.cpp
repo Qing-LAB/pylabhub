@@ -454,6 +454,20 @@ HeartbeatNotifyBody::HeartbeatNotifyBody(nlohmann::json body)
     d::require_envelope_hash(body_);
 }
 
+// RosterCheckNotifyBody — "here is the roster version I hold"
+// (HEP-CORE-0035 §4.9.7).  Both fields REQUIRED: a role that holds no
+// roster reports 0, so an absent version is a sender that did not know
+// what it was reporting rather than a sender with nothing to report.
+// No `channel_name` — the roster is hub-wide, so there is no channel
+// this question is about.
+RosterCheckNotifyBody::RosterCheckNotifyBody(nlohmann::json body)
+{
+    body_ = std::move(body);
+    d::require(body_, "role_uid", d::JsonKind::String);
+    d::require(body_, "known_roles_version", d::JsonKind::U64);
+    d::require_envelope_hash(body_);
+}
+
 ChannelBroadcastSendBody::ChannelBroadcastSendBody(nlohmann::json body)
 {
     body_ = std::move(body);

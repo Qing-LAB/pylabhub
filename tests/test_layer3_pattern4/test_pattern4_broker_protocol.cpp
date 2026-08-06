@@ -587,8 +587,12 @@ TEST_F(Pattern4BrokerProtocolTest, RoleInfoReq_WithInbox_ReturnsInfo)
     const std::string suffix = ".pid" + std::to_string(::getpid());
     const std::string channel = "proto.roleinfo.withinbox" + suffix;
     const std::string uid = "prod." + channel;
-    const std::string querier = "QUERIER-roleinfo" + suffix;
-    const std::string inbox_ep = "tcp://127.0.0.1:9987";
+    // Tagged `prod.` because the querier now REGISTERS: a hub discloses an
+    // inbox only to a sender the target can admit, and only a registered
+    // role is on any roster.  An untagged uid passes role_uid grammar but
+    // fails the producer role-tag policy at REG_REQ.
+    const std::string querier = "prod.roleinfo.querier" + suffix;
+    const std::string inbox_ep = "tcp://127.0.0.1:" + std::to_string(pick_unused_port());
     // HEP-0027 §6 canonical object form — packing rides IN-OBJECT
     // (HEP-0046 B.2; the separate `inbox_packing` REG field is retired,
     // and the typed-body boundary rejects non-canonical shapes).
@@ -606,6 +610,16 @@ TEST_F(Pattern4BrokerProtocolTest, RoleInfoReq_WithInbox_ReturnsInfo)
                milliseconds{pylabhub::kMidTimeoutMs});
 
     zmq::context_t ctx;
+
+    // The querier registers FIRST.  A hub discloses an inbox only to a
+    // sender the target can already admit (HEP-CORE-0035 §4.9.7), and the
+    // roster the target confirms below is the one its own REG_ACK carried —
+    // so the querier has to be in the ledger before that REG_ACK is built.
+    // This is the ordinary "receiver starts after sender" case, which is
+    // also the one that used to lose the first message.
+    auto q = make_wire_client(ctx, setup, querier);
+    ASSERT_NO_FATAL_FAILURE(register_producer(q, setup, channel + ".q", querier));
+
     auto prod = make_wire_client(ctx, setup, uid);
 
     // Register with the inbox advertised.  The base payload comes from
@@ -628,12 +642,31 @@ TEST_F(Pattern4BrokerProtocolTest, RoleInfoReq_WithInbox_ReturnsInfo)
     ASSERT_EQ(reg->value("status", std::string{}), "success")
         << "REG_REQ (with inbox) failed; body=" << reg->dump();
 
-    auto info = make_wire_client(ctx, setup, querier);
+    // Before confirming, the target is registered and has an inbox but has
+    // told the hub nothing about which roster it applied — so the address is
+    // withheld and the reason says why.  Asserted rather than skipped: this
+    // is the state that used to hand out coordinates to a peer that would
+    // then be refused at the door.
     nlohmann::json req;
     req["role_uid"] = uid;
+    auto early =
+        q.request("ROLE_INFO_REQ", req, "ROLE_INFO_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(early.has_value()) << "ROLE_INFO_REQ timed out before confirmation";
+    EXPECT_FALSE(early->value("found", true)) << "body=" << early->dump();
+    EXPECT_EQ(early->value("reason", std::string{}), "not_reachable_yet")
+        << "body=" << early->dump();
+    EXPECT_EQ(early->value("inbox_endpoint", std::string{}), "")
+        << "the address must not travel before the target can admit the asker; body="
+        << early->dump();
+
+    // The target confirms the roster its REG_ACK carried — which names the
+    // querier, because the querier registered first.
+    ASSERT_NO_FATAL_FAILURE(confirm_roster(prod, uid, *reg));
+
     auto resp =
-        info.request("ROLE_INFO_REQ", req, "ROLE_INFO_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+        q.request("ROLE_INFO_REQ", req, "ROLE_INFO_ACK", milliseconds{pylabhub::kLongTimeoutMs});
     ASSERT_TRUE(resp.has_value()) << "ROLE_INFO_REQ timed out";
+    EXPECT_TRUE(resp->value("found", false)) << "body=" << resp->dump();
     EXPECT_EQ(resp->value("inbox_endpoint", std::string{}), inbox_ep) << "body=" << resp->dump();
     EXPECT_EQ(resp->value("inbox_packing", std::string{}), packing) << "body=" << resp->dump();
 
@@ -726,6 +759,394 @@ TEST_F(Pattern4BrokerProtocolTest, WireConformance_ConsumerRegAck_Shape)
     expect_object_has_keys(
         hb, {"heartbeat_interval_ms", "ready_miss_heartbeats", "pending_miss_heartbeats"},
         "CONSUMER_REG_ACK.heartbeat", "HEP-CORE-0023 §2.5.1");
+
+    broker.signal_quit();
+}
+
+// ─── Roster replication (HEP-CORE-0035 §4.9) ──────────────────────────────
+
+// The DECREASE case — unreachable before I-ROSTER-PRESENT, and the reason
+// the version machinery existed without ever being exercised.
+//
+// While the roster was every configured role, it could only ever grow with
+// the vault and never moved at runtime: no test could observe an entry
+// leaving, so `revoke` and the monotonic guard were dead weight that still
+// passed review.  Membership now follows registration, so a role that
+// deregisters LEAVES every other role's list.
+//
+// Observed through successive REG_ACKs rather than a pushed notify: each
+// registration answers with the roster as of that moment, which is the same
+// evidence a role acts on and needs no unsolicited receive.
+TEST_F(Pattern4BrokerProtocolTest, RosterShrinksWhenARoleDeregisters)
+{
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string ch_a = "roster.decrease.a" + suffix;
+    const std::string ch_b = "roster.decrease.b" + suffix;
+    const std::string ch_c = "roster.decrease.c" + suffix;
+    const std::string uid_a = "prod." + ch_a;
+    const std::string uid_b = "prod." + ch_b;
+    const std::string uid_c = "prod." + ch_c;
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_roster_decrease");
+    const auto setup = make_pattern4_setup({uid_a, uid_b, uid_c});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+
+    // Names in a roster block, as a set.  Order is NOT what is under test
+    // here — membership is — and `local_role_roster()` already documents and
+    // guarantees uid order for the benefit of wire captures, so a sequence
+    // assertion in this test would duplicate a guarantee pinned elsewhere
+    // while making the failure message about the wrong thing.
+    const auto roster_uids = [](const nlohmann::json &ack)
+    {
+        std::set<std::string> out;
+        for (const auto &e : ack.value("known_roles", nlohmann::json::array()))
+            out.insert(e.value("uid", std::string{}));
+        return out;
+    };
+
+    auto a = make_wire_client(ctx, setup, uid_a);
+    nlohmann::json ack_a;
+    ASSERT_NO_FATAL_FAILURE(register_producer(a, setup, ch_a, uid_a, &ack_a));
+    EXPECT_EQ(roster_uids(ack_a), (std::set<std::string>{uid_a}))
+        << "a hub that has one role registered must replicate exactly that one; body="
+        << ack_a.dump();
+
+    auto b = make_wire_client(ctx, setup, uid_b);
+    nlohmann::json ack_b;
+    ASSERT_NO_FATAL_FAILURE(register_producer(b, setup, ch_b, uid_b, &ack_b));
+    EXPECT_EQ(roster_uids(ack_b), (std::set<std::string>{uid_a, uid_b}));
+    const auto version_with_b = ack_b.value("known_roles_version", std::uint64_t{0});
+    EXPECT_GT(version_with_b, ack_a.value("known_roles_version", std::uint64_t{0}))
+        << "admitting a role must move the version";
+
+    // B leaves.
+    {
+        nlohmann::json dereg;
+        dereg["channel_name"] = ch_b;
+        dereg["role_uid"] = uid_b;
+        dereg["producer_pid"] = pylabhub::platform::get_pid();
+        auto reply =
+            b.request("DEREG_REQ", dereg, "DEREG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value()) << "DEREG_REQ timed out";
+        ASSERT_EQ(reply->value("status", std::string{}), "success") << reply->dump();
+    }
+
+    // C registers, and its REG_ACK is the observation: B is gone from the
+    // list, and the version is higher than the one that still contained it.
+    auto c = make_wire_client(ctx, setup, uid_c);
+    nlohmann::json ack_c;
+    ASSERT_NO_FATAL_FAILURE(register_producer(c, setup, ch_c, uid_c, &ack_c));
+    EXPECT_EQ(roster_uids(ack_c), (std::set<std::string>{uid_a, uid_c}))
+        << "a deregistered role must leave every other role's list; body=" << ack_c.dump();
+    EXPECT_GT(ack_c.value("known_roles_version", std::uint64_t{0}), version_with_b)
+        << "a revocation must move the version, or holders would never learn of it";
+
+    broker.signal_quit();
+}
+
+// A restarted role must EARN reachability again.
+//
+// The confirmation and the admission are separate halves of the ledger, and
+// only the admission is erased when a role leaves.  Left alone, a role that
+// stops and starts again carries a confirmation from its previous life — so
+// the hub would judge it reachable and hand out its address while it has
+// adopted no roster at all since restarting, and its own gate would refuse
+// the sender the hub just waved through.  Exactly the failure the gate
+// exists to prevent, arrived at from the other direction.
+//
+// Nothing about this is observable from outside the ledger, and a passing
+// delivery test cannot distinguish it: the window is narrow and closes as
+// soon as the restarted role adopts anything.  So it is pinned here.
+TEST_F(Pattern4BrokerProtocolTest, RestartedRoleIsNotReachableOnAStaleConfirmation)
+{
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string ch_t = "roster.restart.target" + suffix;
+    const std::string ch_s = "roster.restart.asker" + suffix;
+    const std::string uid_t = "prod." + ch_t;
+    const std::string uid_s = "prod." + ch_s;
+    const std::string inbox_ep = "tcp://127.0.0.1:" + std::to_string(pick_unused_port());
+    const std::string schema_json =
+        R"({"packing":"aligned","fields":[{"name":"v","type":"float64","count":1,"length":0}]})";
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_roster_restart");
+    const auto setup = make_pattern4_setup({uid_t, uid_s});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto s = make_wire_client(ctx, setup, uid_s);
+    ASSERT_NO_FATAL_FAILURE(register_producer(s, setup, ch_s, uid_s));
+
+    // Registering the target with its inbox advertised — done twice below, so
+    // it is a lambda rather than two copies that could drift apart.
+    auto t = make_wire_client(ctx, setup, uid_t);
+    const auto register_target = [&]() -> nlohmann::json
+    {
+        pylabhub::hub::ProducerRegInputs in;
+        in.channel = ch_t;
+        in.role_uid = uid_t;
+        in.role_name = "RestartTarget";
+        in.role_type = "producer";
+        in.is_zmq_transport = true;
+        in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(pick_unused_port());
+        in.zmq_pubkey = setup.curve.role(uid_t).public_z85;
+        auto payload = pylabhub::hub::build_producer_reg_payload(in);
+        payload["inbox_endpoint"] = inbox_ep;
+        payload["inbox_schema_json"] = schema_json;
+        auto reply =
+            t.request("REG_REQ", payload, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+        EXPECT_TRUE(reply.has_value()) << "REG_REQ timed out";
+        return reply.value_or(nlohmann::json::object());
+    };
+
+    nlohmann::json req;
+    req["role_uid"] = uid_t;
+    const auto ask = [&]
+    {
+        auto r = s.request("ROLE_INFO_REQ", req, "ROLE_INFO_ACK",
+                           milliseconds{pylabhub::kLongTimeoutMs});
+        EXPECT_TRUE(r.has_value()) << "ROLE_INFO_REQ timed out";
+        return r.value_or(nlohmann::json::object());
+    };
+
+    // ── First life: register, confirm, become reachable ──
+    const auto ack1 = register_target();
+    ASSERT_EQ(ack1.value("status", std::string{}), "success") << ack1.dump();
+    ASSERT_NO_FATAL_FAILURE(confirm_roster(t, uid_t, ack1));
+    {
+        const auto info = ask();
+        ASSERT_TRUE(info.value("found", false))
+            << "baseline: a confirmed target must be reachable; body=" << info.dump();
+    }
+
+    // ── Stop ──
+    {
+        nlohmann::json dereg;
+        dereg["channel_name"] = ch_t;
+        dereg["role_uid"] = uid_t;
+        dereg["producer_pid"] = pylabhub::platform::get_pid();
+        auto reply =
+            t.request("DEREG_REQ", dereg, "DEREG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+        ASSERT_TRUE(reply.has_value()) << "DEREG_REQ timed out";
+        ASSERT_EQ(reply->value("status", std::string{}), "success") << reply->dump();
+    }
+
+    // ── Restart, and DO NOT confirm ──
+    const auto ack2 = register_target();
+    ASSERT_EQ(ack2.value("status", std::string{}), "success") << ack2.dump();
+
+    {
+        const auto info = ask();
+        EXPECT_FALSE(info.value("found", true))
+            << "a restarted role must not inherit its previous confirmation — it has adopted no "
+               "roster since restarting, so its gate would refuse whoever the hub sent; body="
+            << info.dump();
+        EXPECT_EQ(info.value("reason", std::string{}), "not_reachable_yet") << info.dump();
+        EXPECT_EQ(info.value("inbox_endpoint", std::string{}), "") << info.dump();
+    }
+
+    // ── Confirm again: reachability is earned, not remembered ──
+    ASSERT_NO_FATAL_FAILURE(confirm_roster(t, uid_t, ack2));
+    {
+        const auto info = ask();
+        EXPECT_TRUE(info.value("found", false))
+            << "after confirming its new roster the target is reachable again; body="
+            << info.dump();
+    }
+
+    broker.signal_quit();
+}
+
+// ─── The hub re-sends a roster the target may already hold ────────────────
+//
+// The gate pushes to an unconfirmed target on EVERY ask, because the hub
+// does not know what that target holds — a confirmation is the only thing
+// that tells it, and by definition it has not arrived.  So two asks about
+// one unconfirmed target produce two identical pushes.
+//
+// That is the precondition the role-side rule exists for: a role that is
+// offered a version it already holds must decline the CONTENT and still
+// answer with its version (HEP-CORE-0035 §4.9.7).  Silence there would
+// leave the hub refusing senders on the role's behalf until a tick
+// happened to say otherwise.
+//
+// Pinned HERE rather than at L4 because here it is not a race.  A live
+// role confirms the first push within microseconds, so at L4 the second
+// ask lands after confirmation and the duplicate never occurs; forcing it
+// would mean pinning timing.  A wire client simply never confirms, and the
+// duplicate is then the only possible outcome — every step below is a
+// reply on the connection that carried its request.
+TEST_F(Pattern4BrokerProtocolTest, UnconfirmedTargetIsRePushedTheSameRoster)
+{
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string channel = "proto.roster.repush" + suffix;
+    const std::string uid = "prod." + channel;
+    const std::string querier = "prod.roster.repush.q" + suffix;
+    const std::string inbox_ep = "tcp://127.0.0.1:" + std::to_string(pick_unused_port());
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_roster_repush");
+    const auto setup = make_pattern4_setup({uid, querier});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+
+    // Querier first, so the roster the target is offered names it — the
+    // push is then a roster the target could act on, not an empty one.
+    auto q = make_wire_client(ctx, setup, querier);
+    ASSERT_NO_FATAL_FAILURE(register_producer(q, setup, channel + ".q", querier));
+
+    auto target = make_wire_client(ctx, setup, uid);
+    pylabhub::hub::ProducerRegInputs in;
+    in.channel = channel;
+    in.role_uid = uid;
+    in.role_name = "RepushProd";
+    in.role_type = "producer";
+    in.is_zmq_transport = true;
+    in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(pick_unused_port());
+    in.zmq_pubkey = setup.curve.role(uid).public_z85;
+    auto payload = pylabhub::hub::build_producer_reg_payload(in);
+    payload["inbox_endpoint"] = inbox_ep;
+    payload["inbox_schema_json"] =
+        R"({"packing":"aligned","fields":[{"name":"v","type":"float64","count":1,"length":0}]})";
+    auto reg =
+        target.request("REG_REQ", payload, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(reg.has_value()) << "REG_REQ (with inbox) timed out";
+    ASSERT_EQ(reg->value("status", std::string{}), "success") << "body=" << reg->dump();
+
+    const auto reg_version = reg->value("known_roles_version", std::uint64_t{0});
+    ASSERT_GT(reg_version, 0U) << "a REG_ACK is built after admitting the role it answers, so it "
+                                  "carries a real version; 0 means 'no roster' (I-ROSTER-VERSION); "
+                                  "body="
+                               << reg->dump();
+
+    // The target NEVER confirms.  Nothing below waits on it, so there is
+    // no window to lose.
+    nlohmann::json req;
+    req["role_uid"] = uid;
+
+    const auto ask_and_collect_push = [&](const char *which) -> std::uint64_t
+    {
+        auto ack = q.request("ROLE_INFO_REQ", req, "ROLE_INFO_ACK",
+                             milliseconds{pylabhub::kLongTimeoutMs});
+        EXPECT_TRUE(ack.has_value()) << which << " ROLE_INFO_REQ timed out";
+        if (!ack)
+            return 0;
+        EXPECT_EQ(ack->value("reason", std::string{}), "not_reachable_yet")
+            << which << " ask; body=" << ack->dump();
+
+        // The push is enqueued before the ACK is built, so by the time the
+        // reply lands the notify is at worst in flight.  Waiting for it to
+        // arrive is not ordering by time — the budget only bounds failure.
+        auto push =
+            drain_for(target, "ROSTER_UPDATE_NOTIFY", milliseconds{pylabhub::kLongTimeoutMs});
+        EXPECT_TRUE(push.has_value())
+            << which
+            << " ask: the target was not sent a roster, so it has no way to become "
+               "reachable and the asker's retry would never succeed";
+        return push ? push->value("known_roles_version", std::uint64_t{0}) : 0;
+    };
+
+    const std::uint64_t first = ask_and_collect_push("first");
+    const std::uint64_t second = ask_and_collect_push("second");
+
+    EXPECT_EQ(first, reg_version)
+        << "the roster pushed to an unconfirmed target is the one its own REG_ACK carried";
+    EXPECT_EQ(second, first) << "nothing joined or left between the two asks, so the second push "
+                                "repeats the first — this is the duplicate a role must decline "
+                                "without going silent (HEP-CORE-0035 §4.9.7)";
+
+    // Still withheld after both pushes: pushing is not disclosing.  Without
+    // this a hub that pushed and then answered `found` would pass every
+    // assertion above while handing out coordinates to a closed door.
+    auto after =
+        q.request("ROLE_INFO_REQ", req, "ROLE_INFO_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(after.has_value());
+    EXPECT_FALSE(after->value("found", true)) << "body=" << after->dump();
+    EXPECT_EQ(after->value("inbox_endpoint", std::string{}), "") << "body=" << after->dump();
+
+    broker.signal_quit();
+}
+
+// The PERMANENT refusal.  A caller with no registration on this hub can
+// never appear on any roster it issues, so "not yet" would be a lie and a
+// retry loop would spin forever.  Distinguishing it costs one string and is
+// the difference between a caller waiting usefully and waiting always.
+TEST_F(Pattern4BrokerProtocolTest, InboxWithheldPermanentlyFromUnregisteredAsker)
+{
+    using namespace std::chrono;
+    const std::string suffix = ".pid" + std::to_string(::getpid());
+    const std::string channel = "roster.stranger" + suffix;
+    const std::string uid = "prod." + channel;
+    const std::string stranger = "prod.roster.stranger.asker" + suffix;
+    const std::string inbox_ep = "tcp://127.0.0.1:" + std::to_string(pick_unused_port());
+    const std::string schema_json =
+        R"({"packing":"aligned","fields":[{"name":"v","type":"float64","count":1,"length":0}]})";
+
+    const fs::path temp_dir = make_test_temp_dir("broker_protocol_roster_stranger");
+    const auto setup = make_pattern4_setup({uid, stranger});
+    write_pattern4_setup(setup, temp_dir / "setup.json");
+
+    auto broker = SpawnWorkerWithQuitSignal("pattern4_broker_protocol.broker",
+                                            {temp_dir.string(), "default"});
+    expect_log(broker, "Pattern4BrokerProtocol: bound endpoint",
+               milliseconds{pylabhub::kMidTimeoutMs});
+
+    zmq::context_t ctx;
+    auto target = make_wire_client(ctx, setup, uid);
+
+    pylabhub::hub::ProducerRegInputs in;
+    in.channel = channel;
+    in.role_uid = uid;
+    in.role_name = "StrangerTarget";
+    in.role_type = "producer";
+    in.is_zmq_transport = true;
+    in.zmq_node_endpoint = "tcp://127.0.0.1:" + std::to_string(pick_unused_port());
+    in.zmq_pubkey = setup.curve.role(uid).public_z85;
+    auto payload = pylabhub::hub::build_producer_reg_payload(in);
+    payload["inbox_endpoint"] = inbox_ep;
+    payload["inbox_schema_json"] = schema_json;
+    auto reg =
+        target.request("REG_REQ", payload, "REG_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(reg.has_value()) << "REG_REQ timed out";
+    ASSERT_EQ(reg->value("status", std::string{}), "success") << reg->dump();
+
+    // The target is fully converged — registered, inbox advertised, roster
+    // confirmed.  Everything on its side is ready; the asker is the problem.
+    ASSERT_NO_FATAL_FAILURE(confirm_roster(target, uid, *reg));
+
+    // The stranger holds a vault key — it authenticates to the broker fine —
+    // but has never registered, so it is on nobody's roster.
+    auto s = make_wire_client(ctx, setup, stranger);
+    nlohmann::json req;
+    req["role_uid"] = uid;
+    auto resp =
+        s.request("ROLE_INFO_REQ", req, "ROLE_INFO_ACK", milliseconds{pylabhub::kLongTimeoutMs});
+    ASSERT_TRUE(resp.has_value()) << "ROLE_INFO_REQ timed out";
+    EXPECT_FALSE(resp->value("found", true)) << resp->dump();
+    EXPECT_EQ(resp->value("reason", std::string{}), "sender_not_registered")
+        << "a caller that can never be admitted must be told so, not told to retry; body="
+        << resp->dump();
+    EXPECT_EQ(resp->value("inbox_endpoint", std::string{}), "")
+        << "the address must not travel to a role no roster can name; body=" << resp->dump();
 
     broker.signal_quit();
 }

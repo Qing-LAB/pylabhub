@@ -70,15 +70,25 @@ void PeerAuthority::Builder::add_local_role(const ::pylabhub::broker::KnownRole 
     insert_(role.pubkey_z85, PubkeyOrigin{PubkeyOrigin::Kind::LocalRole, role.uid});
 }
 
+void PeerAuthority::Builder::add_local_role(const RosterEntry &entry)
+{
+    insert_(entry.pubkey_z85, PubkeyOrigin{PubkeyOrigin::Kind::LocalRole, entry.uid});
+}
+
 void PeerAuthority::Builder::add_federation_peer(std::string_view peer_uid,
                                                  std::string_view pubkey_z85)
 {
     insert_(pubkey_z85, PubkeyOrigin{PubkeyOrigin::Kind::FederationPeer, std::string(peer_uid)});
 }
 
-PeerAuthority PeerAuthority::Builder::build() &&
+PeerAuthority PeerAuthority::Builder::build(std::uint64_t version) &&
 {
-    return PeerAuthority(std::move(by_pubkey_));
+    return PeerAuthority(std::move(by_pubkey_), version);
+}
+
+bool PeerAuthority::admits(const Z85PublicKey &key) const noexcept
+{
+    return by_pubkey_.find(key) != by_pubkey_.end();
 }
 
 const PubkeyOrigin *PeerAuthority::resolve_(const AttestedKey &attested) const

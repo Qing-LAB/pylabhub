@@ -179,6 +179,24 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     /// new to report.
     void send_heartbeat(const std::string &channel, const std::string &role_uid,
                         const std::string &role_type, const nlohmann::json &metrics);
+
+    /// Report the hub-roster version this role currently holds for THIS
+    /// hub (HEP-CORE-0035 §4.9.7).
+    ///
+    /// Fire-and-forget, and asynchronous on purpose.  The caller is the
+    /// periodic task, which runs on this object's own poll-loop thread —
+    /// a blocking request-reply there would wait on the very loop that
+    /// has to pump the reply.  The hub answers, when it answers at all,
+    /// with a `ROSTER_UPDATE_NOTIFY` that arrives through the ordinary
+    /// notification path.
+    ///
+    /// Silence means "you are current".  The hub replies only when the
+    /// reported version is stale, so the common case costs nothing on
+    /// the way back.  Losing a hub is detected by the monitor, not by
+    /// the absence of a roster reply.
+    ///
+    /// `held_version` is 0 when this role holds no roster for this hub.
+    void send_roster_check(const std::string &role_uid, std::uint64_t held_version);
     // M1.4 (2026-05-11): `send_metrics_report` retired.  Metrics
     // piggyback on `send_heartbeat(..., metrics)` per HEP-CORE-0019
     // §2.3 Phase 6.

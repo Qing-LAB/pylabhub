@@ -450,6 +450,43 @@ class BrokerServiceImpl
             std::make_shared<const pylabhub::utils::security::PeerAuthority>(std::move(built)));
     }
 
+    /// Versions the hub-wide roster the roles replicate (HEP-CORE-0035 §4.9).
+    ///
+    /// One hub-scoped instance beside the per-channel ones on
+    /// `ChannelAccessEntry`.  The roster asks less of it than channel
+    /// admission does — it never asks the per-role filtered-visibility
+    /// question, because every role is entitled to the same list — but the
+    /// versioning, the idempotent admit, and revoke are exactly what this
+    /// needs, and reimplementing that half untested to avoid carrying the
+    /// other half is how one idea becomes two implementations.
+    ///
+    /// **Keyed on role uids, not keys** (§4.9.4).  What this ledger tracks
+    /// is which roles are PRESENT — the registry's half of I-ROSTER-PRESENT.
+    /// The key each identity maps to comes from the vault, so a departure
+    /// needs nothing looked up: the hub is told which role left, and that
+    /// is exactly what this is keyed on.  It starts EMPTY and is moved only
+    /// by registration and disconnection; seeding it from the configured
+    /// roster would make every configured role present from startup, which
+    /// is the state the invariant exists to stop replicating.
+    ///
+    /// The confirmation map it also maintains has no consumer yet: nothing
+    /// in the broker's own decisions waits on a role converging.  It earns
+    /// its place when an operator can ask "has this revocation reached
+    /// everywhere," which arrives with runtime reload (§4.8.5).
+    pylabhub::hub::VersionedAdmissionLedger<std::string, std::string> roster_ledger_;
+
+    /// Serializes `roster_ledger_`.  The ledger is non-thread-safe by
+    /// design — its caller owns the lock — and this one has two callers on
+    /// possibly different threads: the presence handlers, which fire on
+    /// whatever thread ran the HubState mutation (the broker IO thread in
+    /// production, a test thread in L2), and `roster_ack_block`, which runs
+    /// on the IO thread while building a reply.
+    mutable std::mutex roster_mu_;
+
+    /// HubState presence subscriptions that move `roster_ledger_`.
+    pylabhub::hub::HandlerId role_registered_handler_id_{pylabhub::hub::kInvalidHandlerId};
+    pylabhub::hub::HandlerId role_disconnected_handler_id_{pylabhub::hub::kInvalidHandlerId};
+
     /// HEP-CORE-0033 §8 state aggregate.  Sole owner of channel / role /
     /// band / peer / shm / counter state; updated only via the broker's
     /// `_on_*` capability ops (friend access).  Per HEP-CORE-0033 §4,
@@ -887,6 +924,40 @@ class BrokerServiceImpl
     /// align its periodic-task schedule.  Always populated from
     /// `cfg.heartbeat_*` — no per-channel override.
     nlohmann::json heartbeat_ack_block() const;
+    /// The replicated roster block both registration ACKs carry
+    /// (HEP-CORE-0035 §4.9): `known_roles` as {uid, pubkey} pairs plus
+    /// `known_roles_version`.  Shared for the same reason
+    /// `heartbeat_ack_block` is — two ACKs owe the receiver the same block,
+    /// and two copies of the builder is how they come to disagree.
+    nlohmann::json roster_ack_block() const;
+
+    /// Record that @p uid is now / no longer registered on this hub
+    /// (HEP-CORE-0035 §4.9.2).  Both take `roster_mu_`.
+    ///
+    /// Admission is idempotent and does not advance the version, so a role
+    /// registering a second presence leaves every other role's copy current
+    /// instead of inviting a re-fetch of a list identical to what it holds.
+    void roster_admit_present(const std::string &uid);
+    void roster_revoke_absent(const std::string &uid);
+
+    /// Can @p asker_uid reach @p target_uid's inbox right now
+    /// (HEP-CORE-0035 §4.9.7, I-INBOX-REACHABLE)?
+    enum class Reachability
+    {
+        Reachable,   ///< The target has confirmed a roster naming the asker.
+        NotYet,      ///< The target is behind; send it the roster and retry.
+        AskerAbsent, ///< The asker is not registered here.  Permanent.
+    };
+    [[nodiscard]] Reachability roster_reachability(const std::string &target_uid,
+                                                   const std::string &asker_uid) const;
+
+    /// A role reported the roster version it holds (HEP-CORE-0035 §4.9.7).
+    /// Answers with `ROSTER_UPDATE_NOTIFY` only when that version is not
+    /// ours; silence means "you are current."
+    void handle_roster_check_notify(const ::pylabhub::wire::WireEnvelope &env,
+                                    const ::pylabhub::wire::RosterCheckNotifyBody &body,
+                                    zmq::socket_t &socket);
+
     nlohmann::json handle_endpoint_update_req(const ::pylabhub::wire::WireEnvelope &env,
                                               const ::pylabhub::wire::EndpointUpdateReqBody &body);
     nlohmann::json handle_schema_req(const nlohmann::json &req);
@@ -970,7 +1041,16 @@ class BrokerServiceImpl
 
     // Phase 4: role presence + info queries.
     nlohmann::json handle_role_presence_req(const nlohmann::json &req);
-    nlohmann::json handle_role_info_req(const nlohmann::json &req);
+    /// Answer "where is this role's inbox".  Also the reachability gate
+    /// (HEP-CORE-0035 §4.9.7, I-INBOX-REACHABLE): the coordinates are
+    /// withheld until the target has confirmed a roster naming @p asker_uid,
+    /// so `socket` is needed to prompt a target that has not.
+    ///
+    /// @p asker_uid is the caller's ROUTER identity, which on this message
+    /// tier is claimed rather than proven — it may decide reachability and
+    /// never access.
+    nlohmann::json handle_role_info_req(zmq::socket_t &socket, const std::string &asker_uid,
+                                        const nlohmann::json &req);
 
     /// Push an unsolicited message to a specific ZMQ ROUTER identity (raw bytes).
     static void send_to_identity(zmq::socket_t &socket, const std::string &identity,
@@ -1138,6 +1218,25 @@ void BrokerServiceImpl::run()
                 return;
             send_band_leave_notify(*active_router_, band, uid, role_name, reason);
         });
+
+    // ── Roster presence tracking (HEP-CORE-0035 §4.9.2, I-ROSTER-PRESENT) ──
+    // A replicated roster entry names a role the operator configured AND
+    // whose registration this hub currently holds.  These two handlers are
+    // the second half: the registry tells the ledger who is here.
+    //
+    // `role_disc` fires on terminal cleanup only — a role with several
+    // presences is not revoked while any of them is still alive — so the
+    // pair means exactly "arrived" and "gone", not "one channel opened"
+    // and "one channel closed".
+    //
+    // Nothing is emitted from here.  A version change is picked up by
+    // whichever role asks next (§4.9.8): the hub keeps no delivery state
+    // and no per-role timers, so a role that died between the change and
+    // its next check costs nothing to have missed.
+    role_registered_handler_id_ = hub_state_->subscribe_role_registered(
+        [this](const pylabhub::hub::RoleEntry &entry) { roster_admit_present(entry.uid); });
+    role_disconnected_handler_id_ = hub_state_->subscribe_role_disconnected(
+        [this](const std::string &uid) { roster_revoke_absent(uid); });
 
     // ── Federation: outbound DEALER sockets per peer (HEP-CORE-0022) ────────
     // Stored as unique_ptr so socket handles remain stable in the pollitem_t vector.
@@ -1524,6 +1623,16 @@ void BrokerServiceImpl::run()
         hub_state_->unsubscribe(band_left_handler_id_);
         band_left_handler_id_ = pylabhub::hub::kInvalidHandlerId;
     }
+    if (role_registered_handler_id_ != pylabhub::hub::kInvalidHandlerId)
+    {
+        hub_state_->unsubscribe(role_registered_handler_id_);
+        role_registered_handler_id_ = pylabhub::hub::kInvalidHandlerId;
+    }
+    if (role_disconnected_handler_id_ != pylabhub::hub::kInvalidHandlerId)
+    {
+        hub_state_->unsubscribe(role_disconnected_handler_id_);
+        role_disconnected_handler_id_ = pylabhub::hub::kInvalidHandlerId;
+    }
     active_router_ = nullptr;
 
     router.close();
@@ -1709,6 +1818,14 @@ void BrokerServiceImpl::dispatch_received(zmq::socket_t &socket,
                 // CHANNEL_AUTH_CHANGED_NOTIFY(phase=live) to the binding side on
                 // first-heartbeat detection (HEP-CORE-0007 lines 1819-1822).
                 handle_heartbeat_req(v.env, v.body, socket);
+            }
+            else if constexpr (std::is_same_v<T, wd::ValidatedRosterCheckNotify>)
+            {
+                // HEP-CORE-0035 §4.9.7 — fire-and-forget in, and usually
+                // nothing out: the handler replies only when the reported
+                // version is stale.  `socket` is forwarded so it can send
+                // ROSTER_UPDATE_NOTIFY back to this identity when it is.
+                handle_roster_check_notify(v.env, v.body, socket);
             }
             else if constexpr (std::is_same_v<T, wd::ValidatedGetChannelAuthReq>)
             {
@@ -1926,8 +2043,14 @@ void BrokerServiceImpl::process_message(zmq::socket_t &socket, const zmq::messag
         }
         else if (msg_type == "ROLE_INFO_REQ")
         {
-            // Phase 4: return inbox connection info for a producer UID.
-            nlohmann::json resp = handle_role_info_req(payload);
+            // Phase 4: return inbox connection info for a role UID — and,
+            // per HEP-CORE-0035 §4.9.7, decide whether this caller may have
+            // it yet.  The caller's ROUTER identity is its uid under
+            // I-DEALER-IDENTITY; on this tier it is claimed rather than
+            // proven, which the handler's contract accounts for.
+            const std::string asker_uid(static_cast<const char *>(identity.data()),
+                                        identity.size());
+            nlohmann::json resp = handle_role_info_req(socket, asker_uid, payload);
             send_reply(socket, identity, "ROLE_INFO_ACK", resp);
         }
         else if (msg_type == "HUB_PEER_HELLO")
@@ -2860,36 +2983,16 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
     }
     resp["initial_allowlist"] = std::move(allowlist);
 
-    // HEP-CORE-0027 §3.5 — hub-wide known_roles roster for the role's inbox
-    // ZAP.  The inbox is hub-wide role<->role messaging, so it authorizes any
-    // authenticated known_role (not just channel peers); the role has only its
-    // channel allowlist, so the broker distributes the roster here.  The role
-    // seeds its inbox PeerAdmission from this on REG_ACK.
-    {
-        // The roster IS the hub's `known_roles` — that membership is the
-        // inbox authorization boundary itself (HEP-CORE-0027 §3.5: the
-        // inbox is hub-coordinated role-to-role messaging, so the question
-        // is "is the sender a role this hub knows", not "is the sender on
-        // my data channel").
-        //
-        // The index is asked for its local roles rather than filtered here
-        // because it holds a SUPERSET: it also carries federation peer hubs,
-        // which the CTRL ZAP allowlist needs (a peer dials this broker's
-        // ROUTER, HEP-CORE-0022) but which are not roles and so are not part
-        // of `known_roles`.  This is selecting the subset this consumer is
-        // defined over — NOT a guard against peers "leaking" in.  Before the
-        // index existed the roster read `cfg.known_roles` directly and peers
-        // lived in `cfg.peers`; the two could never have mixed.
-        // The projection carries {uid, key} pairs; this wire field still
-        // carries bare keys.  Migrating it to pairs is the inbox slice's
-        // protocol change (a role cannot attribute a sender without the uid),
-        // done as one commit across broker and role — not smuggled in here.
-        const auto authority = peer_authority();
-        nlohmann::json roster = nlohmann::json::array();
-        for (const auto &entry : authority->local_role_roster())
-            roster.push_back(entry.pubkey_z85);
-        resp["known_roles"] = std::move(roster);
-    }
+    // HEP-CORE-0027 §3.5 — the roster this role's inbox gate answers from.
+    // The inbox is hub-wide role-to-role messaging, so the question it
+    // decides is "is the sender a role this hub knows and currently has
+    // registered", not "is the sender on my data channel" — which is why
+    // the roster travels separately from `initial_allowlist` above.
+    //
+    // Built here rather than earlier so this role is in its OWN roster:
+    // registration is already committed by the time the ACK is assembled,
+    // so the ledger has admitted it and the block names it.
+    resp.update(roster_ack_block());
 
     // HEP-CORE-0042 §5.5.3: REG_ACK echoes the broker-assigned
     // `instance_id` for this producer identity so the role can quote
@@ -4035,34 +4138,15 @@ BrokerServiceImpl::handle_consumer_reg_req(const ::pylabhub::wire::WireEnvelope 
             resp["schema_hash"] = ch_opt->schema_hash;
     }
 
-    // HEP-CORE-0027 §3.5 — hub-wide known_roles roster for the consumer's
-    // inbox ZAP (consumers have inboxes too; same roster as the producer
-    // REG_ACK path).
-    {
-        // The roster IS the hub's `known_roles` — that membership is the
-        // inbox authorization boundary itself (HEP-CORE-0027 §3.5: the
-        // inbox is hub-coordinated role-to-role messaging, so the question
-        // is "is the sender a role this hub knows", not "is the sender on
-        // my data channel").
-        //
-        // The index is asked for its local roles rather than filtered here
-        // because it holds a SUPERSET: it also carries federation peer hubs,
-        // which the CTRL ZAP allowlist needs (a peer dials this broker's
-        // ROUTER, HEP-CORE-0022) but which are not roles and so are not part
-        // of `known_roles`.  This is selecting the subset this consumer is
-        // defined over — NOT a guard against peers "leaking" in.  Before the
-        // index existed the roster read `cfg.known_roles` directly and peers
-        // lived in `cfg.peers`; the two could never have mixed.
-        // The projection carries {uid, key} pairs; this wire field still
-        // carries bare keys.  Migrating it to pairs is the inbox slice's
-        // protocol change (a role cannot attribute a sender without the uid),
-        // done as one commit across broker and role — not smuggled in here.
-        const auto authority = peer_authority();
-        nlohmann::json roster = nlohmann::json::array();
-        for (const auto &entry : authority->local_role_roster())
-            roster.push_back(entry.pubkey_z85);
-        resp["known_roles"] = std::move(roster);
-    }
+    // HEP-CORE-0027 §3.5 — the roster this consumer's inbox gate answers
+    // from.  Consumers have inboxes too, and every role on a hub is
+    // entitled to the same list, so this is the identical block the
+    // producer REG_ACK carries.
+    //
+    // Built here rather than earlier so this role is in its OWN roster:
+    // registration is already committed by the time the ACK is assembled,
+    // so the ledger has admitted it and the block names it.
+    resp.update(roster_ack_block());
 
     return resp;
 }
@@ -6006,6 +6090,149 @@ nlohmann::json BrokerServiceImpl::heartbeat_ack_block() const
     return hb;
 }
 
+nlohmann::json BrokerServiceImpl::roster_ack_block() const
+{
+    // The replicated roster is the intersection of two facts the hub holds
+    // separately (HEP-CORE-0035 §4.9.2, I-ROSTER-PRESENT): the vault says
+    // which roles may ever exist here, the ledger says which of them are
+    // registered right now.
+    //
+    // The KEYS come from the vault, never from a registration record.  The
+    // ledger contributes exactly one thing — the set of uids that are
+    // present — so the vault stays the only place key material is
+    // authoritative.
+    //
+    // A role cannot attribute a sender from a bare key, which is why the
+    // name travels with it; the version is what lets a role ask whether
+    // what it holds is current instead of the hub resending an identical
+    // list.
+    //
+    // The version and the membership are read under ONE lock so they cannot
+    // describe different revisions.  The vault index needs no such care —
+    // it is immutable behind a shared_ptr, so the entries it yields belong
+    // to whichever revision this load saw.
+    const auto authority = peer_authority();
+    std::uint64_t version = 0;
+    std::vector<std::string> present;
+    {
+        std::lock_guard<std::mutex> lk(roster_mu_);
+        version = roster_ledger_.current_version();
+        present = roster_ledger_.admitted_snapshot();
+    }
+    const std::unordered_set<std::string> present_set(present.begin(), present.end());
+
+    nlohmann::json roster = nlohmann::json::array();
+    for (const auto &entry : authority->local_role_roster())
+    {
+        if (present_set.find(entry.uid) == present_set.end())
+            continue;
+        roster.push_back(nlohmann::json{{"uid", entry.uid}, {"pubkey", entry.pubkey_z85}});
+    }
+    return nlohmann::json{{"known_roles", std::move(roster)}, {"known_roles_version", version}};
+}
+
+void BrokerServiceImpl::roster_admit_present(const std::string &uid)
+{
+    if (uid.empty())
+        return;
+    std::uint64_t version = 0;
+    {
+        std::lock_guard<std::mutex> lk(roster_mu_);
+        roster_ledger_.admit(uid);
+        version = roster_ledger_.current_version();
+    }
+    LOGGER_DEBUG("Broker: event=RosterPresent uid='{}' known_roles_version={}", uid, version);
+}
+
+void BrokerServiceImpl::roster_revoke_absent(const std::string &uid)
+{
+    if (uid.empty())
+        return;
+    std::uint64_t version = 0;
+    {
+        std::lock_guard<std::mutex> lk(roster_mu_);
+        roster_ledger_.revoke(uid);
+        // A departed role stops being a HOLDER as well as a subject.
+        // Without this the confirmation outlives the presence, and a role
+        // that stops and restarts is credited with a version it applied in
+        // a previous life — so the gate in `handle_role_info_req` would
+        // call it reachable before it had adopted any roster, and its
+        // inbox would refuse the sender the gate just waved through.
+        //
+        // It also bounds the map.  Channel ledgers die with their channel;
+        // this one lives as long as the hub, so it is the first instance
+        // where a confirmation that is never erased accumulates.
+        roster_ledger_.reset_role_confirmation(uid);
+        version = roster_ledger_.current_version();
+    }
+    LOGGER_DEBUG("Broker: event=RosterAbsent uid='{}' known_roles_version={}", uid, version);
+}
+
+BrokerServiceImpl::Reachability
+BrokerServiceImpl::roster_reachability(const std::string &target_uid,
+                                       const std::string &asker_uid) const
+{
+    // Named wrapper rather than a bare `is_visible_to` at the call site.
+    // Both of its parameters are `std::string`, and holder/subject
+    // inverted compiles cleanly and answers a plausible-looking wrong
+    // question.  Here the roles are in the names.
+    std::lock_guard<std::mutex> lk(roster_mu_);
+    if (!roster_ledger_.admission_version_of(asker_uid).has_value())
+    {
+        // The asker is not registered on this hub, so no roster this hub
+        // can ever issue will name it.  Permanent, not pending — telling
+        // the caller to try again would be a livelock, and pushing a
+        // roster to the target would not change the answer.
+        return Reachability::AskerAbsent;
+    }
+    const auto visible = roster_ledger_.is_visible_to(target_uid, asker_uid);
+    return (visible.has_value() && *visible) ? Reachability::Reachable : Reachability::NotYet;
+}
+
+void BrokerServiceImpl::handle_roster_check_notify(
+    const ::pylabhub::wire::WireEnvelope &env, const ::pylabhub::wire::RosterCheckNotifyBody &body,
+    zmq::socket_t &socket)
+{
+    const std::uint64_t held = body.known_roles_version();
+    const std::string reporter = body.role_uid();
+    std::uint64_t current = 0;
+    {
+        std::lock_guard<std::mutex> lk(roster_mu_);
+        // This report IS the confirmation (HEP-CORE-0035 §4.9.4): a role
+        // saying which version it holds is a role saying which version it
+        // has applied, so no second message exists or is needed.
+        //
+        // This is the ONLY place the confirmation map moves.  The hub knows
+        // which version it handed out on every REG_ACK and could record the
+        // confirmation itself, saving a message — that is the
+        // over-confirmation bug the ledger was built to eliminate (a holder
+        // credited with a version it had not applied), and `confirm()`'s
+        // contract forbids inferring confirmation from anything but wire
+        // evidence.  It stays forbidden here.
+        roster_ledger_.confirm(reporter, held);
+        current = roster_ledger_.current_version();
+    }
+    if (held == current)
+    {
+        // Current — say nothing.  This is the overwhelmingly common
+        // outcome and the reason the check can afford to run every tick
+        // (HEP-CORE-0035 §4.9.7).
+        LOGGER_TRACE("Broker: ROSTER_CHECK_NOTIFY role_uid='{}' current at version {}",
+                     body.role_uid(), current);
+        return;
+    }
+
+    // Not current — send the whole list.  A newer-than-ours version is
+    // answered the same way as an older one: the hub is the authority on
+    // what the roster is, and a role reporting a version this hub never
+    // issued has a list from somewhere else.
+    const nlohmann::json block = roster_ack_block();
+    send_to_identity(socket, std::string(env.identity()), "ROSTER_UPDATE_NOTIFY", block);
+    LOGGER_DEBUG("Broker: event=RosterUpdate role_uid='{}' held={} sent={} entries={}",
+                 body.role_uid(), held, block.value("known_roles_version", std::uint64_t{0}),
+                 block.at("known_roles").size());
+}
+
 // ============================================================================
 // Heartbeat timeout detection
 // ============================================================================
@@ -6726,141 +6953,182 @@ nlohmann::json BrokerServiceImpl::handle_role_presence_req(const nlohmann::json 
     return resp;
 }
 
-nlohmann::json BrokerServiceImpl::handle_role_info_req(const nlohmann::json &req)
+nlohmann::json BrokerServiceImpl::handle_role_info_req(zmq::socket_t &socket,
+                                                       const std::string &asker_uid,
+                                                       const nlohmann::json &req)
 {
-    // HEP-CORE-0007 §"ROLE_INFO_REQ" — wire field `role_uid`
-    // (unified with REG_REQ / CONSUMER_REG_REQ / ROLE_PRESENCE_REQ;
-    // old `uid` form retired 2026-05-09).
+    // HEP-CORE-0007 §"ROLE_INFO_REQ" — wire field `role_uid` (unified with
+    // REG_REQ / CONSUMER_REG_REQ / ROLE_PRESENCE_REQ; old `uid` form retired
+    // 2026-05-09).
     const std::string corr_id = req.value("correlation_id", "");
     const std::string uid = req.value("role_uid", "");
     if (uid.empty())
     {
-        // Standard error envelope per HEP-CORE-0007 §12.3 + §12.4a
-        // (`MISSING_ROLE_UID`).  Pre-2026-05-10 this handler emitted
-        // an ad-hoc `{"found": false, "error": "..."}` shape that
-        // diverged from the broker-wide error envelope.
+        // Standard error envelope per HEP-CORE-0007 §12.3 + §12.4a.
         return make_error(corr_id, "MISSING_ROLE_UID", "missing role_uid");
     }
-    // role_uid grammar + role-tag policy ran at the wire dispatch
-    // pipeline: ROLE_INFO_REQ is in Tier::
-    // Control_EnvelopeWithQueryRoleUid — the body role_uid here is
-    // the QUERIED subject, not the caller's own uid, so
-    // identity_match is intentionally NOT run.  Universal
-    // {prod,cons,proc} tag policy still applies.
+    // role_uid grammar + role-tag policy ran in the wire dispatch pipeline:
+    // ROLE_INFO_REQ is Tier::Control_EnvelopeWithQueryRoleUid — the body
+    // role_uid is the QUERIED subject, not the caller's own uid, so
+    // identity_match is intentionally NOT run.  `asker_uid` is therefore the
+    // routing identity the caller CHOSE.  That is why it may decide
+    // reachability and must never decide access (HEP-CORE-0035 §4.9.7).
 
-    // Search for a channel where `uid` is a registered producer
-    // (HEP-CORE-0023 §2.1.1 multi-producer aware).  Inbox info lives
-    // per-ProducerEntry (HEP-CORE-0027) — read from the matched producer.
-    //
-    // HEP-CORE-0027 §3.5 — the sender's InboxClient DEALER pins the
-    // receiver's identity pubkey as curve_serverkey, so ROLE_INFO_ACK
-    // carries it.  The receiver's identity pubkey is its known_roles
-    // entry (single-key model I6 — same key it presents on data sockets).
-    const auto inbox_receiver_pubkey = [this](const std::string &target_uid) -> std::string
+    /// One role's inbox coordinates, wherever they were found.  Producers and
+    /// consumers keep them on different records, but every consumer of them
+    /// wants the same five fields — so the search yields this and the reply is
+    /// built once.  Two search loops and two reply builders is how the gate
+    /// below would have had to exist twice.
+    struct InboxRecord
     {
-        for (const auto &kr : cfg.known_roles)
-            if (kr.uid == target_uid)
-                return kr.pubkey_z85;
-        return {};
+        std::string channel;
+        std::string endpoint;
+        std::string packing;
+        std::string checksum;
+        std::string schema_json;
     };
+
     const auto snap = hub_state_->snapshot();
+    std::optional<InboxRecord> rec;
+    const char *found_as = "";
     for (const auto &[name, entry] : snap.channels)
     {
-        const auto *prod = entry.find_producer(uid);
-        if (prod != nullptr)
+        if (const auto *prod = entry.find_producer(uid); prod != nullptr)
         {
-            nlohmann::json resp;
-            resp["found"] = !prod->inbox_endpoint.empty();
-            resp["channel"] = name;
-            resp["inbox_endpoint"] = prod->inbox_endpoint;
-            resp["inbox_packing"] = prod->inbox_packing;
-            resp["inbox_checksum"] = prod->inbox_checksum;
-            resp["inbox_receiver_pubkey_z85"] = inbox_receiver_pubkey(uid);
-            if (!prod->inbox_schema_json.empty())
-            {
-                try
-                {
-                    resp["inbox_schema"] = nlohmann::json::parse(prod->inbox_schema_json);
-                }
-                catch (const nlohmann::json::exception &je)
-                {
-                    // Stored schema string is malformed.  REG_REQ
-                    // validation in handle_reg_req should have rejected
-                    // this — reaching here means stored state is
-                    // corrupt.  Surface a warning instead of silently
-                    // returning an empty schema (which the consumer
-                    // would happily use, masking the corruption).
-                    LOGGER_WARN("Broker: stored inbox_schema_json for "
-                                "channel '{}' producer '{}' is malformed: {}; "
-                                "returning empty array",
-                                name, uid, je.what());
-                    resp["inbox_schema"] = nlohmann::json::array();
-                }
-            }
-            else
-            {
-                resp["inbox_schema"] = nlohmann::json::array();
-            }
-            if (!corr_id.empty())
-                resp["correlation_id"] = corr_id;
-            LOGGER_DEBUG("Broker: ROLE_INFO_REQ uid='{}' found on '{}', inbox='{}'", uid, name,
-                         prod->inbox_endpoint);
-            return resp;
+            rec = InboxRecord{name, prod->inbox_endpoint, prod->inbox_packing, prod->inbox_checksum,
+                              prod->inbox_schema_json};
+            found_as = "producer";
+            break;
         }
     }
-
-    // Search consumer entries across all channels.
     for (const auto &[name, entry] : snap.channels)
     {
+        if (rec)
+            break;
         for (const auto &cons : entry.consumers)
         {
-            if (!cons.role_uid.empty() && cons.role_uid == uid)
-            {
-                nlohmann::json resp;
-                resp["found"] = !cons.inbox_endpoint.empty();
-                resp["channel"] = name;
-                resp["inbox_endpoint"] = cons.inbox_endpoint;
-                resp["inbox_packing"] = cons.inbox_packing;
-                resp["inbox_checksum"] = cons.inbox_checksum;
-                resp["inbox_receiver_pubkey_z85"] = inbox_receiver_pubkey(uid);
-                if (!cons.inbox_schema_json.empty())
-                {
-                    try
-                    {
-                        resp["inbox_schema"] = nlohmann::json::parse(cons.inbox_schema_json);
-                    }
-                    catch (const nlohmann::json::exception &je)
-                    {
-                        // Same rationale as the producer-entry path
-                        // above — stored consumer inbox_schema_json is
-                        // corrupt; log instead of silently returning
-                        // an empty array.
-                        LOGGER_WARN("Broker: stored consumer "
-                                    "inbox_schema_json for channel '{}' "
-                                    "uid='{}' is malformed: {}; "
-                                    "returning empty array",
-                                    name, uid, je.what());
-                        resp["inbox_schema"] = nlohmann::json::array();
-                    }
-                }
-                else
-                {
-                    resp["inbox_schema"] = nlohmann::json::array();
-                }
-                if (!corr_id.empty())
-                    resp["correlation_id"] = corr_id;
-                LOGGER_DEBUG("Broker: ROLE_INFO_REQ uid='{}' found as consumer on '{}', inbox='{}'",
-                             uid, name, cons.inbox_endpoint);
-                return resp;
-            }
+            if (cons.role_uid.empty() || cons.role_uid != uid)
+                continue;
+            rec = InboxRecord{name, cons.inbox_endpoint, cons.inbox_packing, cons.inbox_checksum,
+                              cons.inbox_schema_json};
+            found_as = "consumer";
+            break;
         }
     }
 
-    LOGGER_DEBUG("Broker: ROLE_INFO_REQ uid='{}' not found", uid);
-    nlohmann::json resp;
-    resp["found"] = false;
-    if (!corr_id.empty())
-        resp["correlation_id"] = corr_id;
+    // ONE shape for every answer.  The key set is constant; what varies is
+    // whether the coordinates are filled in and what `reason` says.  Three
+    // outcomes emitting three different key sets would make ROLE_INFO_ACK
+    // three wire messages wearing one name, and a caller would have to
+    // probe for keys to find out which it got.
+    const auto answer = [&corr_id](bool found, const char *reason, const std::string &channel)
+    {
+        nlohmann::json r;
+        r["found"] = found;
+        r["reason"] = reason;
+        r["channel"] = channel;
+        r["inbox_endpoint"] = "";
+        r["inbox_packing"] = "";
+        r["inbox_checksum"] = "";
+        r["inbox_receiver_pubkey_z85"] = "";
+        r["inbox_schema"] = nlohmann::json::array();
+        if (!corr_id.empty())
+            r["correlation_id"] = corr_id;
+        return r;
+    };
+
+    if (!rec)
+    {
+        LOGGER_DEBUG("Broker: ROLE_INFO_REQ uid='{}' not found", uid);
+        return answer(false, "no_such_role", "");
+    }
+
+    // A role with no inbox has no coordinates to withhold and no roster to
+    // wait on, so the gate must not run for it — doing so would push a roster
+    // on behalf of a sender that has nothing to reach.
+    if (rec->endpoint.empty())
+    {
+        LOGGER_DEBUG("Broker: ROLE_INFO_REQ uid='{}' found as {} on '{}', no inbox", uid, found_as,
+                     rec->channel);
+        return answer(false, "no_inbox", rec->channel);
+    }
+
+    // ── I-INBOX-REACHABLE (HEP-CORE-0035 §4.9.7) ─────────────────────────
+    // The one place this hub says where a mailbox is.  A denied handshake is
+    // terminal — it costs the sender the connection and the message on it —
+    // so a sender is not sent to a door that will not open.  The coordinates
+    // travel only once the target has confirmed a roster naming this asker.
+    //
+    // `roster_reachability` takes `roster_mu_` and releases it before
+    // returning: `roster_ack_block()` below takes the same non-recursive
+    // mutex, so the verdict must not be held across it.
+    switch (roster_reachability(uid, asker_uid))
+    {
+    case Reachability::Reachable:
+        break;
+
+    case Reachability::NotYet:
+        // Prompt the target now rather than waiting for its next tick, then
+        // tell the asker to come back.  Addressed by uid: I-DEALER-IDENTITY
+        // (HEP-CORE-0046) makes a role's control-plane routing id its uid and
+        // the broker verifies that at REG admission, so a role-scoped send
+        // needs no identity lookup and does not consult the per-presence
+        // `zmq_identity` copies.
+        send_to_identity(socket, uid, "ROSTER_UPDATE_NOTIFY", roster_ack_block());
+        LOGGER_INFO("Broker: event=InboxNotReachableYet target='{}' asker='{}' — target has not "
+                    "confirmed a roster naming the asker; roster sent to target, asker told to "
+                    "retry (HEP-CORE-0035 §4.9.7)",
+                    uid, asker_uid);
+        return answer(false, "not_reachable_yet", rec->channel);
+
+    case Reachability::AskerAbsent:
+        // Permanent, not pending.  No roster this hub issues can ever name a
+        // role that holds no registration here, so telling the caller to
+        // retry would be a livelock and pushing a roster would change
+        // nothing.
+        LOGGER_WARN("Broker: event=InboxAskerNotRegistered target='{}' asker='{}' — the asker "
+                    "holds no registration on this hub, so no roster this hub issues can name "
+                    "it; answering permanently rather than pending (HEP-CORE-0035 §4.9.7)",
+                    uid, asker_uid);
+        return answer(false, "sender_not_registered", rec->channel);
+    }
+
+    // ── Disclosure ───────────────────────────────────────────────────────
+    // Everything the sender needs to dial, and nothing before it is allowed
+    // to.  HEP-CORE-0027 §3.5: the sender's InboxClient DEALER pins the
+    // receiver's identity pubkey as `curve_serverkey`, so that key travels
+    // here.  It is the receiver's `known_roles` entry (single-key model I6 —
+    // the same key it presents on data sockets).
+    nlohmann::json resp = answer(true, "reachable", rec->channel);
+    resp["inbox_endpoint"] = rec->endpoint;
+    resp["inbox_packing"] = rec->packing;
+    resp["inbox_checksum"] = rec->checksum;
+    resp["inbox_receiver_pubkey_z85"] = [this, &uid]() -> std::string
+    {
+        for (const auto &kr : cfg.known_roles)
+            if (kr.uid == uid)
+                return kr.pubkey_z85;
+        return {};
+    }();
+    if (!rec->schema_json.empty())
+    {
+        try
+        {
+            resp["inbox_schema"] = nlohmann::json::parse(rec->schema_json);
+        }
+        catch (const nlohmann::json::exception &je)
+        {
+            // REG_REQ validation should have rejected this, so reaching here
+            // means stored state is corrupt.  Warn rather than silently
+            // returning an empty schema, which the caller would happily use
+            // and thereby mask the corruption.
+            LOGGER_WARN("Broker: stored inbox_schema_json for channel '{}' {} '{}' is malformed: "
+                        "{}; returning empty array",
+                        rec->channel, found_as, uid, je.what());
+        }
+    }
+    LOGGER_DEBUG("Broker: ROLE_INFO_REQ uid='{}' found as {} on '{}', inbox='{}'", uid, found_as,
+                 rec->channel, rec->endpoint);
     return resp;
 }
 
@@ -6973,7 +7241,9 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState &state)
     {
         pylabhub::utils::security::PeerAuthority::Builder authority;
         for (const auto &kr : pImpl->cfg.known_roles)
+        {
             authority.add_local_role(kr);
+        }
 
         for (const auto &peer : pImpl->cfg.peers)
         {
@@ -6987,6 +7257,15 @@ BrokerService::BrokerService(Config cfg, pylabhub::hub::HubState &state)
                 continue;
             authority.add_federation_peer(peer.hub_uid, peer.pubkey_z85);
         }
+        // Built WITHOUT a version.  This index is the vault's answer to
+        // "who may ever exist here, and whose key is this" — it gates the
+        // broker's own door and names senders, and neither question is
+        // replicated to anyone.  The version that travels belongs to the
+        // roster, which is this index narrowed to the roles currently
+        // registered, and it is carried by `roster_ledger_`
+        // (HEP-CORE-0035 §4.9.2).  Stamping this one with a roster version
+        // would put a number on an object that is not the thing the number
+        // describes.
         pImpl->publish_peer_authority(std::move(authority).build());
     }
 

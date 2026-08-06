@@ -247,8 +247,8 @@ Consequences that are deliberate, not side effects:
 
 - **A test may not opt out.**  Constructing an inbox without CURVE is not a
   lighter-weight test configuration; it is a configuration that must not
-  exist, so a test needing an inbox must arm one (real keypair, seeded
-  allowlist, a live ZAP pump).  When this invariant was introduced it aborted
+  exist, so a test needing an inbox must arm one (real keypair, a bound
+  admission authority, a live ZAP pump).  When this invariant was introduced it aborted
   16 existing tests across two files — every one of them a place a plaintext
   ROUTER was being stood up unnoticed.  They were migrated, not exempted.
 - **Fabricating a malformed frame still requires a real identity.**  Workers
@@ -380,21 +380,31 @@ keypair + HUB-WIDE `known_roles` authorization** (decided 2026-07-17).
 **Authorization scope: hub-wide, NOT channel-scoped.**  The inbox is a
 hub-wide role↔role messaging facility — any role may message any other role,
 not just channel peers — so its authorization boundary is *"is the sender a
-role this hub knows"* (`known_roles` membership), not *"is the sender on my
+role this hub knows AND currently has registered"*, not *"is the sender on my
 data channel."*  An earlier draft scoped it to the data channel's allowlist;
 that was too narrow for the inbox's purpose.
+
+Both halves of that boundary are load-bearing (HEP-CORE-0035 §4.9.2,
+I-ROSTER-PRESENT).  Vault membership says the key is legitimate; current
+registration says the role holding it is here to be the peer dialling in.
+A configured role that is not running is admitted by neither, so its key
+opens no mailbox — which matters because inbox traffic is role-to-role and
+never passes the broker, so nothing else on this plane would notice it
+being used.
 
 - **Inbox ROUTER + DEALER use the role's IDENTITY keypair** on both sides
   (single-key model, per HEP-0036 I6 — same keypair the role uses on its data
   PUSH/PULL; broker mints NO data-plane CURVE keys).  No per-inbox keypair.
-- **Hub-wide `known_roles` authorization.**  The role does NOT hold the hub's
-  `known_roles` roster today (its data ZAP is channel-scoped, seeded from
-  `REG_ACK.initial_allowlist`).  So the broker **distributes the roster**: a
-  `known_roles` field on `REG_ACK` / `CONSUMER_REG_ACK` carries the hub's
-  authorized role pubkeys.  The role registers an inbox `zap_domain` whose
-  PeerAdmission is seeded from that roster — the inbox ROUTER admits any
-  authenticated `known_role` and rejects everyone else (no anonymous /
-  self-asserted senders, closing the plaintext gap).
+- **Hub-wide roster authorization.**  A role's data ZAP is channel-scoped,
+  seeded from `REG_ACK.initial_allowlist`, so it cannot answer a hub-wide
+  question.  The broker therefore **distributes the roster**: a
+  `known_roles` field on `REG_ACK` / `CONSUMER_REG_ACK` carries the roles
+  the hub knows and currently has registered, as `{uid, pubkey}` pairs, with
+  `known_roles_version` alongside (HEP-CORE-0035 §4.9).  The role registers
+  an inbox `zap_domain` whose PeerAdmission asks that roster — the inbox
+  ROUTER admits any authenticated sender the roster vouches for and rejects
+  everyone else (no anonymous / self-asserted senders, closing the plaintext
+  gap).
 - **Sender pins the receiver's identity pubkey.**  `ROLE_INFO_ACK` carries the
   receiver's identity pubkey alongside its inbox endpoint; the DEALER sets
   `curve_serverkey` to it.
@@ -420,13 +430,31 @@ Three consequences bind here:
 - **Lifetime** — inbox lifetime ⊆ role lifetime (closes with role DEREG /
   HEP-0036 §5.7.2 cascade or BRC death, HEP-0036 I3).
 
-**Roster freshness (MVP wrinkle).**  The roster is delivered at registration,
-so a role that registers *after* you is not in your roster until a refresh.
-`known_roles` is static operator config (changes rarely); a change-notify to
-refresh live rosters is a later refinement.
+**Roster freshness.**  The roster is delivered at registration and kept
+current afterwards, because membership moves whenever any role starts or
+stops (I-ROSTER-PRESENT).  Each presence rechecks its own side on every
+periodic tick (HEP-CORE-0035 §4.9.7).  This gate never asks the hub — it
+answers from the list the role holds, always.
 
-`hub_inbox_queue.cpp` has zero CURVE references today; task **#191**
-(P-InboxQueue) implements the wiring above.  See `docs/todo/AUTH_TODO.md`.
+**A refusal is terminal, so reachability is settled before the dial.**
+A denied handshake is not retried by anything — not by the socket, not
+by this layer.  A sender refused once has lost that connection and the
+message it was carrying.
+
+The system therefore does not let a sender knock at a mailbox that
+cannot yet admit it (HEP-CORE-0035 §4.9.7, I-INBOX-REACHABLE).  An inbox
+is located through `ROLE_INFO_REQ` — address, schema, and receiver
+public key all arrive in that answer — so the hub already stands between
+the two parties at the moment it matters.  It discloses the coordinates
+only when the receiver has confirmed a roster naming the sender, and
+otherwise sends the receiver the current list and tells the sender to
+ask again.
+
+The consequence to design against is therefore at *discovery*, not at
+send: **opening an inbox to a role that started after you may report
+"not reachable yet."**  That is an ordinary outcome of a call that can
+already fail for several reasons, and it clears once the receiver
+converges — which the hub prompts rather than waits for.
 
 ---
 
@@ -470,29 +498,41 @@ The rest of §4 details each step.
 
 ### 4.1 Receiver Setup (role host startup)
 
-The inbox ROUTER binds — CURVE-armed with an EMPTY, deny-all ZAP
-allowlist — at **S1** (role-host setup), BEFORE registration.  Binding
-early is what resolves a port-0 endpoint so S2 can advertise the real
-port in REG_REQ; the deny-all arm preserves HEP-CORE-0036 §3.5.1's
-"nothing happens behind the auth door before auth" — the socket exists
-but admits NO peer until the roster arrives.  Only the allowlist SEED
-(lifting deny-all via `set_peer_allowlist`) is deferred to S3
-(`apply_*_reg_ack` / master approval), after the broker has accepted
-the role.  The S1/S2/S3 listing below is the normative sequence.
+The inbox ROUTER binds — CURVE-armed, admitting nobody — at **S1**
+(role-host setup), BEFORE registration.  Binding early is what resolves
+a port-0 endpoint so S2 can advertise the real port in REG_REQ; the
+deny-all arm preserves HEP-CORE-0036 §3.5.1's "nothing happens behind
+the auth door before auth" — the socket exists but admits NO peer until
+the roster arrives.
+
+**The gate asks the role; it holds no list of its own.**  What lifts
+deny-all is the ROLE's roster changing (S3), not a list being pushed
+down to the socket.  A copy parked on the queue would be a second
+representation of the hub's key list, free to disagree with the role's
+own — and the one the ZAP handler consults would be the one nobody
+re-reads after a revocation (HEP-CORE-0035 §4.9.6).  So the queue is
+given a question to ask, once, when the role wires it up, and answers
+`no` to everything until the role has an authority that says otherwise.
+The S1/S2/S3 listing below is the normative sequence.
 
 ```
 S1 (setup_infrastructure_) — BIND + CURVE-ARM DENY-ALL:
   1. Role host reads inbox config (schema, endpoint, buffer_depth, packing).
   2. Build InboxQueue, arm CURVE-server auth (role identity keypair via
      `set_curve_server_identity(kRoleIdentityName, "<uid>:inbox")`), and
-     bind the ROUTER — with an EMPTY (deny-all) ZAP allowlist.  The
+     bind the ROUTER — with NO admission authority bound.  The
      socket is CURVE-armed the instant it binds, so no unauthenticated
-     peer can complete a handshake before the roster arrives; deny-all
-     means NO peer is admitted yet.  Binding at S1 (rather than deferring
-     to S3) resolves port-0 endpoints before S2 advertises them in
-     REG_REQ.  The inbox `zap_domain` ("<uid>:inbox") is DISTINCT from
+     peer can complete a handshake before the roster arrives; an unbound
+     gate means NO peer is admitted yet.  Binding at S1 (rather than
+     deferring to S3) resolves port-0 endpoints before S2 advertises them
+     in REG_REQ.  The inbox `zap_domain` ("<uid>:inbox") is DISTINCT from
      the data channel's — hub-wide known_roles authorization, not the
      channel allowlist (§3.5).
+  2a. The role wires the gate to itself (`set_admission_authority`) as it
+     takes ownership of the queue.  From here the ROUTER answers out of
+     the role's rosters, which are empty — so the posture is unchanged,
+     and there is never a moment where the socket is up with nobody to
+     ask.
 
 S2 (registration) — FATAL on failure:
   3. For EACH presence the role registers (one for producer/consumer
@@ -519,24 +559,25 @@ S2 (registration) — FATAL on failure:
      corresponding `ChannelEntry.producers[*]` (under out_channel) —
      both with identical inbox_endpoint strings.
 
-S3 (apply_*_reg_ack) — SEED THE ROSTER (lift deny-all):
-  5. `merge_inbox_known_roles(ack)` unions this presence's
-       REG_ACK/CONSUMER_REG_ACK `known_roles` into the role's hub-wide
-       inbox roster, then calls
-       `inbox_queue->set_peer_allowlist(<roster as curve PeerIdentities>)`
-       — lifting the ROUTER off its S1 deny-all default.  The inbox is a
+S3 (apply_*_reg_ack) — ADOPT THE ROSTER (the gate's answers change):
+  5. `adopt_inbox_roster(ack, side)` REPLACES what this SIDE holds with
+       the `known_roles` this hub just sent — the input side for
+       CONSUMER_REG_ACK, the output side for REG_ACK.  Nothing is pushed
+       to the socket: the gate wired up at S1 was already asking, and
+       from this point it gets a different answer.  The inbox is a
        hub-wide role<->role facility, so it admits any authenticated
-       known_role (single-key model I6), NOT just channel peers.  Roster
-       and ZAP allowlist move together on every merge.
-       (The ROUTER bind + CURVE arm already happened at S1; S3 only
-       installs the authorization set.)
+       known_role (single-key model I6), NOT just channel peers.
+       A role is admitted if EITHER side's hub vouches for it
+       (HEP-CORE-0035 §4.9 I-ROSTER-COMBINE-ADMIT): a dual-hub processor
+       holds one roster per hub, and neither hub's list may erase the
+       other's.
 ```
 
 The receive thread (`inbox_thread_`: loop { recv_one() → invoke_on_inbox()
 → send_ack() }, under ThreadManager scope per HEP-CORE-0036 §3.5.4
-invariant 4) runs from S1 — but until S3 seeds the roster the ROUTER is
-deny-all, so no message reaches the handler before authorization is
-installed.
+invariant 4) runs from S1 — but until S3 the role's rosters are empty and
+the ROUTER denies everyone, so no message reaches the handler before
+authorization exists.
 
 **Port-0 inbox endpoints remain unsupported.**  HEP-CORE-0021 §16
 (adopted 2026-07-08, closes task #94) enables post-bind endpoint
@@ -597,6 +638,121 @@ TCP/IPC — no hub is in the data path.  Cross-hub inbox messaging
 works automatically as long as the endpoint is network-routable
 from the sender's host (see §13).
 
+#### 4.2.1 Why opening is two phases, and why the first one can refuse
+
+Opening an inbox is **discover, then dial**, and the hub is deliberately
+between the two.  The reason is a property of the transport rather than a
+policy choice:
+
+> **A refused handshake is terminal.**  When the receiver's gate says no,
+> its ZMQ layer answers the authentication exchange with an error and tears
+> the connection down.  The sender's session is *terminated*, not retried —
+> by the library, and independently by this project's socket policy, which
+> stops retrying a connection whose handshake failed.  Nothing reconnects at
+> any layer.  A sender refused once has lost that connection **and the
+> message it was carrying**.
+
+If a sender could dial before the receiver was able to admit it, the cost of
+being early would not be a delay — it would be a silently dropped message
+and a dead socket that never heals.  That is why reachability is settled
+during discovery, where a caller is already prepared for an answer of "no",
+instead of being discovered by attempting.
+
+The receiver's gate answers from the roster it holds, which is the roles its
+hub knows **and currently has registered** (HEP-CORE-0035 §4.9.2).  A role
+that starts later is therefore genuinely absent from an already-running
+peer's list until that peer converges — and the hub, which knows both which
+roster version admitted the sender and which version the receiver has
+confirmed applying, is the only party that can tell whether dialling will
+work.  So it withholds the address until it will (HEP-CORE-0035 §4.9.7,
+I-INBOX-REACHABLE), prompting the receiver rather than waiting for its next
+scheduled check.
+
+**What the hub does NOT promise.**  The asking role's identity on
+`ROLE_INFO_REQ` is a claim, not a proof — that message tier deliberately
+does not bind the body to the proven key, because its subject is a third
+party.  Reachability is therefore an *availability* mechanism, never an
+access control.  The access control is the receiver's own gate, which
+decides on the key the sender proved during the handshake.  A caller that
+misidentifies itself gets a reachability answer about someone else and is
+then refused at the door — it gains nothing and spends its own first
+attempt.  Stated exactly: **the first dial succeeds for a caller that
+identified itself honestly.**
+
+#### 4.2.2 What can fail, and what each failure means
+
+`open_inbox` returns nothing for four distinct reasons.  They are not
+interchangeable, and a caller that treats them alike will either give up on
+something transient or retry something permanent forever.
+
+| Reason | Meaning | Clears by itself? |
+|---|---|---|
+| `no_such_role` | No role by that uid is registered on any hub this sender can reach. | Only if that role starts. |
+| `no_inbox` | The role exists but runs no mailbox — nothing to send to. | No.  It is a property of how that role was configured. |
+| `not_reachable_yet` | The role exists and has a mailbox, but has not yet confirmed a roster naming this sender.  The hub has sent it one. | **Yes** — typically within one hub round trip. |
+| `sender_not_registered` | This sender holds no registration on the hub that owns the target's mailbox, so no roster that hub issues can ever name it. | No.  Retrying is a livelock. |
+
+The transport can also fail the discovery outright (no answer within the
+timeout), which is a connectivity problem rather than an answer.
+
+Once the address is in hand, dialling and sending have their own outcomes.
+`send` returns `0` on an acknowledged delivery and a non-zero code
+otherwise; the two ways it fails are worth telling apart when reading logs:
+
+- **No writable peer** — the connection is gone or was never established, so
+  the frame is refused immediately and dropped.  Fast.
+- **No acknowledgement** — the frame went out and nothing came back within
+  the caller's budget.  Costs the full timeout.
+
+#### 4.2.3 Who retries what
+
+**The framework does not retry anything, and this is deliberate.**  It
+reports outcomes and leaves the decision to the script, because only the
+script knows whether a particular message is still worth sending by the time
+it could be resent.
+
+What the framework *does* guarantee is that retrying is possible and
+informed: the reachability answer says whether waiting will help, and a
+condition that clears is distinguished from one that does not.
+
+The shape a sending script should have:
+
+```
+# Retry at the OPEN, not at the send.
+handle = api.open_inbox(target)
+if handle is None:
+    return                 # try again next cycle; the condition may clear
+slot = handle.acquire()
+slot.value = ...
+rc = handle.send()
+if rc != 0:
+    # The message is gone.  Sending again is a NEW message, and that is
+    # the script's decision — the framework will not make it silently.
+    ...
+```
+
+Two properties this relies on:
+
+- **Loss is reported, never repaired.**  A message's sequence number is
+  consumed when the send is attempted and is *not* reused if it fails, so a
+  dropped message leaves a visible gap in the receiver's per-sender numbering
+  (§4.3).  Renumbering densely on failure would make a lossy link look
+  pristine — the sender would know it dropped traffic and the receiver never
+  would.
+- **Redelivery is not automatic.**  Because the framework never resends, a
+  receiver sees each message at most once, and `on_inbox` needs no
+  idempotence for the framework's benefit.  A script that chooses to resend
+  is creating a second message, with its own sequence number, and owns the
+  duplicate-handling that implies.
+
+**Why the retry belongs at the open rather than at the send.**  The
+condition that clears — `not_reachable_yet` — clears in the *hub's* state,
+not in the socket's.  Re-opening consults the hub again; re-sending on an
+existing handle does not, and if the handle was never obtained there is
+nothing to send on anyway.  A script that loops at the open therefore needs
+no backoff logic of its own for the ordinary startup race: the peer becomes
+reachable and the next cycle succeeds.
+
 ### 4.3 Message Exchange
 
 ```
@@ -608,6 +764,56 @@ Sender (InboxClient):                    Receiver (InboxQueue):
                                            // engine->invoke_on_inbox(...)
                                            inbox_queue_->send_ack(0)
 ```
+
+#### 4.3.1 The complete sequence, both levels
+
+Written out because the application-level exchange and the transport-level
+handshake interleave, and a fault in one surfaces as a symptom in the other.
+Reading only one level is how "the sender waited five seconds and reported no
+acknowledgement" gets diagnosed as a slow receiver when the connection had
+been refused a millisecond after it opened.
+
+**Receiver, at startup.**  The ROUTER is created, given the house socket
+policy, armed as a CURVE server under its own ZAP domain, and — *before*
+`bind()` — that domain is registered with the process's ZAP router, so no
+handshake can arrive un-gated.  Until the role binds its roster in, the gate
+denies everything (§3.5).  The role registers with its hub, adopts the
+roster the acknowledgement carries, and reports the version it now holds.
+
+**Sender, on `open_inbox`.**
+
+| Step | Level | What happens |
+|---|---|---|
+| 1 | app | `ROLE_INFO_REQ` to each of the sender's hubs until one answers |
+| 2 | app | The hub tests reachability; withholds or discloses (§4.2.1) |
+| 3 | app | `ROLE_INFO_ACK` carries endpoint, schema, packing, checksum policy, and the receiver's public key |
+| 4 | — | A client object is built.  **No socket yet** — only layout and buffers |
+| 5 | transport | DEALER created; socket policy applied; routing id set to the sender's uid; CURVE armed with the sender's keypair and the receiver's key as server key |
+| 6 | transport | `connect()` returns immediately — the connection is asynchronous, and a pipe to it exists *before* the handshake completes |
+
+**Then, concurrently.**
+
+| Step | Level | What happens |
+|---|---|---|
+| 7 | transport | Greeting, then the CURVE exchange; the receiver extracts the sender's long-term key |
+| 8 | transport | The receiver's ZMQ layer asks its ZAP router about that key |
+| 9 | app | The gate answers from the roster the role holds — no hub is consulted |
+| 10 | transport | On yes: the handshake completes and the sender's queued frame flows.  On no: an error is returned to the sender, the connection is destroyed, **and any frame already queued on it is discarded** |
+
+**The consequence to internalise:** because a pipe exists from step 6, a
+`send` issued before step 10 *succeeds locally* — it is accepted into a
+connection that may then be torn down.  The sender learns nothing at that
+moment; it learns at its acknowledgement deadline, which is why an
+early-and-refused send is expensive rather than instant.  §4.2.1 is how the
+system avoids reaching step 10 with a "no".
+
+**On success**, the receiver's ROUTER hands the frame up: replay metadata is
+checked, the payload decoded, the sender named from the key it proved rather
+than from anything it claimed, and `on_inbox` invoked.  The acknowledgement
+is sent by the *application* after the handler returns — there is no
+transport-level acknowledgement anywhere in this protocol, which is why "the
+receiver never got it" and "the receiver got it and did not answer" are
+indistinguishable to the sender.
 
 ### 4.4 Shutdown
 
@@ -647,7 +853,22 @@ CONSUMER_REG_REQ payload.  For a dual-hub processor, both hubs
 hold independent copies of the inbox metadata — senders connected
 to either hub can discover the role via the local hub's
 ROLE_INFO_REQ.  No hub-to-hub federation is required for
-discovery; reachability is the operator's network configuration.
+discovery.
+
+**Reachability is two conditions, not one.**  The network must route
+(this section), AND the answering hub must be willing to disclose the
+address (§4.2.1).  The second is per hub: each hub keeps its own roster,
+so a receiver spanning two hubs holds and confirms one roster per side,
+and a sender is disclosed the address only by a hub whose roster the
+receiver has confirmed naming *that* sender.  A sender registered on hub A
+therefore cannot reach the receiver "through" hub B even when B also holds
+the metadata — B's roster does not name it.
+
+That is self-consistent rather than a limitation: a sender queries only
+hubs it holds a connection to, and it holds a connection only where it has
+a presence, so any hub that can answer it is a hub where it is registered
+and therefore rosterable.  Worth stating because it reads like a gap until
+traced.
 
 **Why no hub-side federation here.**  HEP-CORE-0022 (Hub Federation
 Broadcast) is a separate concern (cross-hub broadcasts, peer
@@ -787,6 +1008,17 @@ if ack == 0:
 - Subsequent calls: return cached handle
 - Cache is per-RoleHostCore (shared across script reloads)
 - `api.clear_inbox_cache()` forces fresh broker lookups
+
+**A failed open caches nothing.**  Any of the four refusals in §4.2.2
+returns without creating a client, so a script that loops at the open is
+re-asking the hub each time rather than being handed the same refusal from
+memory — which is what makes `not_reachable_yet` clear on its own.  The
+cache holds successful opens only.
+
+**A cached handle is not a liveness claim.**  It means this sender once
+obtained the target's coordinates and completed a handshake; the peer may
+have stopped since.  `send` reports the outcome per call, and that is the
+only current answer.
 
 ---
 

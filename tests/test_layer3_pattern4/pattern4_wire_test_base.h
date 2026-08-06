@@ -179,6 +179,43 @@ class Pattern4WireTest : public pylabhub::tests::IsolatedProcessTest
             *out_ack = *reply;
     }
 
+    /// Confirm the roster `reg_ack` delivered, so the hub will disclose
+    /// this role's inbox coordinates to the roles that version names
+    /// (HEP-CORE-0035 §4.9.7, I-INBOX-REACHABLE).
+    ///
+    /// A live role does this itself: `RoleAPIBase` reports its version on
+    /// every adoption and on every tick.  A raw wire client has neither, so
+    /// it sends the same `ROSTER_CHECK_NOTIFY` explicitly — this is the
+    /// production message, not a test-only shortcut.
+    ///
+    /// **Call ordering matters.**  Confirm AFTER every role that must reach
+    /// this one has registered, because what is being confirmed is the
+    /// version this role's REG_ACK carried, and only roles admitted at or
+    /// before that version are covered by it.
+    ///
+    /// The trailing ROLE_PRESENCE_REQ is a barrier, not a query.
+    /// ROSTER_CHECK_NOTIFY is fire-and-forget, so nothing else would tell
+    /// the caller the broker had consumed it; a reply on the SAME
+    /// connection does, because the broker takes one DEALER's messages in
+    /// order.  Without it the following ROLE_INFO_REQ — on a different
+    /// connection — could overtake the confirmation and fail by timing.
+    void confirm_roster(BrokerWireClient &client, const std::string &uid,
+                        const nlohmann::json &reg_ack)
+    {
+        nlohmann::json check;
+        check["role_uid"] = uid;
+        check["known_roles_version"] = reg_ack.value("known_roles_version", std::uint64_t{0});
+        client.send("ROSTER_CHECK_NOTIFY", check);
+
+        nlohmann::json probe;
+        probe["role_uid"] = uid;
+        auto barrier = client.request("ROLE_PRESENCE_REQ", probe, "ROLE_PRESENCE_ACK",
+                                      std::chrono::milliseconds{pylabhub::kLongTimeoutMs});
+        ASSERT_TRUE(barrier.has_value())
+            << "barrier after ROSTER_CHECK_NOTIFY timed out for " << uid
+            << " — the broker did not answer on the connection that carried the confirmation";
+    }
+
     /// Producer HEARTBEAT_NOTIFY (fire-and-forget) → clears the R6
     /// producer-kLive gate that CONSUMER_REG_REQ trips (HEP-CORE-0036
     /// §5.2 / HEP-CORE-0023 §2.5.3).  The old BRC `register_consumer`

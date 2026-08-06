@@ -160,6 +160,10 @@ PLH_WIRE_VALIDATED(ValidatedChannelAuthAppliedReq, ::pylabhub::wire::ChannelAuth
 PLH_WIRE_VALIDATED(ValidatedHeartbeatNotify, ::pylabhub::wire::HeartbeatNotifyBody);
 PLH_WIRE_VALIDATED(ValidatedGetChannelAuthReq, ::pylabhub::wire::GetChannelAuthReqBody);
 PLH_WIRE_VALIDATED(ValidatedDiscReq, ::pylabhub::wire::DiscReqBody);
+// ROSTER_CHECK_NOTIFY is fire-and-forget like HEARTBEAT_NOTIFY: the hub
+// replies with ROSTER_UPDATE_NOTIFY only when the reported version is
+// stale (HEP-CORE-0035 §4.9.7), so there is no ACK to correlate.
+PLH_WIRE_VALIDATED(ValidatedRosterCheckNotify, ::pylabhub::wire::RosterCheckNotifyBody);
 
 #undef PLH_WIRE_VALIDATED
 
@@ -228,8 +232,8 @@ using ReceivedMessage =
     std::variant<ValidatedRegReq, ValidatedConsumerRegReq, ValidatedDeregReq,
                  ValidatedConsumerDeregReq, ValidatedEndpointUpdateReq,
                  ValidatedChannelAuthAppliedReq, ValidatedHeartbeatNotify,
-                 ValidatedGetChannelAuthReq, ValidatedDiscReq, ValidatedChannelBroadcastSend,
-                 ValidatedRawControl, RejectedMessage>;
+                 ValidatedGetChannelAuthReq, ValidatedDiscReq, ValidatedRosterCheckNotify,
+                 ValidatedChannelBroadcastSend, ValidatedRawControl, RejectedMessage>;
 
 // ── Admission binder ─────────────────────────────────────────────────────
 //
