@@ -127,18 +127,25 @@ order removes that lever, which is why §4.9.5 chose it.
 
 ---
 
-## 6. Status — code landed, the distinguishing test is NOT written
+## 6. Status — COMPLETE and mutation-verified
 
-Changes (a)-(e) are implemented; both sweeps green (Debug 2779/2779,
-Release 2776/2776).
+All of (a)-(f) implemented.  Debug 2780/2780, Release 2777/2777.
 
-**(f) is still owed, and nothing yet proves the fix.**  Every existing
-inbox test uses a sender whose routing id and uid are the same string,
-so all 56 pass identically before and after.  They prove nothing broke;
-they do not prove the identity now comes from the key.
+**(f) landed as `InboxQueueTest.SenderName_ComesFromTheKey_NotTheRoutingId`.**
+The sender proves its own key and presents another role's uid as its ZMQ
+identity; the receiver must report the uid the key belongs to.  One
+assertion covers all three §3.7 uses, because reading the frame instead
+would feed the impersonated name to the application, the replay guard
+and the sequence map alike.
 
-The test that would: a raw DEALER proving its own key while presenting
-another role's uid as its routing id, asserting `sender_id` is the
-proven one.  Until it exists this change is unverified against its own
-defect — which is exactly the state the auth-list arc showed is easy to
-mistake for coverage.
+**Mutation-verified, and the result is worth keeping.**  Reverting the
+one line to `sender_id = route_id`:
+
+  - `SenderName_ComesFromTheKey_NotTheRoutingId` FAILS
+  - `SenderUid_IsPreserved` still PASSES
+
+The second half is the point.  The pre-existing test uses a sender whose
+routing id and uid are the same string, so it cannot tell a derived
+identity from a copied frame — it passed for the entire life of the
+defect.  The distinguishing case is the two disagreeing, and nothing in
+56 inbox tests had ever put them in disagreement.

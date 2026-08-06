@@ -15,6 +15,7 @@ int recv_one_timeout_returns_null();
 int multiple_messages();
 int double_stop_no_throw();
 int sender_uid_is_preserved();
+int sender_name_comes_from_the_key();
 int wrong_frame_count_drops();
 int gap_count_tracks_dropped_sends();
 int replay_and_skew_dropped();

@@ -437,6 +437,86 @@ int sender_uid_is_preserved()
         "hub_inbox_queue::sender_uid_is_preserved", PLH_INBOX_MODS);
 }
 
+// ─── Test #5b: SenderNameComesFromTheKey_NotTheRoutingId ────────────────────
+//
+// The distinguishing case for HEP-CORE-0027 §3.7.  Every other inbox test
+// uses a sender whose routing id and uid are the same string, so all of them
+// pass whether the receiver reads the frame or resolves the key — they prove
+// nothing broke, not that the identity is derived.
+//
+// Here the two DISAGREE.  The sender proves its own key and presents another
+// role's uid as its ZMQ identity, which is a label it chooses and nothing
+// stops it choosing.  The receiver must report the uid that key belongs to.
+//
+// Reading the frame instead yields the impersonated name, which is both the
+// attribution the receiving script would act on and the key the replay guard
+// and the sequence map would use — so this one assertion covers all three
+// uses §3.7 lists.
+int sender_name_comes_from_the_key()
+{
+    return run_gtest_worker(
+        []
+        {
+            LogCaptureFixture log_cap;
+            log_cap.Install();
+
+            // What the sender's key really belongs to, and the label it lies
+            // with.  The victim name is a plausible peer, not a marker
+            // string: the point is that it would be believed.
+            const std::string kTrueUid = "prod.true.uid12345678";
+            const std::string kClaimedUid = "prod.victim.uid87654321";
+
+            auto q = InboxQueue::bind_at("tcp://127.0.0.1:0", uint32_schema());
+            ASSERT_NE(q, nullptr);
+            const auto inbox_keys = arm_inbox_queue(*q, "test.inbox");
+            ASSERT_TRUE(q->start());
+            pylabhub::utils::security::ZapPumpThread inbox_pump;
+
+            // The routing id is the CLAIMED uid — InboxClient sets ZMQ_IDENTITY
+            // from this argument, so a caller picks it freely.
+            auto c = InboxClient::connect_to(q->actual_endpoint(), kClaimedUid, uint32_schema());
+            ASSERT_NE(c, nullptr);
+            // The roster names this key as kTrueUid.  The receiver's only
+            // route to a name.
+            admit_and_arm_client(*q, *c, inbox_keys, kTrueUid);
+            ASSERT_TRUE(c->start());
+
+            void *buf = c->acquire();
+            ASSERT_NE(buf, nullptr);
+            uint32_t v = 7;
+            std::memcpy(buf, &v, sizeof(v));
+
+            const InboxItem *item = nullptr;
+            auto fut = std::async(std::launch::async,
+                                  [&]
+                                  {
+                                      item = q->recv_one(ms{2000});
+                                      if (item != nullptr)
+                                          q->send_ack(0);
+                                      return item != nullptr;
+                                  });
+
+            std::this_thread::sleep_for(ms{30});
+            const uint8_t ack = c->send(ms{1500});
+            EXPECT_EQ(ack, 0u) << "send timed out or got non-zero ack=" << static_cast<int>(ack);
+
+            ASSERT_TRUE(fut.get());
+            ASSERT_NE(item, nullptr);
+            EXPECT_EQ(item->sender_id, kTrueUid)
+                << "the receiver named its sender from the routing frame, so a peer can be "
+                   "attributed as any role it cares to name (HEP-CORE-0027 §3.7)";
+            EXPECT_NE(item->sender_id, kClaimedUid)
+                << "the impersonated name reached the application";
+
+            c->stop();
+            q->stop();
+
+            log_cap.AssertNoUnexpectedLogWarnError();
+            log_cap.Uninstall();
+        },
+        "hub_inbox_queue::sender_name_comes_from_the_key", PLH_INBOX_MODS);
+}
+
 // ─── Test #6: WrongFrameCount_Drops ─────────────────────────────────────────
 //
 // Scope: the receiver's ENVELOPE-SHAPE guard, not the payload codec.
@@ -1631,6 +1711,8 @@ struct HubInboxQueueRegistrar
                     return double_stop_no_throw();
                 if (sc == "sender_uid_is_preserved")
                     return sender_uid_is_preserved();
+                if (sc == "sender_name_comes_from_the_key")
+                    return sender_name_comes_from_the_key();
                 if (sc == "wrong_frame_count_drops")
                     return wrong_frame_count_drops();
                 if (sc == "gap_count_tracks_dropped_sends")

@@ -53,6 +53,15 @@ TEST_F(InboxQueueTest, SenderUid_IsPreserved)
     ExpectWorkerOk(w);
 }
 
+// The routing id and the proven key DISAGREE here — every other inbox test
+// has them equal, so this is the only one that can tell a derived identity
+// from a copied frame (HEP-CORE-0027 §3.7).
+TEST_F(InboxQueueTest, SenderName_ComesFromTheKey_NotTheRoutingId)
+{
+    auto w = SpawnWorker("hub_inbox_queue.sender_name_comes_from_the_key");
+    ExpectWorkerOk(w);
+}
+
 // Envelope-shape guard: `recv_one` requires the four-frame envelope, so a
 // wrongly-shaped message is dropped and counted before the payload is parsed.
 // Frame magic is NOT tested here — it belongs to the shared decoder and is
