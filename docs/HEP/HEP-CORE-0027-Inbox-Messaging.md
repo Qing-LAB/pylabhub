@@ -220,7 +220,7 @@ replay-metadata frame (§3.6):
 > its CURVE handshake proved (HEP-CORE-0035 §4.2), and that is what
 > the inbox MUST use for all three security-relevant purposes: the
 > sender reported to the receiving application, the replay-guard key
-> (§3.6), and the per-sender sequence state (§8).  Keying any of
+> (§3.6), and the per-sender sequence state (§3).  Keying any of
 > those on the routing id lets one sender be attributed as another,
 > and lets a sender obtain a fresh replay window by changing the id
 > it presents.  See HEP-CORE-0035 §2, "The routing id is a reply

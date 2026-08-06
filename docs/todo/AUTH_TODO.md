@@ -88,6 +88,19 @@ Remaining: bookkeeping and the commit.  Full record, including the rejected
 alternatives and the reverted test backdoor, in
 `docs/archive/transient-2026-08-06/PLAN_auth_list_replication.md`.
 
+**⚠ NEXT — the inbox still takes its sender from a frame the sender writes
+(task #83 slice 4).**  `hub_inbox_queue.cpp:567` reads the ZMQ routing id and
+uses it as the replay key, the per-sender sequence key, and the name the
+receiving script sees.  The CURVE handshake proves a key and ZAP hands it back
+as `User-Id`, but the gate returns `bool` and discards it.  HEP-CORE-0027 §3.7
+already forbids this in a MUST and §3.5 names the function
+(`attribute_sender`), so **there is no design work here** — the code simply
+does not implement what two HEPs specify.  Scope, checks and rejected
+alternatives: `docs/tech_draft/PLAN_inbox_sender_from_proven_key.md`.
+Honest bound on the exposure: the stock `InboxClient` sets its routing id to
+its own uid, so no running deployment is mis-attributing today; the hole is
+open to a hand-rolled client.
+
 **🟡 PARTLY CLOSED — Verified peer identity (task #83; design ratified
 2026-07-27).**
 The CURVE handshake proves which key is on a connection, and the broker
