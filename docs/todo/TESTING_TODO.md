@@ -298,10 +298,29 @@ consulting one side and consulting both give the same verdict.
 
 What is needed: a processor whose input and output sides register with
 DIFFERENT hubs, with the sender known to only one of them.  Delivery then
-proves the OR, and the mutation — consulting a single side — fails it.  This is
-also the only configuration where I-ROSTER-ONE-HOLDER has teeth: a role-wide
-replace would let one hub's roster erase the other's, and one hub cannot show
-that either.
+proves the OR, and the mutation — consulting a single side — fails it.  Both
+directions, since input-only and output-only are separate paths through one
+combine.
+
+Two more cases live only here, and only after #83 slice 4 wires attribution:
+
+**Disagreement (I-ROSTER-COMBINE-NAME).**  Hub A names key K "alice", hub B
+names the same K "bob".  The message is **delivered**, the script sees the
+**input** side's name (fixed order, so the answer is deterministic), and the
+conflict is **logged** for the operator who configured it.  Asserting the log
+line is what pins the real requirement: to log a disagreement you must consult
+BOTH sides, so a short-circuit on first match cannot satisfy this.
+Do not "harden" this into a refusal.  Fail-closed would let a broken or
+hostile hub silence a healthy one by claiming its keys under wrong names; the
+fixed order is what takes that lever away.  Within a single hub the strict
+rule already applies and is fatal at build time
+(`security/pubkey_origin.cpp:45-63`) — different situation, different rule,
+already homed.
+
+**I-ROSTER-ONE-HOLDER has teeth only here.**  Adoption replaces one side and
+never the other; a role-wide replace would let one hub's roster erase the
+other's and start refusing senders from a hub that said nothing.  Push a new
+roster to ONE side, assert the other side's senders still get in.
 
 ### ⚠ OPEN — `channel_broadcast` has no L3 three-engine parity test (#98, 2026-08-02)
 
