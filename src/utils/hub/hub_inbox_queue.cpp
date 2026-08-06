@@ -17,7 +17,7 @@
 #include "utils/logger.hpp"
 #include "utils/scope_guard.hpp" // make_scope_guard — start() failure unwind
 #include "utils/zmq_context.hpp"
-#include "utils/zmq_socket_policy.hpp"   // send_multipart_atomic (house ZMQ rules)
+#include "utils/zmq_socket_policy.hpp"         // send_multipart_atomic (house ZMQ rules)
 #include "utils/curve_socket.hpp"              // arm_curve_server / arm_curve_client
 #include "utils/security/key_store.hpp"        // kRoleIdentityName, secure().keys()
 #include "utils/security/secure_subsystem.hpp" // secure()
@@ -69,7 +69,13 @@ struct InboxQueueImpl
     std::vector<std::byte> decode_buf_;
     // Frame receive buffer — pre-allocated to max_frame_sz to avoid per-call heap allocation.
     std::vector<char> frame_recv_buf_;
-    std::string current_sender_id_; // set by recv_one, read by send_ack
+    // The ROUTER address the last message came in on — set by recv_one, read
+    // by send_ack to route the receipt back.  Deliberately NOT the sender's
+    // identity: that is `current_item_.sender_id`, derived from the proven
+    // key.  They agree whenever a client sets its routing id to its own uid,
+    // which the stock InboxClient does, and must not be conflated because
+    // nothing requires a client to do that (HEP-CORE-0027 §3.7).
+    std::string current_route_id_;
 
     // Current item (returned by recv_one; valid until next recv_one)
     InboxItem current_item_;
@@ -82,6 +88,11 @@ struct InboxQueueImpl
     std::atomic<uint64_t> recv_gap_count_{0};
     std::atomic<uint64_t> checksum_error_count_{0};
     std::atomic<uint64_t> recv_replay_reject_count_{0};
+    /// Frames dropped because no name could be derived from the proven key.
+    /// One counter, not one per verdict — the verdict is in the log line, and
+    /// four counters would be four things to keep for a distinction only a
+    /// log reader needs.
+    std::atomic<uint64_t> recv_unattributed_count_{0};
 
     // Replay defense (HEP-CORE-0027 §3.6) — sliding-window nonce dedup
     // keyed by sender identity, the SAME `ReplayGuard` mechanism the hub
@@ -89,7 +100,9 @@ struct InboxQueueImpl
     // instance (the inbox receiver is a separate process from the hub).
     pylabhub::utils::ReplayGuard replay_guard_;
 
-    // Sequence tracking — per-sender (keyed by sender_id from ZMQ identity frame)
+    // Sequence tracking — per-sender, keyed by the uid resolved from the
+    // proven key (HEP-CORE-0027 §3.7).  Keyed on the routing id it would let
+    // a sender reset another's expected sequence, or its own.
     // A single global counter is meaningless with multiple senders; each sender's
     // sequence is independent and wraps independently.
     std::unordered_map<std::string, uint64_t> sender_expected_seq_;
@@ -107,7 +120,7 @@ struct InboxQueueImpl
     // the ZapRouter pump thread — atomic, so the read is lock-free as the
     // reentrance contract prefers, and the shared_ptr keeps the callable
     // alive for the duration of a call that races a rebind.
-    std::atomic<std::shared_ptr<const InboxQueue::AdmitsPubkey>> admits_{nullptr};
+    std::atomic<std::shared_ptr<const InboxQueue::InboxAuthority>> authority_{nullptr};
 
     // RAII registration with the process ZapRouter; destructor unregisters
     // the domain.  Engaged in start() (register_domain before bind), reset
@@ -274,7 +287,6 @@ static std::array<uint8_t, 8> compute_inbox_schema_tag(const std::vector<ZmqSche
     return tag;
 }
 
-
 // ── ACK frame (HEP-CORE-0027 §3.7, HEP-CORE-0047 §3.0) ──────────────────────
 // The ACK rides the SAME typed-data codec as the message it acknowledges —
 // `wire_detail` is the only msgpack coder in the tree and nothing bypasses it.
@@ -303,8 +315,7 @@ const std::vector<wire_detail::WireFieldDesc> &inbox_ack_defs()
 /// is up (both call sites run only after `start()`).
 const std::array<uint8_t, 8> &inbox_ack_tag()
 {
-    static const std::array<uint8_t, 8> t =
-        compute_inbox_schema_tag(inbox_ack_fields(), "aligned");
+    static const std::array<uint8_t, 8> t = compute_inbox_schema_tag(inbox_ack_fields(), "aligned");
     return t;
 }
 } // namespace
@@ -472,8 +483,7 @@ bool InboxQueue::start()
     }
     catch (...)
     {
-        LOGGER_ERROR("[hub::InboxQueue] start failed for '{}': unknown exception",
-                     pImpl->endpoint);
+        LOGGER_ERROR("[hub::InboxQueue] start failed for '{}': unknown exception", pImpl->endpoint);
         return false;
     }
 
@@ -564,9 +574,49 @@ const InboxItem *InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
         return nullptr;
     }
 
-    std::string sender_id = parts[0].to_string();
+    // Frame 0 is the ROUTER routing id.  It is an ACK return address and
+    // NOTHING else: a DEALER picks its own, so it is a label the sender wrote
+    // (HEP-CORE-0027 §3.7).
+    std::string route_id = parts[0].to_string();
     // parts[1] is the empty delimiter (size==0, ROUTER/DEALER pattern).
     // parts[2] is the replay-metadata frame; parts[3] is the msgpack payload.
+
+    // ── Who sent this (HEP-CORE-0027 §3.7) ───────────────────────────────
+    // The name comes from the key the CURVE handshake PROVED, never from the
+    // frame above.  libzmq stamps the ZAP metadata on every part, so frame 0
+    // carries the attestation as well as the address — the same frame the
+    // control plane reads for this (`WireEnvelope::parse_router_recv`).
+    //
+    // Keying the three identity uses below on the routing id instead would
+    // let one sender be attributed as another AND let a sender earn a fresh
+    // replay window by presenting a new id, which is why this is derived
+    // once, here, before any of them.
+    //
+    // The optional goes in as-is: `attribute_sender` answers `no_attestation`
+    // for an absent one, so an unarmed socket needs no separate branch.
+    std::string sender_id;
+    {
+        namespace sec = pylabhub::utils::security;
+        auto authority = pImpl->authority_.load(std::memory_order_acquire);
+        const auto attested = sec::AttestedKey::from_message(pImpl->socket, parts[0]);
+        const auto who = (authority && authority->name_of) ? authority->name_of(attested)
+                                                           : sec::AttributedSender{};
+        if (who.verdict != sec::ClaimVerdict::accepted)
+        {
+            // Unnameable is undeliverable.  A message whose sender cannot be
+            // named has no replay key, no sequence state and nothing to
+            // report to the application — and admitting it would mean
+            // inventing one of those.  Reachable for a federation peer
+            // dialling a role mailbox (`kind_not_permitted`), and for any
+            // frame arriving before the role binds its authority.
+            pImpl->recv_unattributed_count_.fetch_add(1, std::memory_order_relaxed);
+            LOGGER_WARN("[hub::InboxQueue] dropping frame with no attributable sender: "
+                        "verdict={} route_id='{}' (HEP-CORE-0027 §3.7)",
+                        sec::to_string(who.verdict), route_id);
+            return nullptr;
+        }
+        sender_id = who.uid;
+    }
 
     // ── Replay defense (HEP-CORE-0027 §3.6) ──────────────────────────────
     // Skew-check the wall_ts, then dedup the nonce via the shared
@@ -616,8 +666,8 @@ const InboxItem *InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
 
     try
     {
-        auto frame = wire_detail::decode_frame(payload.data(), payload.size(),
-                                               pImpl->schema_defs_.size());
+        auto frame =
+            wire_detail::decode_frame(payload.data(), payload.size(), pImpl->schema_defs_.size());
 
         const auto &env = frame.env;
         if (!env.valid || env.payload_size != pImpl->schema_defs_.size())
@@ -690,9 +740,9 @@ const InboxItem *InboxQueue::recv_one(std::chrono::milliseconds timeout) noexcep
         return nullptr;
     }
 
-    pImpl->current_sender_id_ = std::move(sender_id);
+    pImpl->current_route_id_ = std::move(route_id);
     pImpl->current_item_.data = pImpl->decode_buf_.data();
-    pImpl->current_item_.sender_id = pImpl->current_sender_id_;
+    pImpl->current_item_.sender_id = std::move(sender_id);
     return &pImpl->current_item_;
 }
 
@@ -705,7 +755,7 @@ void InboxQueue::send_ack(uint8_t code) noexcept
     if (!pImpl || !pImpl->socket)
         return;
 
-    const std::string &id = pImpl->current_sender_id_;
+    const std::string &id = pImpl->current_route_id_;
 
     try
     {
@@ -778,12 +828,12 @@ void InboxQueue::set_curve_server_identity(std::string identity_key_name, std::s
     pImpl->zap_domain_ = std::move(zap_domain);
 }
 
-void InboxQueue::set_admission_authority(AdmitsPubkey admits)
+void InboxQueue::set_admission_authority(InboxAuthority authority)
 {
     if (!pImpl)
         return;
-    pImpl->admits_.store(std::make_shared<const AdmitsPubkey>(std::move(admits)),
-                         std::memory_order_release);
+    pImpl->authority_.store(std::make_shared<const InboxAuthority>(std::move(authority)),
+                            std::memory_order_release);
 }
 
 bool InboxQueue::set_peer_allowlist(pylabhub::utils::security::PeerAllowlist /*allowlist*/)
@@ -813,10 +863,10 @@ bool InboxQueue::is_peer_allowed(const pylabhub::utils::security::PeerIdentity &
         return false;
     // No authority bound == deny-all (secure default between the S1 bind and
     // the role binding itself in).
-    auto admits = pImpl->admits_.load(std::memory_order_acquire);
-    if (!admits || !*admits)
+    auto authority = pImpl->authority_.load(std::memory_order_acquire);
+    if (!authority || !authority->admits)
         return false;
-    return (*admits)(peer.data);
+    return authority->admits(peer.data);
 }
 
 // ============================================================================
@@ -1047,8 +1097,8 @@ uint8_t InboxClient::send(std::chrono::milliseconds ack_timeout) noexcept
         // rest of them in `zmq_socket_policy.hpp` and applies to any
         // multipart sender rather than to this one message format.
         if (!pylabhub::utils::send_multipart_atomic(
-                pImpl->socket, {zmq::buffer("", 0),                    // empty delimiter
-                                zmq::buffer(meta, kInboxMetaLen),      // replay metadata
+                pImpl->socket, {zmq::buffer("", 0),               // empty delimiter
+                                zmq::buffer(meta, kInboxMetaLen), // replay metadata
                                 zmq::buffer(pImpl->sbuf_.data(), pImpl->sbuf_.size())}))
         {
             pImpl->send_blocked_count_.fetch_add(1, std::memory_order_relaxed);

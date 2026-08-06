@@ -144,15 +144,49 @@ inline InboxCurve arm_inbox_queue(InboxQueue &q, const char *domain)
 ///
 /// Stands in for the role, which is what binds the authority in production
 /// (`RoleAPIBase::set_inbox_queue`) and answers out of its replicated roster.
-inline void admit_sender(InboxQueue &q, const InboxCurve &k)
+/// @param sender_uid  the uid the sender's key resolves to.  Required, and it
+///        must be the uid that sender really uses: the receiver now names its
+///        sender from the proven key (HEP-CORE-0027 §3.7), so a made-up value
+///        here would make `InboxItem::sender_id` agree with the harness rather
+///        than with the sender.
+inline void admit_authority(InboxQueue &q, const std::string &sender_pub,
+                            const std::string &sender_uid)
 {
-    q.set_admission_authority([admitted = k.send_pub](const std::string &pubkey_z85)
-                              { return pubkey_z85 == admitted; });
+    namespace sec = pylabhub::utils::security;
+
+    // A real PeerAuthority over one entry — the same object a role builds from
+    // REG_ACK.known_roles, answering both questions from one table.  A pair of
+    // hand-rolled lambdas would be a second implementation of the combine,
+    // free to admit a key the naming half cannot resolve.
+    sec::PeerAuthority::Builder builder;
+    builder.add_local_role(sec::RosterEntry{sender_uid, sender_pub});
+    auto authority = std::make_shared<const sec::PeerAuthority>(std::move(builder).build(1));
+
+    q.set_admission_authority(InboxQueue::InboxAuthority{
+        [authority](const std::string &pubkey_z85)
+        {
+            try
+            {
+                return authority->admits(sec::Z85PublicKey::validate(pubkey_z85));
+            }
+            catch (const std::invalid_argument &)
+            {
+                return false;
+            }
+        },
+        [authority](const std::optional<sec::AttestedKey> &attested)
+        { return authority->attribute_sender(attested); }});
 }
 
-inline void admit_and_arm_client(InboxQueue &q, InboxClient &c, const InboxCurve &k)
+inline void admit_sender(InboxQueue &q, const InboxCurve &k, const std::string &sender_uid)
 {
-    admit_sender(q, k);
+    admit_authority(q, k.send_pub, sender_uid);
+}
+
+inline void admit_and_arm_client(InboxQueue &q, InboxClient &c, const InboxCurve &k,
+                                 const std::string &sender_uid)
+{
+    admit_sender(q, k, sender_uid);
     c.set_curve_client_identity("inbox_send_id", k.recv_pub);
 }
 
@@ -181,7 +215,7 @@ int bind_and_connect_basic()
 
             auto c = InboxClient::connect_to(ep, "prod.test.uid00000001", uint32_schema());
             ASSERT_NE(c, nullptr);
-            admit_and_arm_client(*q, *c, inbox_keys);
+            admit_and_arm_client(*q, *c, inbox_keys, "prod.test.uid00000001");
             ASSERT_TRUE(c->start());
 
             void *buf = c->acquire();
@@ -268,7 +302,7 @@ int multiple_messages()
             auto c = InboxClient::connect_to(q->actual_endpoint(), "prod.multi.uid00000001",
                                              uint32_schema());
             ASSERT_NE(c, nullptr);
-            admit_and_arm_client(*q, *c, inbox_keys);
+            admit_and_arm_client(*q, *c, inbox_keys, "prod.multi.uid00000001");
             ASSERT_TRUE(c->start());
 
             const uint32_t kValues[3] = {0x11111111, 0x22222222, 0x33333333};
@@ -365,7 +399,7 @@ int sender_uid_is_preserved()
 
             auto c = InboxClient::connect_to(q->actual_endpoint(), kSenderId, uint32_schema());
             ASSERT_NE(c, nullptr);
-            admit_and_arm_client(*q, *c, inbox_keys);
+            admit_and_arm_client(*q, *c, inbox_keys, kSenderId);
             ASSERT_TRUE(c->start());
 
             void *buf = c->acquire();
@@ -441,7 +475,7 @@ int wrong_frame_count_drops()
             ASSERT_NE(sock, nullptr);
 
             const std::string id = "MALFORMED-FRAME-SENDER";
-            admit_sender(*q, inbox_keys);
+            admit_sender(*q, inbox_keys, id);
             zmq_setsockopt(sock, ZMQ_IDENTITY, id.c_str(), id.size());
             // The receiver is CURVE-only.  This worker fabricates a bad
             // ENVELOPE; it is not testing an unauthenticated peer, so it
@@ -528,7 +562,7 @@ int gap_count_tracks_dropped_sends()
             auto c = InboxClient::connect_to(q->actual_endpoint(), "prod.gap.uid000000001",
                                              uint32_schema());
             ASSERT_NE(c, nullptr);
-            admit_and_arm_client(*q, *c, inbox_keys);
+            admit_and_arm_client(*q, *c, inbox_keys, "prod.gap.uid000000001");
             ASSERT_TRUE(c->start());
 
             // Fire-and-forget so the loop is bounded by the socket, not by ACK
@@ -576,7 +610,8 @@ int gap_count_tracks_dropped_sends()
             }
             ASSERT_GT(c->send_blocked_count(), blocked_before)
                 << "the receiver's queue never filled, so no message was lost and "
-                   "there is no gap to observe (attempts=" << attempts << ")";
+                   "there is no gap to observe (attempts="
+                << attempts << ")";
 
             // Keep pushing briefly so the drops are unambiguously in the middle
             // of the stream rather than only at its tail.
@@ -600,7 +635,8 @@ int gap_count_tracks_dropped_sends()
                 EXPECT_EQ(item->gap, hole)
                     << "a message's gap must name exactly the sequence numbers missing "
                        "before it — that is what tells a handler WHICH state it lost "
-                       "(seq=" << item->seq << " prev=" << last_seq << ")";
+                       "(seq="
+                    << item->seq << " prev=" << last_seq << ")";
                 observed_gap_total += item->gap;
                 last_seq = item->seq;
                 q->send_ack(0);
@@ -666,7 +702,7 @@ int replay_and_skew_dropped()
             void *sock = zmq_socket(ctx, ZMQ_DEALER);
             ASSERT_NE(sock, nullptr);
             const std::string id = "REPLAY-SENDER";
-            admit_sender(*q, inbox_keys);
+            admit_sender(*q, inbox_keys, id);
             zmq_setsockopt(sock, ZMQ_IDENTITY, id.c_str(), id.size());
             // The receiver is CURVE-only.  This worker fabricates a bad
             // PAYLOAD; it is not testing an unauthenticated peer, so it
@@ -747,7 +783,7 @@ int ack_code_3_handler_error()
             auto c = InboxClient::connect_to(q->actual_endpoint(), "prod.ackerr.uid00000001",
                                              uint32_schema());
             ASSERT_NE(c, nullptr);
-            admit_and_arm_client(*q, *c, inbox_keys);
+            admit_and_arm_client(*q, *c, inbox_keys, "prod.ackerr.uid00000001");
             ASSERT_TRUE(c->start());
 
             void *buf = c->acquire();
@@ -890,7 +926,7 @@ int schema_mismatch_different_type_drops_frame()
             std::vector<ZmqSchemaField> float64_schema = {{"float64", 1, 0}};
             auto c = InboxClient::connect_to(q->actual_endpoint(), "MISMATCH-01", float64_schema);
             ASSERT_NE(c, nullptr);
-            admit_and_arm_client(*q, *c, inbox_keys);
+            admit_and_arm_client(*q, *c, inbox_keys, "MISMATCH-01");
             ASSERT_TRUE(c->start());
 
             void *buf = c->acquire();
@@ -948,7 +984,7 @@ int schema_mismatch_different_size_drops_frame()
             std::vector<ZmqSchemaField> uint64_schema = {{"uint64", 1, 0}};
             auto c = InboxClient::connect_to(q->actual_endpoint(), "MISMATCH-02", uint64_schema);
             ASSERT_NE(c, nullptr);
-            admit_and_arm_client(*q, *c, inbox_keys);
+            admit_and_arm_client(*q, *c, inbox_keys, "MISMATCH-02");
             ASSERT_TRUE(c->start());
 
             void *buf = c->acquire();
@@ -1002,7 +1038,7 @@ int checksum_enforced_roundtrip()
             auto c = InboxClient::connect_to(q->actual_endpoint(), "CKSUM-ENF", uint32_schema());
             ASSERT_NE(c, nullptr);
             c->set_checksum_policy(ChecksumPolicy::Enforced);
-            admit_and_arm_client(*q, *c, inbox_keys);
+            admit_and_arm_client(*q, *c, inbox_keys, "CKSUM-ENF");
             ASSERT_TRUE(c->start());
 
             void *buf = c->acquire();
@@ -1061,7 +1097,7 @@ int checksum_manual_no_stamp_receiver_rejects()
             auto c = InboxClient::connect_to(q->actual_endpoint(), "CKSUM-MAN", uint32_schema());
             ASSERT_NE(c, nullptr);
             c->set_checksum_policy(ChecksumPolicy::Manual); // no auto-stamp
-            admit_and_arm_client(*q, *c, inbox_keys);
+            admit_and_arm_client(*q, *c, inbox_keys, "CKSUM-MAN");
             ASSERT_TRUE(c->start());
 
             void *buf = c->acquire();
@@ -1115,7 +1151,7 @@ int checksum_none_roundtrip()
             auto c = InboxClient::connect_to(q->actual_endpoint(), "CKSUM-NONE", uint32_schema());
             ASSERT_NE(c, nullptr);
             c->set_checksum_policy(ChecksumPolicy::None);
-            admit_and_arm_client(*q, *c, inbox_keys);
+            admit_and_arm_client(*q, *c, inbox_keys, "CKSUM-NONE");
             ASSERT_TRUE(c->start());
 
             void *buf = c->acquire();
@@ -1177,8 +1213,7 @@ int inbox_curve_authorized_delivers()
             ASSERT_TRUE(q->start());
             // Stand in for the role's roster: alice is authorized (the role
             // builds this answer out of REG_ACK.known_roles).
-            q->set_admission_authority([admitted = alice_pub](const std::string &pubkey_z85)
-                                       { return pubkey_z85 == admitted; });
+            admit_authority(*q, alice_pub, "alice.uid00000001");
 
             sec::ZapPumpThread pump; // authorizes CURVE handshakes via ZapRouter
 
@@ -1304,8 +1339,7 @@ int inbox_curve_unknown_denied()
             ASSERT_TRUE(q->start());
             // Roster holds ONLY alice — bob is a known-keypair peer that the
             // hub does NOT know (its pubkey is not in known_roles).
-            q->set_admission_authority([admitted = alice_pub](const std::string &pubkey_z85)
-                                       { return pubkey_z85 == admitted; });
+            admit_authority(*q, alice_pub, "alice.uid00000001");
 
             sec::ZapPumpThread pump;
 
@@ -1403,7 +1437,7 @@ int inbox_backpressure_bounded_and_edge_logged()
             auto c = InboxClient::connect_to(q->actual_endpoint(), "flooder.uid00000001",
                                              uint32_schema());
             ASSERT_NE(c, nullptr);
-            admit_and_arm_client(*q, *c, inbox_keys);
+            admit_and_arm_client(*q, *c, inbox_keys, "flooder.uid00000001");
             ASSERT_TRUE(c->start());
 
             uint32_t seq = 0;
@@ -1507,7 +1541,7 @@ int inbox_stale_ack_not_attributed_to_next_send()
             auto c = InboxClient::connect_to(q->actual_endpoint(), "slowpoke.uid00000001",
                                              uint32_schema());
             ASSERT_NE(c, nullptr);
-            admit_and_arm_client(*q, *c, inbox_keys);
+            admit_and_arm_client(*q, *c, inbox_keys, "slowpoke.uid00000001");
             ASSERT_TRUE(c->start());
 
             auto put = [&](uint32_t v)

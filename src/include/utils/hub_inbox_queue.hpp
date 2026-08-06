@@ -49,7 +49,9 @@
  * closed here — it outlives every InboxQueue/InboxClient in the process.
  */
 #include "utils/hub_zmq_queue.hpp"           // ZmqSchemaField
+#include "utils/security/attested_key.hpp"   // AttestedKey (what the handshake proved)
 #include "utils/security/peer_admission.hpp" // PeerAdmission (inbox ROUTER ZAP)
+#include "utils/security/pubkey_origin.hpp"  // AttributedSender (who that key is)
 
 #include "pylabhub_utils_export.h"
 
@@ -79,8 +81,16 @@ struct InboxClientImpl;
 struct PYLABHUB_UTILS_EXPORT InboxItem
 {
     const void *data{nullptr}; ///< Decoded payload buffer (InboxQueue-owned; item_size() bytes).
-    std::string sender_id;     ///< Pylabhub UID of the sender (from ZMQ identity frame).
-    uint64_t seq{0};           ///< Monotonic sender sequence number.
+
+    /// Pylabhub UID of the sender, resolved from the key its CURVE handshake
+    /// PROVED (HEP-CORE-0027 §3.7).
+    ///
+    /// Not the ZMQ routing id, which the sender chooses for itself and which
+    /// is an ACK return address and nothing else.  Keying anything on that
+    /// would let one sender be attributed as another, and let a sender earn a
+    /// fresh replay window by changing the id it presents.
+    std::string sender_id;
+    uint64_t seq{0}; ///< Monotonic sender sequence number.
 
     /// Messages lost from THIS sender immediately before this one.
     ///
@@ -287,16 +297,51 @@ class PYLABHUB_UTILS_EXPORT InboxQueue : public pylabhub::utils::security::PeerA
     /// transport's business, and the role answers about keys.
     using AdmitsPubkey = std::function<bool(const std::string &pubkey_z85)>;
 
-    /// Bind the question above.  Callable before or after `start()`, and
+    /// Who is the connection this message arrived on?
+    ///
+    /// Takes the attestation rather than a key string, because the answer
+    /// names a principal and a name may only be derived from a key the
+    /// transport vouched for.  `AttestedKey` is mintable in exactly one
+    /// place (`AttestedKey::from_message`); accepting a bare string here
+    /// would let any caller supply one and be believed.
+    using AttributesSender = std::function<pylabhub::utils::security::AttributedSender(
+        const std::optional<pylabhub::utils::security::AttestedKey> &attested)>;
+
+    /// The two questions this gate asks about a peer — may it connect, and
+    /// who is it (HEP-CORE-0035 §4.9.6).
+    ///
+    /// Bound together and never separately.  They are answered from the same
+    /// snapshots, so binding them in two calls would create two things that
+    /// must both be done and could disagree — and a half-bound gate would
+    /// admit peers it cannot name, which is the defect this type exists to
+    /// make unrepresentable (I-ROSTER-ASK-DONT-COPY).
+    ///
+    /// They take different arguments because their callers hold different
+    /// things: at handshake time no attestation exists yet — deciding
+    /// whether to attest IS the question — so the ZAP side must answer about
+    /// a key, while the message side answers about a proven one.
+    struct InboxAuthority
+    {
+        InboxAuthority(AdmitsPubkey a, AttributesSender n)
+            : admits(std::move(a)), name_of(std::move(n))
+        {
+        }
+
+        AdmitsPubkey admits;
+        AttributesSender name_of;
+    };
+
+    /// Bind the questions above.  Callable before or after `start()`, and
     /// concurrently with `is_peer_allowed`.
     ///
     /// A role binds this instead of pushing its roster down, because a copy
     /// parked here would be a second representation of the hub's key list,
     /// free to disagree with the role's own — and the stale one would be the
     /// one the ZAP handler consults.  Until an authority is bound the gate
-    /// denies everyone, which is the same rule the hub applies to itself
-    /// (HEP-CORE-0035 §4.8.4): no configuration admits no one.
-    void set_admission_authority(AdmitsPubkey admits);
+    /// denies everyone and names nobody, which is the same rule the hub
+    /// applies to itself (HEP-CORE-0035 §4.8.4): no configuration admits no
+    /// one.
+    void set_admission_authority(InboxAuthority authority);
 
     /// Inert — returns false.  This gate keeps no list to replace; see
     /// `set_admission_authority`.  Refused rather than accepted-and-ignored

@@ -386,6 +386,65 @@ struct RoleAPIBase::Impl
         return false;
     }
 
+    /// Whose key is this?  (HEP-CORE-0035 §4.9.6 `name_of`,
+    /// I-ROSTER-COMBINE-NAME.)
+    ///
+    /// The sibling of `roster_admits`, and the two are deliberately not one
+    /// function: this one is asked at message time about a key the transport
+    /// has already vouched for, while admission is asked mid-handshake, where
+    /// no attestation exists yet because producing one is the decision being
+    /// made.
+    ///
+    /// **Sides in a fixed order, input before output.**  Two hubs are two
+    /// authorities and may name one key differently; a role holding both is
+    /// not entitled to overrule either, so it picks by a stated rule rather
+    /// than by whichever it happened to check first.
+    ///
+    /// **Both sides are consulted even after one answers.**  That is what
+    /// makes the disagreement visible; short-circuiting would leave the
+    /// operator who created it with nothing to see.  The message is still
+    /// delivered under the first side's name: refusing would let a
+    /// misconfigured or hostile hub silence a healthy one by claiming its
+    /// keys, and the fixed order is what removes that lever.
+    [[nodiscard]] pylabhub::utils::security::AttributedSender
+    roster_attribute(const std::optional<pylabhub::utils::security::AttestedKey> &attested) const
+    {
+        namespace sec = pylabhub::utils::security;
+
+        std::lock_guard<std::mutex> lk(inbox_roster_mu);
+
+        sec::AttributedSender answer;
+        std::size_t answered_by = kSideCount;
+        for (std::size_t s = 0; s < kSideCount; ++s)
+        {
+            if (!inbox_roster_[s])
+                continue;
+            auto who = inbox_roster_[s]->attribute_sender(attested);
+            if (who.verdict != sec::ClaimVerdict::accepted)
+                continue;
+            if (answered_by == kSideCount)
+            {
+                answer = std::move(who);
+                answered_by = s;
+            }
+            else if (who.uid != answer.uid)
+            {
+                LOGGER_WARN("[{}] event=InboxSenderNameDisagreement {}='{}' {}='{}' — two hubs "
+                            "name one key differently; delivering under the {} side's name "
+                            "(HEP-CORE-0035 §4.9.5).  Give each role its own key, or correct "
+                            "whichever hub's roster is wrong",
+                            short_tag, side_name(static_cast<RosterSide>(answered_by)), answer.uid,
+                            side_name(static_cast<RosterSide>(s)), who.uid,
+                            side_name(static_cast<RosterSide>(answered_by)));
+            }
+        }
+
+        // `answer` still default-constructed if no side named it: verdict
+        // `no_attestation`, empty uid.  The caller tests the verdict and there
+        // is deliberately no name to stamp.
+        return answer;
+    }
+
     // HEP-CORE-0007 §CHANNEL_AUTH_CHANGED_NOTIFY (lines 1834-1838) —
     // binding-side live-peer map maintained by phase=live / phase=left
     // NOTIFY dispatch in `handle_channel_auth_notifies`.  Backs the
@@ -3429,10 +3488,14 @@ void RoleAPIBase::set_inbox_queue(hub::InboxQueue *q)
     // derived-class member destroyed ahead of the base that owns the API.
     // Stopping the queue unregisters its ZAP domain, so no handshake can be
     // in the callback afterwards.
-    q->set_admission_authority([impl = pImpl.get()](const std::string &pubkey_z85)
-                               { return impl->roster_admits(pubkey_z85); });
+    q->set_admission_authority(pylabhub::hub::InboxQueue::InboxAuthority{
+        [impl = pImpl.get()](const std::string &pubkey_z85)
+        { return impl->roster_admits(pubkey_z85); },
+        [impl = pImpl.get()](const std::optional<pylabhub::utils::security::AttestedKey> &attested)
+        { return impl->roster_attribute(attested); }});
     LOGGER_INFO("[{}] event=InboxAdmissionBound "
-                "(HEP-CORE-0027 §3.5 inbox ROUTER ZAP asks the role's roster)",
+                "(HEP-CORE-0027 §3.5 inbox ROUTER ZAP asks the role's roster; §3.7 the "
+                "sender's name comes from the key it proved)",
                 pImpl->short_tag);
 }
 // set_uid removed — see note above.

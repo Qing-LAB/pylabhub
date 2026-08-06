@@ -124,3 +124,21 @@ worth recording that the obvious "safe" choice is the wrong one.
 Fail-closed would let a broken or hostile hub silence a healthy one by
 claiming its keys under wrong names.  The fixed input-before-output
 order removes that lever, which is why §4.9.5 chose it.
+
+---
+
+## 6. Status — code landed, the distinguishing test is NOT written
+
+Changes (a)-(e) are implemented; both sweeps green (Debug 2779/2779,
+Release 2776/2776).
+
+**(f) is still owed, and nothing yet proves the fix.**  Every existing
+inbox test uses a sender whose routing id and uid are the same string,
+so all 56 pass identically before and after.  They prove nothing broke;
+they do not prove the identity now comes from the key.
+
+The test that would: a raw DEALER proving its own key while presenting
+another role's uid as its routing id, asserting `sender_id` is the
+proven one.  Until it exists this change is unverified against its own
+defect — which is exactly the state the auth-list arc showed is easy to
+mistake for coverage.

@@ -1876,9 +1876,28 @@ int broker_sch_inbox_discovery_roundtrip()
                 // the discovered-schema delivery below would be denied at ZAP.
                 // Stands in for the role, which binds this authority to its
                 // replicated roster (HEP-CORE-0035 §4.9.6).
-                q->set_admission_authority(
-                    [admitted = inbox_send_pub](const std::string &pubkey_z85)
-                    { return pubkey_z85 == admitted; });
+                // A real PeerAuthority, as the role builds from
+                // REG_ACK.known_roles: the receiver names its sender from the
+                // key it proved (HEP-CORE-0027 §3.7), so the harness must
+                // supply the uid that key belongs to and not only the key.
+                namespace sec = pylabhub::utils::security;
+                sec::PeerAuthority::Builder ib;
+                ib.add_local_role(sec::RosterEntry{send_uid, inbox_send_pub});
+                auto iauth = std::make_shared<const sec::PeerAuthority>(std::move(ib).build(1));
+                q->set_admission_authority(pylabhub::hub::InboxQueue::InboxAuthority{
+                    [iauth](const std::string &pubkey_z85)
+                    {
+                        try
+                        {
+                            return iauth->admits(sec::Z85PublicKey::validate(pubkey_z85));
+                        }
+                        catch (const std::invalid_argument &)
+                        {
+                            return false;
+                        }
+                    },
+                    [iauth](const std::optional<sec::AttestedKey> &attested)
+                    { return iauth->attribute_sender(attested); }});
             }
             const std::string inbox_ep = q->actual_endpoint();
             ASSERT_FALSE(inbox_ep.empty());
