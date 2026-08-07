@@ -337,7 +337,7 @@ scenarios.  Inventory: `TESTING_TODO.md` § "Test infrastructure inventory".
 
 ---
 
-## Active code reviews (3 — updated 2026-08-07)
+## Active code reviews (1 active + 2 archivable — updated 2026-08-07)
 
 > **Review output is not the plan.** These records are candidate findings,
 > not decided work. Nothing here is scheduled until it has been validated
@@ -373,8 +373,15 @@ scenarios.  Inventory: `TESTING_TODO.md` § "Test infrastructure inventory".
   presence 0) and **#112** (X2 dead `query_shm_info`, X4 phase-label
   comments).  X6 is resolved — `ChecksumRepairPolicy::Repair` is a comment,
   not an enumerator (`broker_service.hpp:48`).
-- `code_review/LINT_FIXES_PLAN.md` — §2 lint dispositions undecided (partly
-  moot); needs a NOLINT-or-defer pass, then archive.
+- `code_review/LINT_FIXES_PLAN.md` — **the one genuinely active record, and its
+  input is stale.**  Built from an April 2026 clang-tidy log that no longer
+  exists; spot-checked 2026-08-07 and it is *partially* stale, which is the
+  worst kind — `actor_vault.cpp` is deleted (1 row in §1, 3 in §2.1) and the
+  `hub_config.cpp` rows point at the legacy singleton, while other cited
+  symbols do survive (`g_wake_pipe`, `computeUnloadClosure`), lending the list
+  false credibility.  §2 also asks five owner questions never answered.
+  **Order of work: regenerate the log, diff against the plan, then ask only the
+  questions that still have a subject.**  Do not action as written.
 
 `REVIEW_FullModule_2026-04-06.md` was archived 2026-08-03 — all ten rows
 dispositioned against code; its one live finding (B-1) moved to `API_TODO.md`

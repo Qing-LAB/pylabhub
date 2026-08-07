@@ -6,6 +6,108 @@
 
 ## Archive batches
 
+### 2026-08-07 (pass 3 — verification pass: every resolution note checked against source, plus a full test sweep)
+
+**Why this pass ran.** Passes 1 and 2 retired records by reading them. This
+pass checked them by running the build and the tests, and by looking up the
+replacement each ✅ note *names* rather than only the site it fixed. That
+distinction is what the pass was for, and it is what found everything below.
+
+**Evidence base.** `cmake --build build --target stage_all -j2` → exit 0.
+Full unfiltered sweep via `tools/ctest_evidence.sh -j2` → **2780 tests, 100%
+passed, 0 failed**, 4 skipped (1 ABI build-id case; 3 `BrokerFederationTest`,
+consistent with federation being parked under #69). Timings: layer2 144.7s,
+layer3 138.1s, layer4 102.6s; total 200.7s wall.
+
+**Review verification — both records closed.**
+
+- `REVIEW_Connection_Inbox_Band_2026-05-17.md` — 16 of 16 findings re-checked.
+  8 resolved, 2 closed as accepted design, 6 open. Three had sat as ❌ OPEN
+  since May while already fixed: **I3** (one `answer()` builder plus an explicit
+  reason vocabulary at `broker_service.cpp:7023-7037` dissolved the
+  `found`/`has_inbox` ambiguity), **S3** (mask init moved to Phase 1.5,
+  `role_api_base.cpp:4353-4362` — exactly the recommended remedy),
+  **TR2** (S1's FSM landed; `datahub_role_state_workers.cpp:1085-1142` pins
+  Unregistered → Registered → Deregistered). **S2** and **TR3** closed as
+  design notes — both findings' own dispositions said so, and carrying them
+  open was the bookkeeping error. The 6 open moved to `API_TODO.md` + tasks
+  #111 (C5/B4/X5/S4) and #112 (X2/X4).
+- `REVIEW_FullSystem_2026-07-20.md` — all ~50 self-reported ✅ notes checked.
+  **Every one held on substance.** Nine that had been verified only by "the
+  test name appears in a file" were re-checked against real ctest output and
+  all nine ran and passed (`LoggerTest.SyncLogging`, 6×`ClassifyPeerVerdictTest`,
+  `ReapAbandonedOnDeadBroker`, both `EndpointChange*` Pattern-4 tests,
+  `Eval_SyntaxError_ReturnsScriptError`,
+  `ZmqE2E_ConsumerSchemaMismatch_AbortsAndTearsDown`,
+  `Sch_WireHelpers_FlexzoneRoundTrip`,
+  `OnSchemaRegistered_FlexzoneOnlyRecord_Created`); count-specific claims met or
+  exceeded (HubHost 12 ≥ 10 claimed; loop-timing 16 ≥ 12).
+  One note's *evidence* had gone stale though its finding was resolved: the
+  `known_roles.cpp:359` note described `as_peer_allowlist()`, retired under #83
+  for `PubkeyOriginIndex::zap_allowlist()` (`pubkey_origin.hpp:325`) —
+  corrected in place. Three residual doc drifts filed as **#110**.
+
+**Drafts archived → `transient-2026-08-07/tech_drafts/`.**
+
+- `DRAFT_HEP-0041-pattern4-reform-coverage_2026-06.md` — premise resolved. It
+  existed to pre-decide coverage before #275-S3/S4/S5 broke deferred tests;
+  that work landed (`reserved_capability_token[64]` at `data_block.hpp:234`
+  with the rename note at `:223`; C-API secret param gone; factories now take
+  `(name, policy, config)`). Nothing left to decide.
+- `DRAFT_reg_wire_alignment_cleanup_2026-07-13.md` — edit plan verified
+  group-by-group. Groups 1-4 and 6 landed: `RegReqBody` split into
+  `ProducerRegReqBody` (`wire_bodies.hpp:154`) + `ConsumerRegReqBody` (`:317`);
+  phantom `schema_version()` and legacy `broker_proto()` accessors gone;
+  `gate_supported_proto` retired per its own C3 resolution
+  (`admission_gates.cpp:103,445`); `BrokerAdmissionConfig::broker_proto` gone;
+  `raw-req-anon` test fallback gone. **Three items outlived it, all recorded in
+  `MESSAGEHUB_TODO.md`** — most importantly that its **C2/D1 rows are actively
+  dangerous and must not be executed**: they call `CHANNEL_BROADCAST_REQ`
+  "retired" and plan to delete `send_broadcast()` + the dispatch row, a premise
+  overturned four days later by finding B6/T3 (HEP-CORE-0030 §9 amended, §9.1
+  added: channel-bound and band-bound broadcast coexist). Also extracted: **D3**,
+  a live contradiction between HEP-CORE-0046 **I-CORRELATION-STABLE**
+  (line 1023: keys on `(msg_type, correlation_id)`) and the shipping code
+  (`broker_request_comm.cpp:281`, keyed on correlation_id alone) — task **#113**,
+  owner call.
+
+**Permanent guidance moved out of a transient tracker.** `TESTING_TODO.md`
+lines 16-93 held MANDATORY test-design rules — permanent guidance inside a file
+whose whole purpose is to be trimmed and archived. Moved to
+`README_testing.md` **§1.3**: layer purpose, pin-path-not-outcome + mutation
+sweep, pin-what-the-design-says, replicate-production-scenarios, retirement
+discipline. Two rules deliberately **not** copied because the destination
+already carried them (mocking discipline → §1.2; `SetUpTestSuite`-owned
+`LifecycleGuard` antipattern → "Choosing a test pattern" + Pattern 1+). The
+retirement *ledger* stayed in `TESTING_TODO.md` — that is tracking, not
+guidance.
+
+**Corrections to records.**
+
+- `TESTING_TODO.md:85` claimed four `RoleIdentityPolicyEnumTest` TEST_F's were
+  "RE-LAYERED (not retired)" to `tests/test_layer2_service/test_role_identity_policy.cpp`.
+  That file does not exist and the suite appears nowhere under `tests/`. They
+  were retired with their subject; `check_role_identity` was deleted under #68.
+- `TODO_MASTER.md` "Active code reviews (3)" listed four entries. Now reads
+  "1 active + 2 archivable".
+- `LINT_FIXES_PLAN.md` marked **stale input, do not action as written** — built
+  from an April 2026 clang-tidy log that no longer exists, *partially* stale
+  (`actor_vault.cpp` deleted; `hub_config.cpp` rows point at the legacy
+  singleton) while other cited symbols survive, which lends the dead rows false
+  credibility. Regenerate-then-diff tracked as **#114**.
+- `tech_draft/README.md` gained a tracked-inventory table; every remaining
+  draft now names where it is tracked, with `future-persistence-and-discovery/`
+  recorded as the one deliberate untracked exception (reference material, no
+  open items).
+
+**One self-correction.** Mid-pass I flagged the checksum-codec note for citing
+`zmq_wire_helpers.hpp` as a nonexistent file and edited the review accordingly.
+The file exists at `src/utils/hub/zmq_wire_helpers.hpp` (`fixarray[5]` line 6,
+`ChecksumPolicy` 15, `pack_frame` 227, `decode_frame` 326) — the grep behind
+that call had been scoped to `src/include/utils/`. Edit reverted. Recorded
+because this pass leaned heavily on absence proofs: **a path-scoped miss is not
+an absence proof.**
+
 ### 2026-08-07 (pass 2 — drafts + reviews, retired against code evidence)
 
 The first pass covered the TODO files only.  This one covers what it skipped:

@@ -754,6 +754,51 @@ should be verified-fixed-or-still-open before next sprint.
 - `ChannelSnapshot::count_by_observable()` — verify exposure to
   admin queries before removing.
 
+### Carried out of the REG-wire alignment draft (archived 2026-08-07)
+
+`DRAFT_reg_wire_alignment_cleanup_2026-07-13.md` was archived after its edit
+plan was checked group-by-group against code.  Groups 1-4 and 6 all landed:
+`RegReqBody` split into `ProducerRegReqBody` (`wire_bodies.hpp:154`) +
+`ConsumerRegReqBody` (`:317`); the phantom `schema_version()` and the legacy
+`broker_proto()` accessors are gone; `gate_supported_proto` retired per its own
+C3 resolution (`admission_gates.cpp:103,445`); `BrokerAdmissionConfig::
+broker_proto` gone; the `raw-req-anon` test fallback gone (one historical
+comment remains at `datahub_broker_workers.cpp:432`).  Three things outlived it:
+
+- **⚠️ ONE ITEM IN THAT DRAFT WAS ACTIVELY DANGEROUS AND IS NOT WORK — DO NOT
+  DO IT.**  Its C2 and D1 rows called `CHANNEL_BROADCAST_REQ` "retired" and
+  planned to delete the dispatch-table row and `BrokerRequestComm::
+  send_broadcast()`.  **That premise was overturned four days later.**  Finding
+  B6/T3 of the Connection/Inbox/Band review established that channel-bound
+  broadcast (broker fans out to a channel's producer + consumers) and
+  band-bound broadcast (broker fans out to a band's members) are complementary,
+  not one superseding the other — HEP-CORE-0030 §9 was amended and a new §9.1
+  added saying exactly that.  `CHANNEL_BROADCAST_REQ` has live callers (hub
+  API, admin RPC, the broker's own synthetic path).  Executing that draft group
+  today would delete shipping protocol.  Recorded here because the draft is
+  archived and a reader finding it in `docs/archive/` would have no way to know.
+
+- **D3 — a locked HEP invariant and the code disagree; owner call needed.**
+  HEP-CORE-0046 **I-CORRELATION-STABLE** (line 1023-1027) states without
+  qualification: *"BRC's `pending_requests` map keys on `(msg_type,
+  correlation_id)`."*  The code keys on the correlation_id alone —
+  `std::unordered_map<std::string, std::shared_ptr<RequestCmd>>`
+  (`broker_request_comm.cpp:281`).  This is not a stale-doc case that can be
+  fixed by editing a comment: the invariant sits in a DESIGN-LOCKED HEP.
+  Complicating it, the #72 pass rewrote BRC's *echo-check comments* to justify
+  the single-key shape ("keys on a fresh per-request correlation_id, so
+  cross-wire is structurally impossible") — so a comment was aligned to the
+  code while the governing invariant still says the opposite.  The engineering
+  argument for single-key is sound if correlation_ids are genuinely unique per
+  request.  Resolve it in one direction: **either** amend I-CORRELATION-STABLE
+  to the single-key shape with the uniqueness argument recorded, **or** change
+  the map key.  Do not leave a locked invariant contradicted by shipping code.
+
+- **D2 — `consumer_attach_zmq()` / `CONSUMER_ATTACH_REQ_ZMQ` still live**
+  (16 references in `src/`).  Already owned by the topology Phase-E retirement
+  in `TOPOLOGY_TODO.md`; noted here only so the draft's version of it is not
+  read as a separate item.
+
 ### Doc bookkeeping debt
 
 - 4 `docs/code_review/REVIEW_*WaveM3*.md` files from 2026-05-11 are

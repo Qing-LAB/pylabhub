@@ -13,43 +13,23 @@ under `/home/qqing/.claude/projects/-home-qqing-Work-pylabhub/memory/`
 
 ---
 
-## Test Design Principles (MANDATORY — apply to every new + reviewed test)
+## Test design principles → moved to `README_testing.md` §1.3 (2026-08-07)
 
-### Layer purpose (L1 / L2 / L3 / L4)
-| Layer | Purpose | Allowed |
-|---|---|---|
-| **L1** | Pure-function unit | Direct function call.  No threads, no sockets, no SHM. |
-| **L2** | Single class / module | Real production class instance.  Pattern 1+ (`BinaryLifecycleEnvironment`) or in-process workers; no broker. |
-| **L3** | In-process integration | Real broker + role components in-process via `IsolatedProcessTest` + `SpawnWorker` (Pattern 3).  Cross-thread + cross-component contract verification. |
-| **L4** | Real-binary subprocess | Drives the staged binaries (`plh_hub`, `plh_role`) via subprocess.  Verifies CLI / config-load / file-system paths.  **Data-pipeline coverage now lives in the demo framework** (`share/demo_framework/runner.py` + `share/py-demo-*/`). |
+The MANDATORY test-design rules that used to sit here are **permanent
+guidance, not tracked work**, so they were living in the wrong document — a
+transient tracker gets trimmed and archived, and rules must not vanish with
+it.  They now live in `docs/README/README_testing.md` **§1.3 "Test design
+principles"**: layer purpose (L1/L2/L3/L4), pin-the-path-not-just-the-outcome
+plus mutation sweep, pin-what-the-design-says, replicate-production-scenarios,
+and the retirement discipline.
 
-### Maximize real production modules; mocks only when absolutely necessary
-Per `feedback_no_mocks_via_observability.md`: extend real classes
-with observability hooks rather than writing parallel-production
-scaffolding.  A mock is allowed only when it satisfies a narrow
-protocol contract that the real class cannot construct cheaply in
-the test environment.
+Two of the rules were **not** copied, because `README_testing.md` already
+carried them and duplicating them would create two sources of truth that drift:
+mocking discipline is **§1.2**, and the `SetUpTestSuite`-owned `LifecycleGuard`
+antipattern is covered under **"Choosing a test pattern"** and **Pattern 1+**.
 
-### Tests pin path + timing + payload, not just outcome
-Per `feedback_test_outcome_vs_path.md`: outcome-only assertions
-(`EXPECT_TRUE(result.has_value())`) hide regressions where the
-right outcome is reached via the wrong path.  Pin payload shape,
-sequence, error_code AND outcome.  Add mutation-sweep verification
-(flip the code under test in both directions; confirm the test
-fails both ways).
-
-### Tests replicate production scenarios
-Per `feedback_tests_replicate_production_scenarios.md`: mirror the
-real path.  No synthetic stress harnesses that diverge from how
-production actually drives the code.
-
-### No `SetUpTestSuite`-owned `LifecycleGuard` antipattern
-Migration wave closed 2026-05-13 (21 files).  Two `SetUpTestSuite`
-sites remain — `test_slot_view_helpers.cpp` (one-shot
-`py::scoped_interpreter`) + `test_role_init_directory.cpp`
-(idempotent module registration); both legitimate.  Any NEW test
-must use Pattern 1+ (`BinaryLifecycleEnvironment`) or Pattern 3
-(`IsolatedProcessTest` + `SpawnWorker`).
+The retirement **ledger** (the dated table of what was retired and where its
+contract went) stays here — that is tracking, not guidance.
 
 ---
 

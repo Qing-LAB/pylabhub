@@ -1,5 +1,28 @@
 # Clang-Tidy Lint Fixes Plan
 
+> **⚠️ STATUS 2026-08-07 — STALE INPUT.  Do not action this list as written;
+> regenerate first.**
+>
+> This plan was collected from a clang-tidy build log in **April 2026**.  That
+> log no longer exists, and the tree has moved under it — a spot-check found
+> `src/utils/service/actor_vault.cpp` **deleted entirely** (it has its own row
+> in §1 and three rows in §2.1), and the `hub_config.cpp` rows in §2.1/§2.4/§2.5
+> point at the legacy singleton file the plan itself already marks obsolete in
+> §1 (`apply_json` no longer exists at that path).  Other cited symbols DO
+> survive — `g_wake_pipe` (26 refs), `computeUnloadClosure`
+> (`lifecycle_dynamic.cpp:309`) — so this is a partially-stale list, which is
+> the worst kind to act on: the surviving rows lend it credibility.
+>
+> §2 additionally asks the owner **five questions that were never answered**
+> (2.1 rename-vs-NOLINT, 2.2 which arrays to convert, 2.3 which literals to
+> keep, 2.4 enum base type, 2.5 refactor-vs-NOLINT).  Answering them against a
+> four-month-old list would encode decisions about warnings that may no longer
+> fire and miss ones that appeared since.
+>
+> **The order of work is: regenerate the log, diff it against this plan, then
+> ask the owner the questions that still have a subject.**  Tracked as a task.
+> Until then this document is a historical record, not a work list.
+
 Collected from build logs (clang + PYLABHUB_ENABLE_CLANG_TIDY=ON).  
 **Rule:** Minor edits (braces, includes, explicit bool, return style, redundant init) are applied in batch.  
 **Logic or name changes require your confirmation first.**

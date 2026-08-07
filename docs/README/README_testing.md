@@ -77,6 +77,59 @@ A handful of legitimate cases still need a test-only input hook — typically wh
 
 These principles were sharpened during the HEP-CORE-0041 1i-mig-5 cutover (2026-06-23) when the retirement of `shm_consumer_nonexistent_rejected` and `shm_consumer_wrong_secret_rejected` forced an explicit decision: a synthetic-fail capability-path replacement would have been a bypass (rule 2) and would have re-tested L2 guardrails (rule 6 — equivalent coverage exists elsewhere). The doc-blocks left in `role_api_flexzone_workers.cpp` are the canonical examples of rule 6 retirements.
 
+### 1.3 Test design principles (MANDATORY — every new and every reviewed test)
+
+*Moved here 2026-08-07 from `docs/todo/TESTING_TODO.md`, where these permanent
+rules had been living inside a transient tracker. Two of the rules that lived
+there are omitted because this document already carries them — mocking
+discipline is §1.2 above, and the `SetUpTestSuite`-owned `LifecycleGuard`
+antipattern is covered under "Choosing a test pattern" and Pattern 1+.*
+
+**Layer purpose.** What a layer is *for* — distinct from §2's table of what each
+CMake target *contains*. Placement follows rule 7 above: what the test
+exercises, not what it constructs.
+
+| Layer | Purpose | Allowed |
+|---|---|---|
+| **L1** | Pure-function unit | Direct function call.  No threads, no sockets, no SHM. |
+| **L2** | Single class / module | Real production class instance.  Pattern 1+ (`BinaryLifecycleEnvironment`) or in-process workers; no broker. |
+| **L3** | In-process integration | Real broker + role components in-process via `IsolatedProcessTest` + `SpawnWorker` (Pattern 3).  Cross-thread + cross-component contract verification. |
+| **L4** | Real-binary subprocess | Drives the staged binaries (`plh_hub`, `plh_role`) via subprocess.  Verifies CLI / config-load / file-system paths.  **Data-pipeline coverage now lives in the demo framework** (`share/demo_framework/runner.py` + `share/py-demo-*/`). |
+
+**Pin the path and the timing and the payload — not just the outcome.**
+An outcome-only assertion like `EXPECT_TRUE(result.has_value())` passes when the
+right answer is reached by the wrong route, which is exactly the regression you
+wanted the test to catch. Pin payload shape, sequence, `error_code`, *and*
+outcome. Then mutation-sweep it: flip the code under test in both directions and
+confirm the test fails both ways. A test that cannot be made to fail is not
+evidence.
+
+**Pin what the design says, not what the code currently does.** A test written by
+reading the implementation will assert the bug and pass every review. Derive
+assertions from the governing HEP. When a test's comment says it "confirms
+current behavior", that is the moment to go read the design instead. Checking
+side effects (state unchanged after a rejection) catches bugs that asserting the
+rejection detail alone will miss.
+
+**Replicate production scenarios.** Mirror the path production actually takes.
+Synthetic stress harnesses that drive the code in a way no real caller does will
+pass while the real path is broken, and they rot faster than the code they
+guard.
+
+**A retirement is not done until its contract has a tracked home.** Retiring a
+test that was the sole site pinning some contract silently deletes that
+coverage. Before removing one, record: the test being retired, the contract it
+solely pinned, the destination task ID, and the explicit description update made
+to that destination. When later closing that destination task, verify the
+absorbed contract is genuinely exercised by the replacement — coverage
+continuity is the whole point of the ceremony. The retirement ledger lives in
+`docs/todo/TESTING_TODO.md`.
+
+One caution learned the hard way: when judging whether two tests cover the same
+contract, **abstraction level matters**. A wire-layer test and a
+high-level-client test over the same protocol are siblings, not duplicates —
+they pin different things and both stay.
+
 ## 2. Test Suite Structure
 
 The test suite is composed of several distinct **CMake targets** located in the `tests/` directory:
