@@ -22,6 +22,47 @@ observer) see HEP-CORE-0045 §10.
 **Status source of truth:** `docs/TODO_MASTER.md` § "Resume point"
 — three-line summary + per-line remaining work (2026-07-08).
 
+## ⚠️ READ THIS FIRST — task IDs in this file are ambiguous (2026-08-07)
+
+**This file cites two incompatible task-ID spaces and they collide.** IDs run
+from `#52` to `#317`; the live task list ends at `#119`. Everything above #119
+is a legacy numbering scheme that was abandoned without a mapping — and the
+`#52`–`#119` range **overlaps the live space with different meanings**:
+
+| ID | means here | means in the live tracker |
+|---|---|---|
+| `#104` | AUTH-5 sibling-HEP doc sync, shipped 2026-06-27 (lines 169, 243, 266) | vault hot reload — decided against 2026-08-07 |
+| `#103` | AUTH-1 closure (line 261) **and** a HEP-0017 §3.3 item (line 691) | admin session-replay L2 test |
+
+`#103` means two different things *inside this file alone*. **Do not resolve any
+`#NNN` here against the live task list without checking git history first.**
+
+**Verified 2026-08-07, so far:**
+
+- The lead section below ("Open items — admin plane and verified peer identity")
+  **is** code-verified as of 2026-08-07 and can be trusted.
+- **§"Phase 1 — CURVE chain close (active critical path)" is STALE.** It draws an
+  execution chain ending in "🟢 PHASE 1 PRODUCTION-READY" — and Phase 1 *is*
+  production-ready; `TODO_MASTER` records it, and REVIEW-C / REVIEW-D are both
+  closed in the live list. A finished chain sits under a heading claiming it is
+  active.
+- **AUTH-7 confirmed shipped:** its L4 gate tests (`ZmqE2E_Authorized`,
+  `_Unauthorized`, `_MultiProducer`) ran and passed in the full 2780-test sweep
+  on 2026-08-07.
+- **`#275` S3 confirmed shipped:** `set_shm_secret` is gone from the tree; only
+  tombstone comments remain (`hub_shm_queue.hpp:260`).
+- **Line 227 is now wrong:** it says "Task #317 C.2 (broker SHM observer) —
+  CURRENTLY IN FLIGHT." The observer was **retired** 2026-08-07 (HEP-CORE-0045
+  § "Retirement notice").
+- **Still genuinely open, verified:** the 7 masked broker `TEST_F`s in File 10
+  Suite 2, awaiting a delete decision (lines 288, 338).
+
+**Everything else in this file is UNVERIFIED.** The full cleanup is tracked as a
+task; until it runs, treat status markers here the way this project has learned
+to treat all unverified markers — as claims, not facts.
+
+---
+
 ## Open items — admin plane and verified peer identity
 
 The admin plane is CURVE-secured with a typed operator console and
