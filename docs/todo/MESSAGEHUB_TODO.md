@@ -14,6 +14,56 @@ the fix is in production code at `native_engine.cpp:289-305`).
 
 ## Recent Completions
 
+### 2026-08-06 — `open_inbox` tells the script WHY, in one vocabulary
+
+The hub answers `ROLE_INFO_REQ` with a precise reason —
+`not_reachable_yet`, `sender_not_registered`, `no_such_role`, `no_inbox`
+(HEP-CORE-0035 §4.9.7) — and `open_inbox_client` computed it, wrote it into
+a carefully worded log line, and then returned `std::nullopt`.  Every engine
+flattened that to `nil` / `None` / `NULL`.  The two conditions that call for
+*opposite* reactions were therefore indistinguishable to the one caller that
+has to choose: retrying `not_reachable_yet` is correct and clears within a
+hub round trip; retrying `sender_not_registered` is a livelock.
+
+**This was not new design.**  HEP-CORE-0027 §4.2.2 already specified the
+four reasons in a table with a "clears by itself?" column — the same shape
+of defect as the sender-attribution slice: the document was right and the
+code did not implement it.
+
+`InboxOpenResult` now carries `reason` + `detail` + `ok()` (the
+`CitationOutcome` shape from `schema_record.hpp`) and is returned by value,
+so `std::optional` stops being the failure channel for nine distinct
+conditions.  The script-visible word is byte-identical to the wire word.
+
+One vocabulary, three grammars — each language's own way of saying "nothing,
+and here is why", rather than one shape imposed on all three:
+
+- **Lua** — `h, reason, detail = api:open_inbox(uid)`; `if not h` unaffected.
+- **Python** — a falsy object with `.reason` / `.detail` / `.clears_on_retry`;
+  `if handle:` unaffected.  Deliberately NOT an exception: a peer that has
+  not converged is the ordinary startup path, and raising on it would make
+  normal operation look like a fault.  Exceptions stay for malformed args,
+  which is where `post_event` already puts them.
+- **Native** — `open_inbox(ctx, uid, &reason)` → NULL + `PLH_INBOX_OPEN_*`
+  (ABI **v14 → v15**, signature change).  C has no exceptions, so the
+  out-param is what this ABI has always used for a "why" (cf. the
+  `PostEventResult` tristate).
+
+Drift protection, because two of these couplings rot silently: the C++ enum
+and the C macros are `static_assert`-ed equal value-for-value, and the
+wire↔enum spelling is `static_assert`-ed to round-trip in both directions
+for all four hub-sourced reasons, plus an assert that an unrecognised word
+maps to `unknown` rather than to a plausible-looking neighbour.
+
+**A real caller was relying on the old shape.**  The L4 sender script tested
+`if h is not None` — with a falsy object that branch is always taken, so it
+would have called `acquire()` on the refusal.  Truthiness now, and the
+script logs the reason.  This is the migration cost of the Python choice and
+it is worth naming: `is None` checks against `open_inbox` are now wrong.
+
+Mutation-verified: reporting a plausible-but-wrong reason
+(`no_hub_connection` → `no_such_role`) fails all three engine tests.
+
 ### 2026-08-03 — FSM counters renamed to the state vocabulary they count
 
 The broker's three role-presence transition counters were named for states

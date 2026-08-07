@@ -105,6 +105,40 @@ update the destination task's description, then delete the test.
 
 ## Recent Completions
 
+- **2026-08-06 — `open_inbox` reason codes: three engines, each asserted
+  directly, and one link left honestly unpinned.**  The three existing
+  "without a broker" cases (`LuaEngineIsolatedTest.
+  Api_OpenInbox_WithoutBroker_ReturnsNil`, `PythonEngineIsolatedTest.
+  Api_OpenInbox_WithoutBroker`, `NativeEngineTest.
+  Api_InboxSend_NoBroker_GracefulReturn`) each asserted only that the call
+  came back empty.  All three now assert the REASON by name
+  (`no_hub_connection`) — which is what makes them tests of the design
+  rather than of the absence of a crash.  Mutation-verified together:
+  reporting `no_such_role` instead fails all three.
+  **Why the name matters more than the emptiness.**  A role with no hub to
+  ask has no evidence about the target at all.  "That peer has no inbox" and
+  "I could not ask anyone" are both empty answers and only one of them is
+  true; an emptiness-only assertion cannot tell them apart, which is
+  precisely the confusion the change exists to remove.
+  **Latent break this surfaced.**  The L4 sender script used
+  `if h is not None`, which is always true against a falsy result object —
+  it passed only because the open happened to succeed on the first try in
+  that test, so the branch was never taken.  Fixed to truthiness.  Worth
+  remembering: a green suite did not mean the callers were correct, it meant
+  the broken path was unvisited.
+  **Not pinned, deliberately.**  Nothing drives a *hub-sourced* reason
+  (`not_reachable_yet` / `sender_not_registered`) end to end into a script.
+  The enum↔wire spelling is `static_assert`-ed both ways, the broker's side
+  is pinned by
+  `Pattern4BrokerProtocolTest.UnconfirmedTargetIsRePushedTheSameRoster`
+  (which asserts `reason == "not_reachable_yet"` on the wire), and the three
+  L2 cases pin delivery to each engine — so the only unproven link is the
+  JSON field read in between, and both ends of it name the same field.  An
+  L4 attempt would be timing-dependent for the reason recorded in the #101
+  entry below: a live role converges in microseconds, so the interesting
+  reason cannot be held open long enough to assert on reliably.  Cheap and
+  deterministic beats end-to-end and flaky.
+
 - **2026-08-06 — #101 roster coverage; the layer a behaviour is testable at
   is decided by who drives the clock.**  Two tests, one that covers what it
   claims and one that was proven not to.

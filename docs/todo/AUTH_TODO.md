@@ -36,7 +36,7 @@ checklist is superseded → archived `transient-2026-07-22`). Per-operator
 sweep tests (`close_channel` ×2, `broadcast_hub_queue`) off their L3 RATIONALE
 stubs now that the admin CURVE socket + console client have landed.
 
-**🔄 IN PROGRESS — reachable inbox (task #101, HEP-CORE-0035 §4.9).**
+**✅ SHIPPED 2026-08-06 — reachable inbox (task #101, HEP-CORE-0035 §4.9).**
 Two invariants, one arc: **I-ROSTER-PRESENT** (a replicated roster names
 roles the operator configured AND the hub currently has registered) and
 **I-INBOX-REACHABLE** (a hub discloses a role's inbox address only to a
@@ -84,22 +84,29 @@ processor's two registrations land on different sides.
 
 Both sweeps green after the last production changes: **Debug 2778/2778,
 Release 2775/2775** (the 3-test difference is the NDEBUG-gated helpers).
-Remaining: bookkeeping and the commit.  Full record, including the rejected
-alternatives and the reverted test backdoor, in
+Full record, including the rejected alternatives and the reverted test
+backdoor, in
 `docs/archive/transient-2026-08-06/PLAN_auth_list_replication.md`.
 
-**⚠ NEXT — the inbox still takes its sender from a frame the sender writes
-(task #83 slice 4).**  `hub_inbox_queue.cpp:567` reads the ZMQ routing id and
-uses it as the replay key, the per-sender sequence key, and the name the
-receiving script sees.  The CURVE handshake proves a key and ZAP hands it back
-as `User-Id`, but the gate returns `bool` and discards it.  HEP-CORE-0027 §3.7
-already forbids this in a MUST and §3.5 names the function
-(`attribute_sender`), so **there is no design work here** — the code simply
-does not implement what two HEPs specify.  Scope, checks and rejected
-alternatives: `docs/tech_draft/PLAN_inbox_sender_from_proven_key.md`.
-Honest bound on the exposure: the stock `InboxClient` sets its routing id to
-its own uid, so no running deployment is mis-attributing today; the hole is
-open to a hand-rolled client.
+**✅ CLOSED 2026-08-06 — the inbox names its sender from the proven key
+(task #83 slice 4).**  `hub_inbox_queue.cpp` read the ZMQ routing id — a
+label the sender writes — and used it as the replay key, the per-sender
+sequence key, and the name the receiving script sees.  The CURVE handshake
+proves a key and ZAP hands it back as `User-Id`, but the gate returned
+`bool` and discarded it.  HEP-CORE-0027 §3.7 forbids this in a MUST and
+§3.5 names the function, so there was no design work: the queue now holds
+an `InboxAuthority` (admit + name, one binding, both answered from the same
+table) and drops any frame it cannot attribute.  The routing id survives
+only as what it always was — the return address for the ACK.  Commits
+`f507b334` (fix) + `e73f9340` (test).
+
+The test that proves it is `SenderName_ComesFromTheKey_NotTheRoutingId`:
+one sender whose true uid and claimed routing id **differ**, which nothing
+in the suite had ever arranged.  Mutation-checked — it fails under the old
+behaviour while `SenderUid_IsPreserved` still passes, so the 56 existing
+inbox cases could not have caught this.  Exposure was bounded: the stock
+`InboxClient` sets its routing id to its own uid, so no running deployment
+was mis-attributing; the hole was open to a hand-rolled client.
 
 **🟡 PARTLY CLOSED — Verified peer identity (task #83; design ratified
 2026-07-27).**
@@ -108,11 +115,34 @@ control plane now reads it.  **Closed on the broker plane (2026-08-02):**
 registration decides on the proven key (#83), every post-registration
 REG-family message is bound to it (#95), and the control tier plus the
 channel broadcast are bound and attributed from it (#96 — broker_proto 7→8,
-the broadcast request no longer carries a sender).  **Still open:** the inbox
-plane, which keys replay defence, per-sender sequence state and
-application-visible sender attribution on the client-chosen routing id, and
-the roster wire shape that slice needs (`{uid, pubkey}` pairs on REG_ACK
-instead of bare keys).  Original net effect, for the record: any holder of
+the broadcast request no longer carries a sender).  **Closed on the inbox
+plane (2026-08-06):** the queue names its sender from the proven key, and the
+roster carries `{uid, pubkey}` pairs so it can.
+
+**The admin slice was already built — verified against code 2026-08-06.**
+This entry previously listed "admin session" as a remaining slice; reading
+`admin_service.cpp` shows otherwise.  The token is verified once, a session
+id is minted sealed over the hub-observed connection facts, and all eleven
+methods pass through a gate that re-opens the seal and compares those facts
+to the connection the message actually arrived on (`:374`); an unknown
+`msg_type` is refused.  What HEP-CORE-0033 §11.0.6 *defers* is a different
+thing — operator identity derived from the client CURVE pubkey, which needs
+admin to have its own ZAP domain plus a `known_admins` allowlist, and is
+coupled to federation (#69).  The admin ROUTER deliberately runs with no ZAP
+domain today, and says so at `admin_service.cpp:170`.
+
+**Residual (small, [TEST]):** the connection-binding half is pinned only at
+the module level (`test_admin_session.cpp` calls `verify_session_id` with a
+mismatched address / routing id).  Nothing drives a *second real connection*
+presenting a valid session id.  The L2 fixture already mints consoles with
+their own routing ids, so the case is ~15 lines: alice establishes and
+succeeds, mallory connects and replays alice's exact sealed id, expect
+`unauthorized`, and alice still works afterwards.  Honest framing for the
+test comment: the ROUTER refuses a duplicate routing-id claim outright (no
+`ROUTER_HANDOVER` anywhere in the tree), so this pins the second layer of a
+two-layer defence, not the only barrier.
+
+Original net effect, for the record: any holder of
 any vault key could register, deregister, or re-endpoint any other role.
 Data confidentiality was unaffected — the data plane is separately keyed —
 so the exposure was control-plane integrity/availability.
