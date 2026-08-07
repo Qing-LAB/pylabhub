@@ -76,10 +76,34 @@ post-reconcile shipped-sprint detail).
 > | # | Band | What it covers |
 > |---|---|---|
 > | **1** | **Security items** | **Open:** vault hot reload (HEP-0035 §4.8.5) — its stated prerequisite (§4.9 roster replication) shipped 2026-08-06, so it is now buildable; #103 admin anti-hijack L2 test; #89 SMS/vault script surface; #87 privilege audit.  The impersonation arc (#83/#95/#96 + inbox sender) is CLOSED on every plane — narrative in git, not here.  **Federation is NOT in this band** — see the parked entry below. |
-> | **2** | **Shared-memory observer feature** | HEP-CORE-0045 Line 3 remaining phases: `PeerDeathWatcher` → broker dial worker + fd cache → opt-out → `collect_shm_info` → L4 tests → pointer refresh. |
+> | **2** | **Shared-memory observer feature** | HEP-CORE-0045 Line 3 remaining phases: `PeerDeathWatcher` → broker dial worker + fd cache → opt-out → `collect_shm_info` → L4 tests → pointer refresh.  **Coupled to the query layer — see below.** |
 > | **3** | **Backlog of smaller polish items** | The P0/P1 batches below (startup log lines, config defaults, per-area subtopic items) — small, independently shippable. |
 > | **4** | **Role-program unification (C++ RAII framework)** | #292 collapse of the three role-host files, taken together with the Template-RAII layer (Phase 2b: `TypedInboxClient`, `SimpleRoleHost`) since both reshape the same surface; #55 test re-homing rides along. |
 > | **5** | **The rest** | Topology T4/T5 residuals, the Pattern-4 test migration (#52), Windows/CI coverage, and everything else in "Open work by area". |
+
+#### Band 2 and the query layer are one arc (found 2026-08-07)
+
+The SHM observer (band 2) and HEP-CORE-0039's query layer meet at exactly one
+function, and neither band table nor `QUERY_LAYER_TODO` said so:
+
+- Band 2 phase **C.3 rewrites `collect_shm_info`** (HEP-0045 §8.3) — fd lookup
+  plus a `metrics_source` field (`attached` / `heartbeat` / `unavailable`).
+- HEP-0039 **Phase 5 builds `list_shm_blocks` / `get_shm_block` over that same
+  function** — HEP-0033 §3293 says it outright: *"Query engine over `HubState`
+  + existing `collect_shm_info`."*  Both are specified (HEP-0039 §349-350,
+  §402-403) and neither is implemented.
+- `QUERY_LAYER_TODO` wants to retire `collect_shm_info_json` once those exist.
+
+So the order is **C.3 → HEP-0039 Phase 5 → retire the `_json` wrapper**, and
+`collect_shm_info` itself is extended by band 2, never retired.  The practical
+consequence: **decide the C.3 response shape with HEP-0039's consumers in
+view**, or `collect_shm_info` gets shaped for the observer and reshaped for the
+query layer weeks later.
+
+HEP-0039 currently appears in this file only as one clause under "MessageHub /
+broker protocol" ("Phases B+, Phase A shipped") — it is a designed subsystem
+with no band of its own.  Given the coupling, the cheapest correct placement is
+**with band 2**, not as a separate arc.
 
 #### Where the 2026-08-07 cleanup findings land
 
