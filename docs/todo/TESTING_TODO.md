@@ -283,44 +283,34 @@ update the destination task's description, then delete the test.
 
 ## Current Focus — Open coverage gaps
 
-### ⚠ OPEN — "either side is enough" is unpinned: a processor's two sides need two hubs (#101, 2026-08-06)
+### ⚠ OPEN (LOW) — three two-side branches one hub cannot reach (#101/#102, corrected 2026-08-06)
 
-A processor holds one roster per side and its single inbox gate admits a key
-recognised by EITHER (`roster_admits` in `src/utils/service/role_api_base.cpp`),
-because its two hubs are separate authorities and requiring them to agree would
-make each depend on the other.
+**The earlier version of this entry was wrong and is worth saying so.**  It
+claimed the "either side is enough" rule was unpinned and wanted a processor
+whose two sides register with different hubs.  The combine does not know how
+many hubs there are: `roster_admits` and `roster_attribute` iterate
+`inbox_roster_[0..1]`, and whether those snapshots came from one hub's two
+REG_ACKs or two hubs' is invisible to the code.
+`ZmqE2E_InboxProcessorHoldsARosterOnBothSides` already drives both sides
+through the entire path.  Two hubs would change the scenario, not the code.
 
-`ZmqE2E_InboxProcessorHoldsARosterOnBothSides` pins what one hub can show: two
-independent holders, and a gate whose key set is the deduped UNION
-(`entries=3 gate_keys=3` on both sides — a sum bug reads 6).  It cannot pin the
-OR itself, because with both sides on one hub they hold identical content, so
-consulting one side and consulting both give the same verdict.
+What one hub genuinely cannot reach, because both sides converge to identical
+content: `roster_admits` returning from the SECOND iteration; `roster_attribute`
+resolving at index 1; and the disagreement branch.  The first two are the same
+loop body at a different index; only the third is distinct logic, and it is one
+warning line.  Same argument covers I-ROSTER-ONE-HOLDER — a replace on one side
+leaving the other alone is only observable when the two differ.
 
-What is needed: a processor whose input and output sides register with
-DIFFERENT hubs, with the sender known to only one of them.  Delivery then
-proves the OR, and the mutation — consulting a single side — fails it.  Both
-directions, since input-only and output-only are separate paths through one
-combine.
+**Do not build two hub processes for this.**  If it is covered, hand the
+combine two deliberately-differing snapshots directly: deterministic, no
+scaffolding, reaches all three.  The combine is a private method today, so
+decide whether a reachable seam is worth it BEFORE writing anything — and do
+not add production surface to make it testable.
 
-Two more cases live only here, and only after #83 slice 4 wires attribution:
-
-**Disagreement (I-ROSTER-COMBINE-NAME).**  Hub A names key K "alice", hub B
-names the same K "bob".  The message is **delivered**, the script sees the
-**input** side's name (fixed order, so the answer is deterministic), and the
-conflict is **logged** for the operator who configured it.  Asserting the log
-line is what pins the real requirement: to log a disagreement you must consult
-BOTH sides, so a short-circuit on first match cannot satisfy this.
-Do not "harden" this into a refusal.  Fail-closed would let a broken or
-hostile hub silence a healthy one by claiming its keys under wrong names; the
-fixed order is what takes that lever away.  Within a single hub the strict
-rule already applies and is fatal at build time
-(`security/pubkey_origin.cpp:45-63`) — different situation, different rule,
-already homed.
-
-**I-ROSTER-ONE-HOLDER has teeth only here.**  Adoption replaces one side and
-never the other; a role-wide replace would let one hub's roster erase the
-other's and start refusing senders from a hub that said nothing.  Push a new
-roster to ONE side, assert the other side's senders still get in.
+**Lesson, which is the durable part.**  "This rule is untested" and "this
+branch is unreached" are different claims, and the first justifies far more
+work than the second.  Check which one you have by asking what code actually
+differs between the scenarios, not what the scenarios look like from outside.
 
 ### ⚠ OPEN — `channel_broadcast` has no L3 three-engine parity test (#98, 2026-08-02)
 
