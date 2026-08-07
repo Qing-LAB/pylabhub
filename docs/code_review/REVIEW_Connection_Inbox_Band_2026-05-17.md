@@ -1,6 +1,12 @@
 # Holistic Code Review — Connection / Inbox / Band
 
 **Date:** 2026-05-17
+**Verification pass 2026-08-07 (owner-directed): IN PROGRESS — 7 of 16 done.**
+Verdicts below carrying "verified 2026-08-07" were re-checked against today's
+source.  Result so far: **5 resolved, 2 genuinely open** (X2 dead
+`query_shm_info`; X4 phase-label comments).  **Not yet re-verified:** C5, I3,
+B4, X5, S2, S3, S4, TR2, TR3 — their ❌ markers are from 2026-05-17 and must
+not be trusted until checked.  Continuation tracked as a task.
 **Branch:** `feature/lua-role-support` (post Tier A — A0+A2+A3 shipped; 1923/1923 tests passing)
 **Scope:** End-to-end implementation audit of three control-plane protocols:
 1. **Connection** — role↔broker BRC startup, ctrl-thread spawn, hub-dead detection, teardown
@@ -392,22 +398,22 @@ I'd suggest splitting into three discrete sessions:
 | C3 | D2 | IncomingMessage lacks source_hub_uid | ✅ FIXED 2026-05-17 | Added `source_hub_uid` field; BRC `on_notification` lambda captures `connections()[i].broker_endpoint` (HEP-CORE-0033 §19.2 dedup key) and stamps it on every `IncomingMessage`.  New L3 regression `RoleAPIBase_SourceHubUid_Disambiguates_DualHub` mutation-tested. |
 | C4 | D2 | Heartbeat tick on master only | ✅ FIXED 2026-05-19 (`81804d7`) | Resolved by the C2 fix: heartbeat TICK still installs on `connections()[0].brc` (correct, single timer thread per HEP-CORE-0031 §4.2.1), but per-presence EMISSION routes via `resolve_bc_for_channel` so each presence's heartbeat lands on its own hub's BRC (dual-hub processor verified). |
 | C5 | D3 | Presence struct missing inbox_meta | ❌ OPEN (deferred Wave-B M5+) | — |
-| I1 | D2 | ROLE_INFO_ACK field name drift | ❌ OPEN | — |
-| I2 | D3 | Header docstring fixarray[4] vs [5] | ❌ OPEN | — |
+| I1 | D2 | ROLE_INFO_ACK field name drift | ✅ RESOLVED (verified 2026-08-07) | HEP-0027 §4.2 now says `inbox_schema` (JSON object); broker sends `inbox_schema`.  REG_REQ's `inbox_schema_json` matches HEP-0023 + `wire_bodies.hpp:278`. |
+| I2 | D3 | Header docstring fixarray[4] vs [5] | ✅ RESOLVED (verified 2026-08-07) | All four sites say fixarray[5]: `hub_inbox_queue.hpp:12`, `hub_zmq_queue.hpp:15`, both .cpp headers. |
 | I3 | D2 | `found` field semantics | ❌ OPEN | — |
 | I4 | D2 (by design) | Inbox metadata stored twice (per-hub) | ✅ DOCUMENTED | document-only — see HEP-0027 §4.1 |
 | B1 | D1 | Wire field "channel" vs HEP "band" | ✅ FIXED 2026-05-17 | Finished the 2026-04-11 rename refactor (`8d3ee1e`) on the wire-payload-key layer.  BRC + broker handlers + ACKs + notifies all use `band` per HEP-CORE-0030 §5.1.  Broker proto bumped 3→4.  Mutation-tested via the new L3 regression. |
 | B2 | D1 | Class D inbound routing broken | ✅ FIXED 2026-05-17 | `RoleHandler::find_presence_from_notification` now reads `body["band"]` (the wire field) instead of the never-emitted `band_name` invented in Wave-B M4b (`8c3994c`).  L2 test fixtures `body["band_name"]` → `body["band"]`. |
 | B3 | D1 | Triple-name divergence | ✅ FIXED 2026-05-17 | Auto-resolved by B1+B2: HEP, wire, and dispatcher now all agree on `band`. |
 | B4 | D2 | band_index_ always uses presences[0] | ❌ OPEN | — |
-| B5 | D2 | BAND_*_NOTIFY not catalogued | ❌ OPEN | — |
+| B5 | D2 | BAND_*_NOTIFY not catalogued | ✅ RESOLVED (verified 2026-08-07) | Catalogued in HEP-0047 §206 and HEP-0007 §781/§2379. |
 | B6 | D2 | HEP-0030 retires CHANNEL_BROADCAST too aggressively | ✅ FIXED 2026-05-17 (T3 Round 2) | HEP-CORE-0030 §9 amended + new §9.1 added documenting the channel-bound (`CHANNEL_BROADCAST_REQ`) vs band-bound (`BAND_BROADCAST_REQ`) broadcast coexistence rationale.  CHANNEL_BROADCAST is no longer described as "retired"; both families coexist. |
 | X1 | D3 | Dead BRC `send_notify` | ✅ FIXED 2026-05-17 (Audit O1) | `BrokerRequestComm::send_notify` removed (header + cpp).  Zero callers in `src/`, `tests/`, `examples/` as of 2026-05-17.  Removal-comment retained in both files for context.  Broker-side `handle_channel_notify_req` kept because HEP-CORE-0022 federation peers may still emit `CHANNEL_NOTIFY_REQ`. |
-| X2 | D3 | Dead BRC `query_shm_info` | ❌ OPEN | — |
-| X3 | D3 | resolve_bc_for_* forwarders | ❌ OPEN | — |
-| X4 | D3 | Stale Wave-B M4d/e/f comments | ❌ OPEN | — |
+| X2 | D3 | Dead BRC `query_shm_info` | ❌ OPEN — CONFIRMED DEAD (verified 2026-08-07) | Declared `broker_request_comm.hpp:447`, defined `:1506`, **zero callers** in `src/` or `tests/`.  Independently matches REVIEW_VALIDATION's O1b. |
+| X3 | D3 | resolve_bc_for_* forwarders | ✅ RESOLVED (verified 2026-08-07) | No forwarder remains in any .cpp; only doc comments mention them — that residue is X4. |
+| X4 | D3 | Stale Wave-B M4d/e/f comments | ❌ OPEN (verified 2026-08-07) | `engine_host.hpp:425`, `role_api_base.hpp:948,955` still carry `M4f`/`M4c` phase labels, which the project's own comment rule forbids (task IDs are fine, phase labels are not). |
 | X5 | D2 | Presence::connection pointer stability contract | ❌ OPEN | — |
-| X6 | D3 | ChecksumRepairPolicy::Repair dead enum | ❌ OPEN | — |
+| X6 | D3 | ChecksumRepairPolicy::Repair dead enum | ✅ RESOLVED (verified 2026-08-07) | `Repair` is now a comment, not an enumerator (`broker_service.hpp:48`). |
 | X7 | D2 (by design) | Inbox per-hub duplication | ✅ DOCUMENTED | document-only — see HEP-0027 §4.1 |
 
 ---
