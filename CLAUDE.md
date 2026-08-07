@@ -142,8 +142,16 @@ this is what causes loss of open items across sessions.
 | API / ABI / concurrency / lifecycle / RAII | `docs/todo/API_TODO.md` |
 | Windows / MSVC / cross-platform / CMake | `docs/todo/PLATFORM_TODO.md` |
 | Tests / coverage / new scenarios | `docs/todo/TESTING_TODO.md` |
-| Memory layout / shared-memory structs | `docs/todo/MEMORY_LAYOUT_TODO.md` |
 | MessageHub / broker protocol | `docs/todo/MESSAGEHUB_TODO.md` |
+| CURVE auth / vault / peer identity / security critical path | `docs/todo/AUTH_TODO.md` |
+| Channel topology / binding sides / phase migrations | `docs/todo/TOPOLOGY_TODO.md` |
+| Hub-state query layer (HEP-0039) / join patterns | `docs/todo/QUERY_LAYER_TODO.md` |
+
+Memory-layout / shared-memory-struct items go to `API_TODO.md`.
+(`MEMORY_LAYOUT_TODO.md` was archived 2026-03-02 — its surviving items
+were absorbed into `API_TODO.md` + `TESTING_TODO.md`. This table pointed
+at the dead path until 2026-08-07 and omitted the three files above,
+including `AUTH_TODO.md`, which carries the security critical path.)
 
 Full rules: `docs/IMPLEMENTATION_GUIDANCE.md` § "Session Hygiene" and
 `docs/DOC_STRUCTURE.md` §1.7 (code review lifecycle).

@@ -6,10 +6,15 @@ This directory contains **subtopic TODO documents** for tracking detailed tasks,
 
 The subtopic TODO system keeps the master TODO (`docs/TODO_MASTER.md`) concise and high-level while providing detailed tracking for each work area. This approach:
 
-- **Prevents TODO bloat** – Master TODO stays under 100 lines
+- **Prevents TODO bloat** – the master stays strategic; detail lives in subtopics
 - **Improves focus** – Each TODO covers one cohesive area
 - **Enables parallel work** – Multiple people can work on different TODOs without conflicts
-- **Preserves history** – Completions stay in subtopic TODOs, not cluttering the master
+- **Preserves history** – **in git and `docs/archive/`, not in the TODO files**
+  (`DOC_STRUCTURE.md` §2.1.1)
+
+*Corrected 2026-08-07: the last bullet used to read "Completions stay in
+subtopic TODOs", which is the opposite of §2.1.1. The first bullet claimed the
+master stays "under 100 lines"; it is 423 and the number was never a real gate.*
 
 ## Structure
 
@@ -31,44 +36,57 @@ Detailed tasks, organized by subsection
 ## Backlog
 Lower-priority or future work
 
-## Recent Completions
-Recent work (keep last 2-3 sprints, then archive)
-
 ## Notes
 Design decisions, cross-references, etc.
 ```
 
+*The template used to include a `## Recent Completions` section ("keep last 2-3
+sprints, then archive"). Removed 2026-08-07 — `DOC_STRUCTURE.md` §2.1.1 forbids
+completion walls, and shipping the forbidden section inside the starter template
+guaranteed every new file grew one.*
+
 ## Available TODO Documents
 
-### Core Implementation
-- **`API_TODO.md`** 🟡 — Public API, producer/consumer/processor binary work (Steps 4–5), header layering, backlog
+*Rebuilt 2026-08-07 from `ls docs/todo/`.  The previous version of this list
+was five months stale: it named four files when seven exist, and the three it
+omitted included `AUTH_TODO.md` — the security critical path, and the largest
+open tracker in the directory.  An index that silently omits the top-priority
+file is worse than no index.  **When adding or archiving a TODO, update this
+table and the canonical table in `CLAUDE.md` in the same commit.***
 
-### Integration and Testing
-- **`TESTING_TODO.md`** 🟡 — Layer 4 producer/consumer tests (pending), HP-C1/HP-C2/BN-H1, platform coverage
-- **`PLATFORM_TODO.md`** 🟢 — Clang-tidy pass, Windows MSVC CI gaps (backlog only)
-
-### Supporting Systems
-- **`MESSAGEHUB_TODO.md`** 🟢 — Broker feature backlog. Schema registry: HEP-CORE-0034 ratified 2026-04-26; six implementation phases pending — see `TODO_MASTER.md` §Priority 2.
+| File | Area | State |
+|---|---|---|
+| **`AUTH_TODO.md`** | CURVE auth, vault, peer identity, the AUTH-1..7 critical path | 🟡 Open — priority band 1 |
+| **`API_TODO.md`** | Public API, ABI, concurrency, lifecycle, RAII.  Also the home for memory-layout / shared-memory-struct items | 🟡 Open |
+| **`MESSAGEHUB_TODO.md`** | Broker protocol, REG/wire, notify/broadcast | 🟡 Open |
+| **`TESTING_TODO.md`** | Coverage gaps + the test-retirement ledger.  Design *rules* live in `README_testing.md` §1.3, not here | 🟡 Open |
+| **`TOPOLOGY_TODO.md`** | Channel topology, binding sides, phase migrations | 🟡 Open |
+| **`QUERY_LAYER_TODO.md`** | Hub-state query layer (HEP-0039), join patterns, type retirements | 🟡 Open |
+| **`PLATFORM_TODO.md`** | Windows/MSVC, CMake, cross-platform.  Holds the clang-tidy *procedure*; results live in `code_review/LINT_FIXES_PLAN.md` | 🟡 Open |
 
 ### Archived TODO Documents
-The following TODO files have been archived to `docs/archive/transient-2026-03-02/` because
-all active work is complete:
-- `SECURITY_TODO.md` — All 6 security phases complete (2026-02-28)
-- `RAII_LAYER_TODO.md` — RAII layer complete; surviving minor backlog absorbed into TESTING_TODO + API_TODO
-- `MEMORY_LAYOUT_TODO.md` — Memory layout complete; surviving items absorbed into TESTING_TODO + API_TODO
 
-**Legend**: 🟡 Has active open items | 🟢 Backlog only (no urgent work)
+Archived to `docs/archive/transient-2026-03-02/` — all active work complete:
+
+- `SECURITY_TODO.md` — 6 security phases complete (2026-02-28).  Note: current
+  security work lives in `AUTH_TODO.md`, not here.
+- `RAII_LAYER_TODO.md` — surviving backlog absorbed into TESTING_TODO + API_TODO
+- `MEMORY_LAYOUT_TODO.md` — surviving items absorbed into TESTING_TODO + API_TODO.
+  **`CLAUDE.md` pointed at this dead path until 2026-08-07**; memory-layout
+  items now route to `API_TODO.md`.
+
+**Legend**: 🟡 Has open items | 🟢 Backlog only
 
 ## How to Use
 
 1. **Start with the master TODO** (`docs/TODO_MASTER.md`) to understand current priorities
 2. **Navigate to relevant subtopic TODO** for detailed tasks
 3. **Update as you work**:
-   - Mark tasks complete: `- [x]`
    - Add new tasks as they emerge
-   - Move completions to "Recent Completions" section
+   - When a task is done, **remove it** — git holds the history.  If the
+     content is worth keeping, move it to `docs/archive/transient-YYYY-MM-DD/`
+     and record a merge map in `docs/DOC_ARCHIVE_LOG.md`
 4. **Keep it clean**:
-   - Archive old completions (move to `docs/DOC_ARCHIVE_LOG.md` when a full sprint is done)
    - Remove duplicate or obsolete tasks
    - Link to design docs rather than duplicating content
 
@@ -82,124 +100,37 @@ When creating a new subtopic TODO:
 4. Keep focused on one cohesive area
 5. Add it to the master TODO's subtopic list
 
-## Maintenance Guidelines
+## Maintenance
 
-### Weekly Maintenance
+**The authoritative rule is `docs/DOC_STRUCTURE.md` §2.1.1 "Periodic TODO
+quality check (MANDATORY)". Follow that; do not follow a second cadence
+defined here.**
 
-**Frequency**: Every Monday or at sprint start
+*Replaced 2026-08-07.* This section used to define its own Weekly / Monthly /
+Quarterly maintenance regime, complete with a worked "Sprint 2026-02-01 to
+2026-02-14" example. It conflicted with §2.1.1 on the one point that matters
+most: it instructed maintainers to **"move completed tasks from Current Focus
+to Recent Completions"** (ten separate mentions), while §2.1.1 states plainly
+**"No 'Recent Completions' walls. No dated 'Closed' subsections piling up."**
 
-**Actions**:
-1. **Update current focus** in each relevant subtopic TODO
-   - Move completed tasks from "Current Focus" to "Recent Completions"
-   - Promote new tasks from "Backlog" to "Current Focus" based on sprint planning
-   - Update status indicators (🔴🟡🟢✅🔵) in master TODO
+That conflict was not theoretical — it is a plausible root cause of the
+completion-wall bloat that a later pass had to trim out of these files by hand.
+A process document that tells people to do the thing the structure document
+forbids will win, because it is the one sitting next to the work.
 
-2. **Review master TODO**
-   - Ensure it reflects actual priorities
-   - Update "Current Sprint Focus" section
-   - Check that all subtopic links are valid
+The rule in one line: **a TODO file holds only open items plus the context
+needed to act on them.** Completed work goes to git and, when the content is
+worth preserving, to `docs/archive/transient-YYYY-MM-DD/` with a merge map in
+`docs/DOC_ARCHIVE_LOG.md`. Verify completion by reading actual code — not
+commit messages, not `✅` markers.
 
-**Example workflow**:
-```bash
-# Review what was completed last week
-git log --since="1 week ago" --oneline
+Two structural habits worth keeping from the old text, since they do not
+conflict with §2.1.1:
 
-# Update subtopic TODOs
-# Mark completed: - [x]
-# Add new tasks discovered during implementation
-# Move items between sections as needed
-
-# Update master TODO status indicators
-# Commit changes
-git add docs/TODO_MASTER.md docs/todo/
-git commit -m "docs: update TODO status for week of YYYY-MM-DD"
-```
-
-### Sprint End (Every 2 weeks)
-
-**Actions**:
-1. **Clean up "Recent Completions"**
-   - Keep only last 2-3 sprints worth of completions
-   - Move older completions to a sprint summary section
-   - Consider archiving very old completions to `DOC_ARCHIVE_LOG.md`
-
-2. **Backlog grooming**
-   - Review backlog items for relevance
-   - Remove obsolete tasks
-   - Re-prioritize based on project direction
-   - Break down large backlog items into actionable tasks
-
-3. **Update master TODO**
-   - Review "Active Work Areas" table
-   - Update status for each area
-   - Adjust current sprint focus for next sprint
-
-**Template for sprint completion notes**:
-```markdown
-### Sprint 2026-02-01 to 2026-02-14 Summary
-- ✅ Memory layout single structure implementation
-- ✅ Pitfall 10 test fixes (4 occurrences)
-- ✅ FileLock barrier synchronization
-- ⏭️ Deferred: RAII layer context API (moved to next sprint)
-```
-
-### Monthly Maintenance
-
-**Frequency**: First Monday of each month
-
-**Actions**:
-1. **Archive old completions**
-   - Move completions older than 2 months to `DOC_ARCHIVE_LOG.md`
-   - Keep subtopic TODOs focused on recent and current work
-   - Update archive with summary of major accomplishments
-
-2. **Review all subtopic TODOs**
-   - Check for duplicate tasks across TODOs
-   - Merge or split TODOs if structure has changed
-   - Ensure cross-references between TODOs are still valid
-
-3. **Audit master TODO**
-   - Verify all subtopic links work
-   - Update project overview if scope has changed
-   - Review status legend and update if needed
-
-4. **Documentation sync**
-   - Ensure `DOC_STRUCTURE.md` reflects current TODO structure
-   - Update any references to TODOs in `IMPLEMENTATION_GUIDANCE.md`
-   - Check that examples in documentation are still accurate
-
-**Checklist**:
-- [ ] Archive old completions (> 2 months)
-- [ ] Remove duplicate tasks
-- [ ] Update cross-references
-- [ ] Sync with DOC_STRUCTURE.md
-- [ ] Review backlog priorities
-- [ ] Check for obsolete subtopic TODOs
-
-### Quarterly Review (Every 3 months)
-
-**Actions**:
-1. **Structural improvements**
-   - Evaluate if subtopic TODO organization still makes sense
-   - Consider splitting large TODOs (> 500 lines)
-   - Consider merging small/inactive TODOs
-   - Review naming conventions
-
-2. **Create new subtopic TODOs** if needed
-   - Use template structure
-   - Link from master TODO
-   - Add cross-references from related TODOs
-
-3. **Archive completed subtopic TODOs**
-   - If an entire area is complete (e.g., "Schema Validation")
-   - Move the TODO to `docs/archive/todo-YYYY-QQ/`
-   - Update master TODO to remove archived area
-   - Add entry to `DOC_ARCHIVE_LOG.md`
-
-4. **Meta-review**
-   - Is the TODO system helping or hindering?
-   - Are people actually updating TODOs?
-   - What improvements can be made?
+- Reconsider a file's shape when it passes ~500 lines — split it, or check
+  whether it is holding permanent guidance that belongs in a `README_*` doc.
+- When an entire area completes, archive the whole file and remove it from
+  the tables in this README and in `CLAUDE.md`, in the same commit.
 
 ---
 
@@ -244,28 +175,35 @@ git commit -m "docs: update TODO status for week of YYYY-MM-DD"
 
 **DO**:
 ```markdown
-✅ Mark complete and move to "Recent Completions"
-- [x] **Config validation** – Implemented in PR #123
+✅ Verify against actual code before calling it done
+   — read the source, not the commit message and not a ✅ marker
 
-✅ Add completion date
-### Recent Completions (2026-02-14)
-- ✅ Fixed Pitfall 10 in recovery tests
+✅ Then REMOVE the item from the file
+   — git is the historical record (DOC_STRUCTURE.md §2.1.1)
 
-✅ Include reference to where work was done
-- ✅ Memory layout alignment – See data_block.cpp:245-260
+✅ If the content carries lasting insight, archive it with a merge map
+   — docs/archive/transient-YYYY-MM-DD/ + an entry in DOC_ARCHIVE_LOG.md
+   — say what moved where, and what evidence proved it complete
 ```
 
 **DON'T**:
 ```markdown
+❌ Accumulate a "Recent Completions" section
+- Forbidden by DOC_STRUCTURE.md §2.1.1 — finished items blur what remains
+
 ❌ Leave completed tasks in "Current Focus"
 - Clutters the active work list
 
-❌ Delete completed tasks without trace
-- Loses historical context
-
 ❌ Mark incomplete work as done
 - Be honest about actual completion state
+
+❌ Trust a ✅ marker you did not verify
+- A resolution note can be true while the code it names has moved
 ```
+
+*Rewritten 2026-08-07: the DO block used to instruct exactly the pattern
+§2.1.1 forbids, including a worked `### Recent Completions (2026-02-14)`
+example.*
 
 ### Updating Task Status
 

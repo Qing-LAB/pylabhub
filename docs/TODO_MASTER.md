@@ -81,6 +81,25 @@ post-reconcile shipped-sprint detail).
 > | **4** | **Role-program unification (C++ RAII framework)** | #292 collapse of the three role-host files, taken together with the Template-RAII layer (Phase 2b: `TypedInboxClient`, `SimpleRoleHost`) since both reshape the same surface; #55 test re-homing rides along. |
 > | **5** | **The rest** | Topology T4/T5 residuals, the Pattern-4 test migration (#52), Windows/CI coverage, and everything else in "Open work by area". |
 
+#### Where the 2026-08-07 cleanup findings land
+
+Six new tasks came out of the review-verification + TODO cleanup passes. Slotted
+using the band definitions above — **these are placements, not priority
+decisions**; move any of them if the band reading is wrong.
+
+| Task | Band | Why there |
+|---|---|---|
+| **#113** I-CORRELATION-STABLE vs code | **needs a decision, not a slot** | A DESIGN-LOCKED HEP invariant says `pending_requests` keys on `(msg_type, correlation_id)`; the code keys on correlation_id alone, and a #72 pass aligned the *comments* to the code. Not schedulable until you pick a direction — amend the invariant (likely right; ids are 16 random bytes) or change the key. Ten minutes of your judgement unblocks it. |
+| **#111** multi-presence half-built (C5/B4/X5/S4) | **4** | Same surface as #292 role-host collapse — the structures already carry the topology, the operations still take `presences[0]`. Doing it inside band 4 costs little; doing it alone means touching the same files twice. |
+| **#112** dead `query_shm_info` + phase labels | **3**, with a band-2 check first | The phase-label half is pure polish. The `query_shm_info` half touches band 2: the SHM observer may want exactly that surface, and its named replacements (`list_shm_blocks`/`get_shm_block`) were never built. Check #78's scope before deleting. |
+| **#115** retire `ChannelSnapshotEntry` | **3** | Gate already satisfied — zero test references. Smallest real item on the list. |
+| **#110** three doc sites naming retired mechanisms | **3** | Doc-only. Fold the `as_peer_allowlist` comment fixes into the `role_identity_policy.hpp` → `known_role.hpp` rename rather than doing them twice. |
+| **#114** regenerate clang-tidy, re-base the lint plan | **3** | Prerequisite for the whole lint backlog; the current plan cannot be actioned. Recipe is in `PLATFORM_TODO.md`. |
+
+None landed in band 1. That is the honest result — the security band's open set
+is unchanged by this cleanup (#104 vault hot reload, #103, #89, #87), and
+nothing found in the docs pass was a security item.
+
 ### Next actions — code-verified 2026-08-07
 
 Each row was checked against source in this pass.  Nothing here rests on a
@@ -337,51 +356,42 @@ scenarios.  Inventory: `TESTING_TODO.md` § "Test infrastructure inventory".
 
 ---
 
-## Active code reviews (1 active + 2 archivable — updated 2026-08-07)
+## Active code reviews (1 — updated 2026-08-07)
 
 > **Review output is not the plan.** These records are candidate findings,
 > not decided work. Nothing here is scheduled until it has been validated
-> against code and a HEP, and then chosen. The validation record below is
-> the current state of that check.
+> against code and a HEP, and then chosen.
 
-- `code_review/REVIEW_VALIDATION_2026-08-02.md` — the validation pass over the
-  other records. Of ~26 items that were carried as open, 12 were already fixed
-  and never marked, 2 were stale, 2 were misreads, 5 were advisory, and 5 were
-  genuinely valid. **Three carried forward, all LOW:** B-1 (loop helpers, now in
-  `API_TODO.md`), O1b (`query_shm_info`, settle inside band 2 — now also
-  tracked as #112), O3 (three forwarders — recorded, not recommended).  Its
-  standing caveat about the FullSystem review's 50 unverified ✅ notes is
-  **discharged**: that verification ran 2026-08-07 and every note held.
-- `code_review/REVIEW_FullSystem_2026-07-20.md` — ✅ **VERIFICATION COMPLETE
-  2026-08-07; ARCHIVABLE.**  The count reconciliation stands (the "29 OPEN by
-  cluster" figure predated #72's 15 and #57's 4 — stale, not a competing
-  measurement; the header's 4 are three verified-present test-coverage items
-  plus the federation-ingress bypass #69 already names).  What was missing is
-  now done: **all ~50 self-reported ✅ notes were independently re-checked
-  against source, and every one held on substance.**  The pass corrected two
-  notes whose *evidence* had gone stale (they named
-  `KnownRolesStore::as_peer_allowlist`, retired under #83, and
-  `zmq_wire_helpers.hpp`, a file that does not exist) and filed three residual
-  doc drifts as **#110** — cases where the ✅ closed the site the finding named
-  and a sibling survived.  Effectively 0 open outside the parked federation
-  task.
-- `code_review/REVIEW_Connection_Inbox_Band_2026-05-17.md` — ✅ **VERIFICATION
-  COMPLETE 2026-08-07; ARCHIVABLE.**  All 16 findings re-checked against
-  source: 8 resolved, 2 closed as accepted design, 6 open.  The 6 are carried
-  in `API_TODO.md` and as tasks **#111** (C5/B4/X5/S4 — the multi-presence
-  model is half-built: structures carry the topology, operations still assume
-  presence 0) and **#112** (X2 dead `query_shm_info`, X4 phase-label
-  comments).  X6 is resolved — `ChecksumRepairPolicy::Repair` is a comment,
-  not an enumerator (`broker_service.hpp:48`).
-- `code_review/LINT_FIXES_PLAN.md` — **the one genuinely active record, and its
-  input is stale.**  Built from an April 2026 clang-tidy log that no longer
-  exists; spot-checked 2026-08-07 and it is *partially* stale, which is the
-  worst kind — `actor_vault.cpp` is deleted (1 row in §1, 3 in §2.1) and the
-  `hub_config.cpp` rows point at the legacy singleton, while other cited
-  symbols do survive (`g_wake_pipe`, `computeUnloadClosure`), lending the list
-  false credibility.  §2 also asks five owner questions never answered.
-  **Order of work: regenerate the log, diff against the plan, then ask only the
-  questions that still have a subject.**  Do not action as written.
+- `code_review/LINT_FIXES_PLAN.md` — **the only active record, and its input is
+  stale.** Built from an April 2026 clang-tidy log that no longer exists;
+  re-checked 2026-08-07 and it is *partially* stale, which is the worst kind —
+  `actor_vault.cpp` is deleted (1 row in §1, 3 in §2.1) and the `hub_config.cpp`
+  rows point at the legacy singleton, while other cited symbols do survive
+  (`g_wake_pipe`, `computeUnloadClosure`), lending the dead rows false
+  credibility. §2 also asks five owner questions never answered. **Order of
+  work: regenerate the log (the recipe lives in `PLATFORM_TODO.md` § "Clang-tidy
+  quality pass"), diff against the plan, then ask only the questions that still
+  have a subject.** Task #114. Do not action as written.
+
+- `code_review/REVIEW_VALIDATION_2026-08-02.md` — kept as the audit trail for
+  how the other records were dispositioned. Of ~26 items carried as open, 12
+  were already fixed and never marked, 2 stale, 2 misreads, 5 advisory, 5
+  genuinely valid. Three carried forward, all LOW: B-1 (loop helpers, in
+  `API_TODO.md`), O1b (`query_shm_info` — now #112), O3 (three forwarders,
+  recorded not recommended). **Its standing caveat about the FullSystem
+  review's ~50 unverified ✅ notes is discharged** — that verification ran
+  2026-08-07 and every note held.
+
+**Archived 2026-08-07 after full verification** (see `DOC_ARCHIVE_LOG.md`
+pass 3) — both are now under `docs/archive/transient-2026-08-07/code_review/`:
+
+- `REVIEW_FullSystem_2026-07-20.md` — all ~50 ✅ resolution notes independently
+  re-checked against source; every one held. The nine that had been verified
+  only by a test *name* were re-run: all nine passed in a full 2780-test sweep.
+  Residual doc drifts filed as #110.
+- `REVIEW_Connection_Inbox_Band_2026-05-17.md` — 16 of 16 findings re-checked:
+  8 resolved, 2 closed as accepted design, 6 open and rehomed to `API_TODO.md`
+  plus tasks #111 and #112.
 
 `REVIEW_FullModule_2026-04-06.md` was archived 2026-08-03 — all ten rows
 dispositioned against code; its one live finding (B-1) moved to `API_TODO.md`

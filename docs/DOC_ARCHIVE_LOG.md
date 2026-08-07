@@ -139,6 +139,51 @@ this cycle. All three held items that would have misdirected planning:
   both ways and folded the recipe into #114 so the regeneration does not
   reinvent it.
 
+**Fourth sweep — the routing tables themselves were wrong.** `AUTH_TODO` and
+`docs/todo/README.md` had not been opened this cycle either. The README turned
+out to be the root cause of a problem earlier passes had been treating as a
+symptom:
+
+- **`CLAUDE.md`'s canonical subtopic table pointed at a file archived in March
+  and omitted three that exist.** It routed memory-layout items to
+  `docs/todo/MEMORY_LAYOUT_TODO.md` (archived 2026-03-02, absorbed into
+  `API_TODO` + `TESTING_TODO`) and listed five areas while seven trackers
+  exist — **omitting `AUTH_TODO.md`, which carries the security critical
+  path and priority band 1.** This is the project instruction file: it tells
+  every session where to file work. Corrected, with the three missing rows
+  added and memory-layout routed to `API_TODO.md`.
+- **`docs/todo/README.md`'s index was five months stale** — four files listed,
+  seven exist, and the three omitted were `AUTH_TODO`, `TOPOLOGY_TODO`,
+  `QUERY_LAYER_TODO`. Descriptions on the four it did list referenced
+  long-dead labels ("Steps 4–5", "HP-C1/HP-C2/BN-H1", "six implementation
+  phases pending"). Rebuilt from `ls`.
+- **The same README instructed the exact practice `DOC_STRUCTURE.md` §2.1.1
+  forbids.** It told maintainers to "move completed tasks to **Recent
+  Completions**" in *ten* places — the template structure, the How-to-Use
+  steps, the Maintenance regime, and a worked `### Recent Completions
+  (2026-02-14)` example in the DO block — while §2.1.1 states "No 'Recent
+  Completions' walls. No dated 'Closed' subsections piling up." Its "Purpose"
+  bullet even read "Completions stay in subtopic TODOs", the precise inverse
+  of the rule. **This is the plausible root cause of the completion-wall bloat
+  that passes 1 and 2 spent their effort trimming by hand.** A process doc
+  sitting next to the work will beat a structure doc one directory up. All ten
+  sites fixed; the self-defined Weekly/Monthly/Quarterly cadence replaced by a
+  pointer to §2.1.1 as the single authority. Also dropped the "Master TODO
+  stays under 100 lines" claim (it is 423, and the number was never a gate).
+
+**Reviews archived** to `transient-2026-08-07/code_review/` now that both are
+fully verified and their open items rehomed: `REVIEW_FullSystem_2026-07-20.md`
+and `REVIEW_Connection_Inbox_Band_2026-05-17.md`. `docs/code_review/` retains
+`LINT_FIXES_PLAN.md` (active, stale input — #114) and
+`REVIEW_VALIDATION_2026-08-02.md` (audit trail).
+
+**Findings slotted into the owner's five priority bands** in `TODO_MASTER.md` —
+#111 → band 4 (same surface as the role-host collapse), #110/#112/#114/#115 →
+band 3, and #113 marked *needs a decision, not a slot* because a locked HEP
+invariant and shipping code disagree. **Nothing landed in band 1**: the
+security band's open set is unchanged by this cleanup, which is the honest
+result rather than a disappointing one.
+
 **One self-correction.** Mid-pass I flagged the checksum-codec note for citing
 `zmq_wire_helpers.hpp` as a nonexistent file and edited the review accordingly.
 The file exists at `src/utils/hub/zmq_wire_helpers.hpp` (`fixarray[5]` line 6,
