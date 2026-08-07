@@ -405,8 +405,13 @@ int hub_stub_wait_for_role(const PlhNativeContext *, const char *, int) noexcept
 {
     return 0;
 }
-void *hub_stub_open_inbox(const PlhNativeContext *, const char *) noexcept
+void *hub_stub_open_inbox(const PlhNativeContext *, const char *, int *out_reason) noexcept
 {
+    // A hub plugin has no role inbox to open.  Say so precisely rather than
+    // leaving the caller to guess from a bare NULL: there is no hub
+    // connection of its own to ask on.
+    if (out_reason != nullptr)
+        *out_reason = PLH_INBOX_OPEN_NO_HUB_CONNECTION;
     return nullptr;
 }
 void *hub_stub_inbox_acquire(const PlhNativeContext *, void *) noexcept
@@ -744,15 +749,55 @@ int ctx_wait_for_role(const PlhNativeContext *ctx, const char *uid, int timeout_
 // RoleAPIBase::open_inbox_client stores the shared_ptr in RoleHostCore's
 // per-uid inbox cache (lifetime == role), so the raw pointer stays valid
 // until teardown — inbox_close is therefore a courtesy no-op.
-void *ctx_open_inbox(const PlhNativeContext *ctx, const char *target_uid)
+// The C++ reason and the C macro are the same number by declaration order,
+// which is exactly the kind of coupling that rots silently.  Pin it: adding
+// or reordering an enumerator on either side now fails the build here rather
+// than mis-reporting a reason to a plugin at runtime.
+static_assert(static_cast<int>(RoleAPIBase::InboxOpenResult::Reason::kOpened) ==
+              PLH_INBOX_OPEN_OPENED);
+static_assert(static_cast<int>(RoleAPIBase::InboxOpenResult::Reason::kNotReachableYet) ==
+              PLH_INBOX_OPEN_NOT_REACHABLE_YET);
+static_assert(static_cast<int>(RoleAPIBase::InboxOpenResult::Reason::kSenderNotRegistered) ==
+              PLH_INBOX_OPEN_SENDER_NOT_REGISTERED);
+static_assert(static_cast<int>(RoleAPIBase::InboxOpenResult::Reason::kNoSuchRole) ==
+              PLH_INBOX_OPEN_NO_SUCH_ROLE);
+static_assert(static_cast<int>(RoleAPIBase::InboxOpenResult::Reason::kNoInbox) ==
+              PLH_INBOX_OPEN_NO_INBOX);
+static_assert(static_cast<int>(RoleAPIBase::InboxOpenResult::Reason::kNoHubConnection) ==
+              PLH_INBOX_OPEN_NO_HUB_CONNECTION);
+static_assert(static_cast<int>(RoleAPIBase::InboxOpenResult::Reason::kCurveUnavailable) ==
+              PLH_INBOX_OPEN_CURVE_UNAVAILABLE);
+static_assert(static_cast<int>(RoleAPIBase::InboxOpenResult::Reason::kSchemaError) ==
+              PLH_INBOX_OPEN_SCHEMA_ERROR);
+static_assert(static_cast<int>(RoleAPIBase::InboxOpenResult::Reason::kConnectFailed) ==
+              PLH_INBOX_OPEN_CONNECT_FAILED);
+static_assert(static_cast<int>(RoleAPIBase::InboxOpenResult::Reason::kStartFailed) ==
+              PLH_INBOX_OPEN_START_FAILED);
+static_assert(static_cast<int>(RoleAPIBase::InboxOpenResult::Reason::kUnknown) ==
+              PLH_INBOX_OPEN_UNKNOWN);
+
+void *ctx_open_inbox(const PlhNativeContext *ctx, const char *target_uid, int *out_reason)
 {
+    const auto report = [out_reason](int code) noexcept
+    {
+        if (out_reason != nullptr)
+            *out_reason = code;
+    };
+
     if (!ctx || !ctx->_api || !target_uid)
+    {
+        report(PLH_INBOX_OPEN_NO_HUB_CONNECTION);
         return nullptr;
+    }
     auto *api = static_cast<RoleAPIBase *>(ctx->_api);
     auto opened = api->open_inbox_client(target_uid);
-    if (!opened)
+    // The enum mirrors the C macros value-for-value (native_engine_api.h
+    // v15), so the reason crosses the ABI without a translation table that
+    // could drift out of step with either side.
+    report(static_cast<int>(opened.reason));
+    if (!opened.ok())
         return nullptr;
-    return static_cast<void *>(opened->client.get());
+    return static_cast<void *>(opened.client.get());
 }
 
 void *ctx_inbox_acquire(const PlhNativeContext * /*ctx*/, void *handle)

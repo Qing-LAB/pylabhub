@@ -49,6 +49,7 @@ static int g_test_band_send_ok = 0;       // 1 if band_broadcast returned (no cr
 static int g_test_band_members_empty = 0; // 1 if band_members visited 0 entries or errored
 static int g_test_inbox_ptrs_wired = 0;   // 1 if all 5 inbox send fn ptrs are non-null
 static int g_test_inbox_open_null = 0;    // 1 if open_inbox on an unreachable target returned NULL
+static int g_test_inbox_open_reason = -1; // PLH_INBOX_OPEN_* the host reported alongside that NULL
 static int g_test_schema_query_ptrs_wired = 0; // 1 if all 3 get_*_json fn ptrs are non-null (v13)
 static int g_test_schema_queries_null = 0;     // 1 if all 3 returned NULL without a broker
                                                //   (incl. the bad-args NULL case)
@@ -210,9 +211,14 @@ extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
         if (g_ctx->open_inbox)
         {
             // No broker/handler attached → target unresolvable → NULL
-            // handle (graceful, no crash).
-            void *h = g_ctx->open_inbox(g_ctx, "prod.noexist.uid00000009");
+            // handle (graceful, no crash).  API v15: the host also says
+            // WHICH failure it was.  With no hub to ask, the honest answer
+            // is no_hub_connection — NOT "that role has no inbox", which is
+            // what a bare NULL would have let a plugin assume.
+            int why = -1;
+            void *h = g_ctx->open_inbox(g_ctx, "prod.noexist.uid00000009", &why);
             g_test_inbox_open_null = (h == nullptr) ? 1 : 0;
+            g_test_inbox_open_reason = why;
         }
     }
 
@@ -386,6 +392,8 @@ extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
                              static_cast<double>(g_test_inbox_ptrs_wired));
         g_ctx->report_metric(g_ctx, "test_inbox_open_null",
                              static_cast<double>(g_test_inbox_open_null));
+        g_ctx->report_metric(g_ctx, "test_inbox_open_reason",
+                             static_cast<double>(g_test_inbox_open_reason));
         g_ctx->report_metric(g_ctx, "test_schema_query_ptrs_wired",
                              static_cast<double>(g_test_schema_query_ptrs_wired));
         g_ctx->report_metric(g_ctx, "test_schema_queries_null",

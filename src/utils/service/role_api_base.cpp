@@ -5139,24 +5139,82 @@ bool RoleAPIBase::is_in_band(const std::string &channel) const noexcept
 // Inbox client management
 // ============================================================================
 
-std::optional<RoleAPIBase::InboxOpenResult>
-RoleAPIBase::open_inbox_client(const std::string &target_uid)
+namespace
 {
+
+/// The hub's `ROLE_INFO_ACK.reason` → this role's vocabulary.  The strings
+/// are the broker's (HEP-CORE-0035 §4.9.7, `broker_service.cpp`); an
+/// unrecognised one is preserved rather than guessed at, so a newer hub
+/// naming a new condition degrades to "I don't know this, here is what it
+/// said" instead of a plausible lie.
+constexpr RoleAPIBase::InboxOpenResult::Reason reason_from_wire(std::string_view wire) noexcept
+{
+    using R = RoleAPIBase::InboxOpenResult::Reason;
+    if (wire == "not_reachable_yet")
+        return R::kNotReachableYet;
+    if (wire == "sender_not_registered")
+        return R::kSenderNotRegistered;
+    if (wire == "no_such_role")
+        return R::kNoSuchRole;
+    if (wire == "no_inbox")
+        return R::kNoInbox;
+    return R::kUnknown;
+}
+
+// The script-visible word and the wire word are the SAME word — that is the
+// whole design, and it is one careless rename away from quietly becoming
+// false.  Pinned at compile time, in both directions, for every reason the
+// hub can send.
+static_assert(reason_from_wire(to_string(
+                  RoleAPIBase::InboxOpenResult::Reason::kNotReachableYet)) ==
+              RoleAPIBase::InboxOpenResult::Reason::kNotReachableYet);
+static_assert(reason_from_wire(to_string(
+                  RoleAPIBase::InboxOpenResult::Reason::kSenderNotRegistered)) ==
+              RoleAPIBase::InboxOpenResult::Reason::kSenderNotRegistered);
+static_assert(reason_from_wire(to_string(
+                  RoleAPIBase::InboxOpenResult::Reason::kNoSuchRole)) ==
+              RoleAPIBase::InboxOpenResult::Reason::kNoSuchRole);
+static_assert(reason_from_wire(to_string(
+                  RoleAPIBase::InboxOpenResult::Reason::kNoInbox)) ==
+              RoleAPIBase::InboxOpenResult::Reason::kNoInbox);
+// An unrecognised wire word must NOT fall into a plausible-looking reason.
+static_assert(reason_from_wire("something_a_newer_hub_says") ==
+              RoleAPIBase::InboxOpenResult::Reason::kUnknown);
+
+} // namespace
+
+RoleAPIBase::InboxOpenResult RoleAPIBase::open_inbox_client(const std::string &target_uid)
+{
+    using Reason = InboxOpenResult::Reason;
+
+    const auto fail = [](Reason r, std::string detail) -> InboxOpenResult
+    {
+        InboxOpenResult out;
+        out.reason = r;
+        out.detail = std::move(detail);
+        return out;
+    };
+
     if (!pImpl->core)
-        return std::nullopt;
+        return fail(Reason::kNoHubConnection, "role host core is not initialised");
     // Class B (role-bound) inbox discovery (ROLE_INFO_REQ per
     // HEP-CORE-0033 §18.2 + HEP-CORE-0027 §4.2).  Iterate
     // connections per §18.3 — first non-empty answer wins.  Target
     // role's inbox lives on whichever hub it registered with; we
     // don't know which hub a priori, so fall through.
     if (!pImpl->handler_)
-        return std::nullopt;
+        return fail(Reason::kNoHubConnection, "role is not started");
     const auto &conns = pImpl->handler_->connections();
     if (conns.empty())
-        return std::nullopt;
+        return fail(Reason::kNoHubConnection, "role holds no hub connection to ask");
 
     hub::SchemaSpec result_spec;
     std::string result_packing;
+    // Why the cache callback gave up.  The callback speaks the cache's
+    // vocabulary — an entry, or nothing — so the reason has to travel out
+    // here rather than through its return type.
+    Reason failure = Reason::kUnknown;
+    std::string failure_detail;
 
     auto entry = pImpl->core->open_inbox(
         target_uid,
@@ -5194,27 +5252,44 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
             }
             if (!found)
             {
+                if (last_reason.empty())
+                {
+                    // Every connection failed to answer at all — distinct
+                    // from a hub that answered "no".
+                    failure = Reason::kNoHubConnection;
+                    failure_detail = "no hub answered ROLE_INFO_REQ";
+                }
+                else
+                {
+                    failure = reason_from_wire(last_reason);
+                    if (failure == Reason::kUnknown)
+                        failure_detail = last_reason; // preserve what it said
+                }
                 // A clearing condition and a permanent one look identical to
                 // the caller, so they must not look identical in the log.
-                if (last_reason == "not_reachable_yet")
+                if (failure == Reason::kNotReachableYet)
                     LOGGER_INFO("[api] open_inbox('{}'): not reachable yet — the target has not "
                                 "confirmed a roster naming this role.  The hub has sent it one; "
                                 "this clears on retry (HEP-CORE-0035 §4.9.7)",
                                 target_uid);
-                else if (last_reason == "sender_not_registered")
+                else if (failure == Reason::kSenderNotRegistered)
                     LOGGER_WARN("[api] open_inbox('{}'): this role holds no registration on the "
                                 "hub that owns that inbox, so it can never be admitted there.  "
                                 "Retrying will not help (HEP-CORE-0035 §4.9.7)",
                                 target_uid);
                 else
                     LOGGER_INFO("[api] open_inbox('{}'): no inbox found (reason='{}')", target_uid,
-                                last_reason.empty() ? "unknown" : last_reason);
+                                to_string(failure));
                 return std::nullopt;
             }
 
             auto inbox_schema = info.value("inbox_schema", nlohmann::json{});
             if (!inbox_schema.is_object() || !inbox_schema.contains("fields"))
+            {
+                failure = Reason::kNoInbox;
+                failure_detail = "ROLE_INFO_ACK carried no usable inbox_schema";
                 return std::nullopt;
+            }
 
             auto inbox_packing = info.value("inbox_packing", std::string{});
             auto inbox_endpoint = info.value("inbox_endpoint", std::string{});
@@ -5230,6 +5305,8 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
                             "inbox_receiver_pubkey_z85 — cannot arm CURVE "
                             "(HEP-CORE-0027 §3.5); refusing unencrypted inbox",
                             target_uid);
+                failure = Reason::kCurveUnavailable;
+                failure_detail = "ROLE_INFO_ACK carried no inbox_receiver_pubkey_z85";
                 return std::nullopt;
             }
 
@@ -5241,6 +5318,8 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
             catch (const std::exception &e)
             {
                 LOGGER_WARN("[api] open_inbox('{}'): schema parse error: {}", target_uid, e.what());
+                failure = Reason::kSchemaError;
+                failure_detail = e.what();
                 return std::nullopt;
             }
 
@@ -5253,6 +5332,8 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
             if (!client_ptr)
             {
                 LOGGER_WARN("[api] open_inbox('{}'): connect failed", target_uid);
+                failure = Reason::kConnectFailed;
+                failure_detail = "InboxClient::connect_to failed for " + inbox_endpoint;
                 return std::nullopt;
             }
             // HEP-CORE-0027 §3.5 — arm CURVE-client BEFORE start(): present
@@ -5269,6 +5350,10 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
             if (!client_ptr->start())
             {
                 LOGGER_WARN("[api] open_inbox('{}'): start failed", target_uid);
+                failure = Reason::kStartFailed;
+                // The hub judged the target's roster to name us, so the most
+                // likely cause is that the target has not applied it yet.
+                failure_detail = "CURVE dial to " + inbox_endpoint + " did not complete";
                 return std::nullopt;
             }
             client_ptr->set_checksum_policy(config::string_to_checksum_policy(inbox_checksum));
@@ -5281,10 +5366,14 @@ RoleAPIBase::open_inbox_client(const std::string &target_uid)
         });
 
     if (!entry)
-        return std::nullopt;
+        return fail(failure, std::move(failure_detail));
 
-    return InboxOpenResult{entry->client, std::move(result_spec), std::move(result_packing),
-                           entry->item_size};
+    InboxOpenResult out;
+    out.client = entry->client;
+    out.spec = std::move(result_spec);
+    out.packing = std::move(result_packing);
+    out.item_size = entry->item_size;
+    return out; // reason stays kOpened
 }
 
 bool RoleAPIBase::wait_for_role(const std::string &uid, int timeout_ms)

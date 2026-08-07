@@ -693,15 +693,72 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
 
     // ── Inbox client management ───────────────────────────────────────────────
 
+    /// Outcome of `open_inbox_client` — the handle, or why there isn't one.
+    ///
+    /// Shaped after `CitationOutcome` (`schema_record.hpp`): a reason, a
+    /// human detail, and `ok()`.  Returned BY VALUE — `std::optional` is not
+    /// the failure channel here, because "no handle" is not one condition but
+    /// nine, and the caller's correct reaction differs between them.
+    ///
+    /// The first four reasons are the hub's own word (`ROLE_INFO_ACK.reason`,
+    /// HEP-CORE-0035 §4.9.7) forwarded verbatim: the string a script reads is
+    /// byte-identical to the string on the wire and in the log.  The rest are
+    /// local to this role.
     struct InboxOpenResult
     {
-        std::shared_ptr<hub::InboxClient> client;
+        enum class Reason : uint8_t
+        {
+            kOpened = 0,
+
+            // ── The hub's answer, forwarded ──────────────────────────────
+            /// The target has not yet confirmed a roster naming this role.
+            /// The hub has just pushed it one, so this CLEARS — the script
+            /// may retry.  Expected during startup; not an error.
+            kNotReachableYet,
+            /// This role holds no registration on the hub that owns that
+            /// inbox, so no roster that hub issues can ever name it.
+            kSenderNotRegistered,
+            /// No hub knows that uid.
+            kNoSuchRole,
+            /// The target exists and has no inbox configured.
+            kNoInbox,
+
+            // ── Local to this role ───────────────────────────────────────
+            /// Not started, or holding no hub connection to ask.  Clears.
+            kNoHubConnection,
+            /// `ROLE_INFO_ACK` carried no `inbox_receiver_pubkey_z85`, so the
+            /// CURVE client cannot be armed.  There is no unencrypted inbox
+            /// fallback (HEP-CORE-0027 §3.5), so this is refusal, not failure.
+            kCurveUnavailable,
+            /// The target's advertised inbox schema did not parse.
+            kSchemaError,
+            /// The DEALER could not be created / connected.  Clears.
+            kConnectFailed,
+            /// The CURVE dial failed — including the receiver's ROUTER
+            /// declining this role's key.  Clears if the roster catches up.
+            kStartFailed,
+
+            /// The hub answered with a `reason` this build does not know —
+            /// a newer hub naming a condition added after this role was
+            /// built.  The raw string is preserved in `detail`, so an
+            /// operator can still read what was meant.  Treated as
+            /// non-clearing: guessing "retry" for an unknown condition is
+            /// how livelocks are written.
+            kUnknown,
+        };
+
+        Reason reason{Reason::kOpened};
+        std::string detail; ///< Human-readable specifics for logs / scripts.
+
+        std::shared_ptr<hub::InboxClient> client; ///< Non-null iff `ok()`.
         hub::SchemaSpec spec;
         std::string packing;
         size_t item_size{0};
+
+        [[nodiscard]] bool ok() const noexcept { return reason == Reason::kOpened; }
     };
 
-    [[nodiscard]] std::optional<InboxOpenResult> open_inbox_client(const std::string &target_uid);
+    [[nodiscard]] InboxOpenResult open_inbox_client(const std::string &target_uid);
     [[nodiscard]] bool wait_for_role(const std::string &uid, int timeout_ms = 5000);
 
     // ── Output side (safe defaults when no output wired) ──────────────────────
@@ -1242,5 +1299,66 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
                                                    const std::string &shm_endpoint,
                                                    const std::string &producer_pubkey_z85);
 };
+
+/// Canonical spelling — identical in every engine's log and script
+/// surface, and identical to the wire for the hub-sourced reasons.
+[[nodiscard]] constexpr std::string_view
+to_string(RoleAPIBase::InboxOpenResult::Reason r) noexcept
+{
+    using R = RoleAPIBase::InboxOpenResult::Reason;
+    switch (r)
+    {
+    case R::kOpened:
+        return "opened";
+    case R::kNotReachableYet:
+        return "not_reachable_yet";
+    case R::kSenderNotRegistered:
+        return "sender_not_registered";
+    case R::kNoSuchRole:
+        return "no_such_role";
+    case R::kNoInbox:
+        return "no_inbox";
+    case R::kNoHubConnection:
+        return "no_hub_connection";
+    case R::kCurveUnavailable:
+        return "curve_unavailable";
+    case R::kSchemaError:
+        return "schema_error";
+    case R::kConnectFailed:
+        return "connect_failed";
+    case R::kStartFailed:
+        return "start_failed";
+    case R::kUnknown:
+        return "unknown";
+    }
+    return "unknown";
+}
+
+/// Whether this condition can clear without the operator changing
+/// anything — a fact about the protocol that the framework knows and a
+/// script cannot derive.  It does NOT decide anything: there is no
+/// auto-retry, no auto-hold.  The script reads this and chooses.
+[[nodiscard]] constexpr bool
+clears_on_retry(RoleAPIBase::InboxOpenResult::Reason r) noexcept
+{
+    using R = RoleAPIBase::InboxOpenResult::Reason;
+    switch (r)
+    {
+    case R::kNotReachableYet:
+    case R::kNoHubConnection:
+    case R::kConnectFailed:
+    case R::kStartFailed:
+        return true;
+    case R::kOpened:
+    case R::kSenderNotRegistered:
+    case R::kNoSuchRole:
+    case R::kNoInbox:
+    case R::kCurveUnavailable:
+    case R::kSchemaError:
+    case R::kUnknown:
+        return false;
+    }
+    return false;
+}
 
 } // namespace pylabhub::scripting

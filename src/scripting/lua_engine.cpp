@@ -2390,27 +2390,41 @@ int LuaEngine::lua_api_open_inbox(lua_State *L)
 
     // Delegate to ScriptEngine base — handles broker query, client
     // creation, and core_ cache in one place.
-    auto result = self->api_->open_inbox_client(target_uid);
-    if (!result)
+    // Lua's own grammar for "no value, and here is why": nil followed by a
+    // reason.  Existing `if not h` code is unaffected — it simply ignores the
+    // extra returns.  The reason string is the shared vocabulary, identical
+    // to what Python and a native plugin see and to what the hub put on the
+    // wire (HEP-CORE-0035 §4.9.7).
+    const auto refuse = [L](RoleAPIBase::InboxOpenResult::Reason r, std::string_view detail) -> int
     {
+        const auto name = to_string(r);
         lua_pushnil(L);
-        return 1;
-    }
+        lua_pushlstring(L, name.data(), name.size());
+        lua_pushlstring(L, detail.data(), detail.size());
+        return 3;
+    };
+
+    auto result = self->api_->open_inbox_client(target_uid);
+    if (!result.ok())
+        return refuse(result.reason, result.detail);
 
     // Build FFI type for this inbox slot (Lua-specific).
     // On cache hit the spec is empty — type was already registered on first call.
-    if (!result->spec.fields.empty())
+    if (!result.spec.fields.empty())
     {
         std::string ffi_type = fmt::format("InboxSlot_{}", target_uid);
         for (auto &c : ffi_type)
             if (c == '-')
                 c = '_';
 
-        std::string cdef = self->build_ffi_cdef_(result->spec, ffi_type, result->packing);
+        std::string cdef = self->build_ffi_cdef_(result.spec, ffi_type, result.packing);
         if (cdef.empty() || !self->state_.register_ffi_type(cdef, self->log_tag_.c_str()))
         {
-            lua_pushnil(L);
-            return 1;
+            // Engine-local, but it is still the target's schema that could
+            // not be made usable — so it answers in the shared vocabulary
+            // rather than inventing a Lua-only word.
+            return refuse(RoleAPIBase::InboxOpenResult::Reason::kSchemaError,
+                          "could not register the FFI type for the inbox slot");
         }
     }
 

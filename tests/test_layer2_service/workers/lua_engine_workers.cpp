@@ -4148,12 +4148,24 @@ int run_graceful_degrade_case(const std::string &dir, const char *scenario_name,
 
 int api_open_inbox_without_broker_returns_nil(const std::string &dir)
 {
+    // nil is the first return, so `if not h` keeps working — but nil alone
+    // was the whole defect.  The second return names WHICH failure, in the
+    // same vocabulary Python and a native plugin get.  With no broker there
+    // is no hub to ask, so "no_hub_connection" is the honest answer; a test
+    // that only checked nil would pass just as happily if the role claimed
+    // the peer had no inbox, which it has no evidence for.
     return run_graceful_degrade_case(dir, "lua_engine::api_open_inbox_without_broker_returns_nil",
                                      R"LUA(
-            local h = api.open_inbox("some-uid")
+            local h, why, detail = api.open_inbox("some-uid")
             assert(h == nil,
                    "open_inbox without broker must return nil, got "
                    .. tostring(h))
+            assert(why == "no_hub_connection",
+                   "open_inbox without broker must say why; expected "
+                   .. "'no_hub_connection', got " .. tostring(why))
+            assert(type(detail) == "string",
+                   "the detail return must always be a string, got "
+                   .. type(detail))
         )LUA");
 }
 

@@ -681,9 +681,16 @@ identified itself honestly.**
 
 #### 4.2.2 What can fail, and what each failure means
 
-`open_inbox` returns nothing for four distinct reasons.  They are not
+`open_inbox` produces no handle for several distinct reasons.  They are not
 interchangeable, and a caller that treats them alike will either give up on
-something transient or retry something permanent forever.
+something transient or retry something permanent forever.  **The reason is
+therefore part of the answer, not only of the log** — the call reports which
+one it was, in the same vocabulary in every engine.
+
+The first four are the hub's own word.  The reason a script reads is
+byte-identical to the `ROLE_INFO_ACK.reason` the hub put on the wire
+(HEP-CORE-0035 §4.9.7): one vocabulary from broker to script, so an operator
+correlating a log line with a script's branch is reading the same token.
 
 | Reason | Meaning | Clears by itself? |
 |---|---|---|
@@ -692,8 +699,22 @@ something transient or retry something permanent forever.
 | `not_reachable_yet` | The role exists and has a mailbox, but has not yet confirmed a roster naming this sender.  The hub has sent it one. | **Yes** — typically within one hub round trip. |
 | `sender_not_registered` | This sender holds no registration on the hub that owns the target's mailbox, so no roster that hub issues can ever name it. | No.  Retrying is a livelock. |
 
-The transport can also fail the discovery outright (no answer within the
-timeout), which is a connectivity problem rather than an answer.
+The remainder are local to the sending role — the discovery never got an
+answer, or the address arrived and could not be used:
+
+| Reason | Meaning | Clears by itself? |
+|---|---|---|
+| `no_hub_connection` | The role is not started, holds no hub connection, or no hub answered the discovery within the timeout.  A connectivity problem rather than an answer. | Yes, once a hub is reachable. |
+| `curve_unavailable` | The answer carried no receiver pubkey, so the CURVE client cannot be armed.  There is no unencrypted inbox (§3.5), so this is a refusal, not a failure. | No. |
+| `schema_error` | The target's advertised inbox schema did not parse. | No. |
+| `connect_failed` | The DEALER could not be created or connected. | Yes. |
+| `start_failed` | The CURVE dial did not complete — including the receiver's ROUTER declining this sender's key, which happens if the target has not yet applied the roster the hub believes it holds. | Yes. |
+| `unknown` | A newer hub named a condition this build does not know.  The raw word is preserved alongside, so an operator can still read what was meant. | Treated as no — guessing "retry" for an unrecognised condition is how livelocks are written. |
+
+**Whether a condition clears is framework knowledge, and is reported as
+such.**  A script cannot derive it: it is a property of the protocol, not of
+the message.  Reporting it is not deciding with it — nothing retries on the
+script's behalf (§4.2.3).
 
 Once the address is in hand, dialling and sending have their own outcomes.
 `send` returns `0` on an acknowledged delivery and a non-zero code
@@ -704,6 +725,19 @@ otherwise; the two ways it fails are worth telling apart when reading logs:
 - **No acknowledgement** — the frame went out and nothing came back within
   the caller's budget.  Costs the full timeout.
 
+**One vocabulary, three grammars.**  The reason is the same word everywhere;
+how it is *delivered* follows each language rather than forcing one shape on
+all three.  An exception is deliberately not used for any of these: a peer
+that has not converged yet is the ordinary startup path, not an error, and
+raising on it would make normal operation look like a fault.  Exceptions
+remain reserved for a malformed argument.
+
+| Engine | Surface |
+|---|---|
+| Lua | `h, reason, detail = api:open_inbox(uid)` — `nil` plus the reason, the language's own idiom for "no value, and here is why".  Existing `if not h` code is unaffected. |
+| Python | a falsy object carrying `.reason`, `.detail`, `.clears_on_retry`.  `if handle:` is unchanged; ignoring the check and calling a send method raises `AttributeError`, which is the correct outcome for that mistake. |
+| Native | `open_inbox(ctx, uid, &reason)` returns NULL and fills a `PLH_INBOX_OPEN_*` code.  C has no exceptions, so an out-param is how this ABI has always carried a "why". |
+
 #### 4.2.3 Who retries what
 
 **The framework does not retry anything, and this is deliberate.**  It
@@ -713,14 +747,17 @@ it could be resent.
 
 What the framework *does* guarantee is that retrying is possible and
 informed: the reachability answer says whether waiting will help, and a
-condition that clears is distinguished from one that does not.
+condition that clears is distinguished from one that does not — in the
+script's hands, not only in the log.
 
 The shape a sending script should have:
 
 ```
 # Retry at the OPEN, not at the send.
 handle = api.open_inbox(target)
-if handle is None:
+if not handle:
+    if not handle.clears_on_retry:
+        api.log("error", f"{target} unreachable: {handle.reason}")
     return                 # try again next cycle; the condition may clear
 slot = handle.acquire()
 slot.value = ...

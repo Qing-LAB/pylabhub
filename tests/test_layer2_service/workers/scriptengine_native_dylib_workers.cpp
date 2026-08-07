@@ -904,6 +904,17 @@ int api_inbox_send_no_broker_graceful_return(const std::string &plugin_dir)
                 << "native inbox send fn ptrs must all be wired (parity)";
             EXPECT_EQ(static_cast<int>(metrics["test_inbox_open_null"]), 1)
                 << "open_inbox on an unreachable target must return NULL gracefully";
+            // ABI v15: NULL alone is not the contract — the plugin is told
+            // WHICH failure.  With no hub connection to ask, any other code
+            // (no_inbox, no_such_role) would be the host inventing a verdict
+            // it has no evidence for.
+            // The C macro and this enumerator are static_asserted equal in
+            // native_engine.cpp, so naming the C++ one here pins the same
+            // value without dragging the C header into this worker.
+            EXPECT_EQ(static_cast<int>(metrics["test_inbox_open_reason"]),
+                      static_cast<int>(pylabhub::scripting::RoleAPIBase::InboxOpenResult::Reason::
+                                           kNoHubConnection))
+                << "open_inbox must report why, not just that it failed";
 
             engine.finalize();
         },

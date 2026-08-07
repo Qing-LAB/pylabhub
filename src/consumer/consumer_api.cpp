@@ -246,21 +246,26 @@ py::object ConsumerAPI::open_inbox(const std::string &target_uid)
     if (it != inbox_cache_.end())
         return it->second;
 
-    std::optional<scripting::RoleAPIBase::InboxOpenResult> result;
+    scripting::RoleAPIBase::InboxOpenResult result;
     {
         py::gil_scoped_release release;
         result = base_->open_inbox_client(target_uid);
     }
-    if (!result)
-        return py::none();
+    // Falsy object rather than None: `if handle:` is unchanged, but the
+    // reason survives instead of being discarded.  Deliberately NOT cached —
+    // "not reachable yet" is a moment, not a verdict.
+    if (!result.ok())
+        return py::cast(scripting::InboxUnavailable{
+            std::string(scripting::to_string(result.reason)),
+            std::move(result.detail), scripting::clears_on_retry(result.reason)});
 
-    py::object slot_type = result->spec.fields.empty()
+    py::object slot_type = result.spec.fields.empty()
                                ? py::none()
-                               : scripting::build_ctypes_struct(result->spec, "InboxSlot");
+                               : scripting::build_ctypes_struct(result.spec, "InboxSlot");
 
     py::object handle =
-        py::cast(scripting::InboxHandle(std::move(result->client), std::move(result->spec),
-                                        std::move(slot_type), result->item_size),
+        py::cast(scripting::InboxHandle(std::move(result.client), std::move(result.spec),
+                                        std::move(slot_type), result.item_size),
                  py::return_value_policy::move);
     inbox_cache_[target_uid] = handle;
     return handle;
@@ -327,7 +332,22 @@ PYBIND11_EMBEDDED_MODULE(pylabhub_consumer, m) // NOLINT
         .def("send", &scripting::InboxHandle::send, py::arg("timeout_ms") = 5000)
         .def("discard", &scripting::InboxHandle::discard)
         .def("is_ready", &scripting::InboxHandle::is_ready)
-        .def("close", &scripting::InboxHandle::close);
+        .def("close", &scripting::InboxHandle::close)
+        // Uniform with InboxUnavailable so a script can log `h.reason`
+        // without first asking which of the two objects it holds.
+        .def_property_readonly("reason", [](const scripting::InboxHandle &) { return "opened"; })
+        .def("__bool__", [](const scripting::InboxHandle &) { return true; });
+
+    // The falsy answer (HEP-CORE-0027 §3.5): `if h:` still works, and the
+    // reason is there for the code that wants it.
+    py::class_<scripting::InboxUnavailable>(m, "InboxUnavailable")
+        .def_readonly("reason", &scripting::InboxUnavailable::reason)
+        .def_readonly("detail", &scripting::InboxUnavailable::detail)
+        .def_readonly("clears_on_retry", &scripting::InboxUnavailable::clears_on_retry)
+        .def("__bool__", [](const scripting::InboxUnavailable &) { return false; })
+        .def("__repr__",
+             [](const scripting::InboxUnavailable &u)
+             { return "<InboxUnavailable reason='" + u.reason + "'>"; });
 
     py::class_<ConsumerAPI>(m, "ConsumerAPI")
         .def("log", &ConsumerAPI::log, py::arg("level"), py::arg("msg"))

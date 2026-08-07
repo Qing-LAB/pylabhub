@@ -4821,19 +4821,29 @@ def on_process(rx, tx, msgs, api):
 
 int api_open_inbox_without_broker(const std::string &dir)
 {
-    // Strengthened over V2.  V2 tested one uid ("some-uid").  This
-    // body tests three arg shapes (normal uid, empty string, unicode)
-    // — all must return None without raising.  A regression where
-    // empty-string uid crashed or threw would surface here instead
-    // of silently later.
+    // Three arg shapes (normal uid, empty string, unicode) — none may
+    // raise, and every one must come back FALSY so `if handle:` keeps
+    // working.  A regression where an empty-string uid crashed or threw
+    // would surface here instead of silently later.
+    //
+    // The result is no longer bare None: it carries WHY (HEP-CORE-0027
+    // §3.5).  With no broker there is no hub to ask, so the reason is
+    // `no_hub_connection` — asserted by name, because a test that only
+    // checked falsiness would pass just as happily if the role reported
+    // "that peer has no inbox", which it has no evidence for.
     return produce_worker_with_script(
         dir, "python_engine::api_open_inbox_without_broker",
         R"PY(
 def on_produce(tx, msgs, api):
     for uid in ("prod.someone.uid12345678", "", "PROD-δΣ-99999999"):
         r = api.open_inbox(uid)
-        assert r is None, (
-            f"api.open_inbox({uid!r}) without broker expected None, got {r!r}")
+        assert not r, (
+            f"api.open_inbox({uid!r}) without broker must be falsy, got {r!r}")
+        assert r.reason == "no_hub_connection", (
+            f"api.open_inbox({uid!r}) without broker expected "
+            f"reason='no_hub_connection', got {r.reason!r}")
+        assert r.clears_on_retry is True, (
+            "a missing hub connection is a condition that clears")
     return False
 )PY",
         [](PythonEngine &engine, RoleHostCore & /*core*/)
@@ -4843,8 +4853,8 @@ def on_produce(tx, msgs, api):
             auto result = engine.invoke_produce({&buf, sizeof(buf)}, msgs);
             EXPECT_EQ(result, InvokeResult::Discard);
             EXPECT_EQ(engine.script_error_count(), 0u)
-                << "api.open_inbox without broker must return None for "
-                   "any uid shape (normal, empty, unicode) — not raise";
+                << "api.open_inbox without broker must answer falsy-with-reason "
+                   "for any uid shape (normal, empty, unicode) — not raise";
         });
 }
 

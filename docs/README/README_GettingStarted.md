@@ -181,8 +181,13 @@ From a Python script:
 ```python
 def on_produce(out_slot, fz, msgs, api):
     handle = api.open_inbox("CONS-Display-AABBCCDD")
-    if handle is None:
-        api.log("Target not found or has no inbox")
+    if not handle:
+        # Falsy, not None — the result says WHY it could not be opened, and
+        # whether waiting will fix it.  `not_reachable_yet` is ordinary at
+        # startup and clears on its own; `sender_not_registered` never will.
+        if handle.clears_on_retry:
+            return True                    # try again next cycle
+        api.log("error", f"inbox unavailable: {handle.reason}")
         return True
 
     handle.acquire()

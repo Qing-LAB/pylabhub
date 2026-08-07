@@ -128,6 +128,29 @@
 #define PLH_POST_EVENT_INVALID_NAME 0
 #define PLH_POST_EVENT_TRANSPORT_ERROR (-1)
 
+/* `open_inbox` outcome (API v15).  Mirrors
+ * `RoleAPIBase::InboxOpenResult::Reason`; the first four are the hub's own
+ * `ROLE_INFO_ACK.reason` forwarded verbatim (HEP-CORE-0035 §4.9.7), so a
+ * native plugin, a Lua script and a Python script all read the SAME word for
+ * the same condition — and it is the word that was on the wire.
+ *
+ * "No handle" is not one condition: `PLH_INBOX_OPEN_NOT_REACHABLE_YET` clears
+ * on its own and is expected during startup, while
+ * `PLH_INBOX_OPEN_SENDER_NOT_REGISTERED` never clears without operator
+ * action.  Retrying the first is correct; retrying the second is a livelock.
+ * The plugin decides — the host does not retry on its behalf. */
+#define PLH_INBOX_OPEN_OPENED 0
+#define PLH_INBOX_OPEN_NOT_REACHABLE_YET 1
+#define PLH_INBOX_OPEN_SENDER_NOT_REGISTERED 2
+#define PLH_INBOX_OPEN_NO_SUCH_ROLE 3
+#define PLH_INBOX_OPEN_NO_INBOX 4
+#define PLH_INBOX_OPEN_NO_HUB_CONNECTION 5
+#define PLH_INBOX_OPEN_CURVE_UNAVAILABLE 6
+#define PLH_INBOX_OPEN_SCHEMA_ERROR 7
+#define PLH_INBOX_OPEN_CONNECT_FAILED 8
+#define PLH_INBOX_OPEN_START_FAILED 9
+#define PLH_INBOX_OPEN_UNKNOWN 10
+
 /* Invoke direction structs (plh_rx_t, plh_tx_t, plh_inbox_msg_t) +
  * visitor + arg-struct typedefs (plh_allowed_peer_t,
  * plh_allowed_peer_visitor, plh_band_member_t, plh_band_member_visitor,
@@ -503,20 +526,29 @@ extern "C"
          * supported.)  The returned handle is an opaque token owned by the
          * host (backed by the role's per-uid inbox-client cache); it stays
          * valid for the role's lifetime.  Typical use:
-         *   void *h = ctx->open_inbox(ctx, "prod.receiver.uid00000001");
+         *   int why = PLH_INBOX_OPEN_OPENED;
+         *   void *h = ctx->open_inbox(ctx, "prod.receiver.uid00000001", &why);
          *   if (h) {
          *     MySlot *s = (MySlot*)ctx->inbox_acquire(ctx, h);
          *     s->value = 42;
          *     int ack = ctx->inbox_send(ctx, h, 5000);   // 0 == delivered
          *     ctx->inbox_close(ctx, h);
+         *   } else if (why == PLH_INBOX_OPEN_NOT_REACHABLE_YET) {
+         *     // expected during startup — try again on a later tick
          *   }
          */
 
         /** open_inbox: resolve the target role's inbox (ROLE_INFO_REQ +
-         *  CURVE dial) and return an opaque handle, or NULL if the target
-         *  has no inbox / is unreachable / auth fails.  Idempotent per uid
-         *  — repeated calls return a handle to the same cached client. */
-        void *(*open_inbox)(const struct PlhNativeContext *ctx, const char *target_uid);
+         *  CURVE dial) and return an opaque handle, or NULL.  Idempotent per
+         *  uid — repeated calls return a handle to the same cached client.
+         *
+         *  `out_reason` (optional; may be NULL) receives a
+         *  `PLH_INBOX_OPEN_*` code saying WHICH failure this was.  C has no
+         *  exceptions, so the tristate-style out-param is how this ABI has
+         *  always carried a "why" (cf. `hub_post_event`); a bare NULL cannot
+         *  distinguish "retry in a moment" from "this will never work". */
+        void *(*open_inbox)(const struct PlhNativeContext *ctx, const char *target_uid,
+                            int *out_reason);
 
         /** inbox_acquire: obtain the writable slot buffer for the next
          *  message on `handle` (size == the target's inbox slot size).
@@ -768,7 +800,18 @@ extern "C"
  * Offsets for prior callbacks unchanged; exact-match api_version gate
  * still requires a rebuild.  Native-plugin-ABI bump only;
  * ComponentVersions unchanged. */
-#define PLH_NATIVE_API_VERSION 14
+/* v15 (2026-08-06): BREAKING — `open_inbox` gains a trailing
+ * `int *out_reason` out-param carrying a `PLH_INBOX_OPEN_*` code, with the
+ * `InboxOpenReason` enum + `to_string` + `clears_on_retry` mirroring
+ * `RoleAPIBase::InboxOpenResult::Reason`.  Before this version every failure
+ * collapsed to NULL, so a plugin could not tell "the target has not confirmed
+ * a roster naming me yet, retry shortly" from "I hold no registration on that
+ * hub and never will" — the hub distinguishes them on the wire
+ * (HEP-CORE-0035 §4.9.7) and the distinction was being discarded at the ABI.
+ * Pass NULL to ignore the reason.  Signature change, so v14 plugins are
+ * rejected by the exact-match api_version gate — rebuild against this header.
+ * Native-plugin-ABI bump only; ComponentVersions unchanged. */
+#define PLH_NATIVE_API_VERSION 15
 
     /* =========================================================================
      * C-visible pylabhub ComponentVersions constants
@@ -1036,6 +1079,49 @@ enum class PostEventResult : int
     TransportError = PLH_POST_EVENT_TRANSPORT_ERROR,
 };
 
+/** Why `Context::open_inbox()` produced no handle (API v15).  Mirrors
+ *  `RoleAPIBase::InboxOpenResult::Reason`; `to_string` below yields the same
+ *  spelling Python and Lua see, and — for the hub-sourced values — the same
+ *  spelling that was on the wire. */
+enum class InboxOpenReason : int
+{
+    Opened = PLH_INBOX_OPEN_OPENED,
+    NotReachableYet = PLH_INBOX_OPEN_NOT_REACHABLE_YET,
+    SenderNotRegistered = PLH_INBOX_OPEN_SENDER_NOT_REGISTERED,
+    NoSuchRole = PLH_INBOX_OPEN_NO_SUCH_ROLE,
+    NoInbox = PLH_INBOX_OPEN_NO_INBOX,
+    NoHubConnection = PLH_INBOX_OPEN_NO_HUB_CONNECTION,
+    CurveUnavailable = PLH_INBOX_OPEN_CURVE_UNAVAILABLE,
+    SchemaError = PLH_INBOX_OPEN_SCHEMA_ERROR,
+    ConnectFailed = PLH_INBOX_OPEN_CONNECT_FAILED,
+    StartFailed = PLH_INBOX_OPEN_START_FAILED,
+    Unknown = PLH_INBOX_OPEN_UNKNOWN,
+};
+
+/** Whether the condition can clear without operator action.  A fact about
+ *  the protocol, not a decision: the host never retries on the plugin's
+ *  behalf. */
+[[nodiscard]] constexpr bool clears_on_retry(InboxOpenReason r) noexcept
+{
+    switch (r)
+    {
+    case InboxOpenReason::NotReachableYet:
+    case InboxOpenReason::NoHubConnection:
+    case InboxOpenReason::ConnectFailed:
+    case InboxOpenReason::StartFailed:
+        return true;
+    case InboxOpenReason::Opened:
+    case InboxOpenReason::SenderNotRegistered:
+    case InboxOpenReason::NoSuchRole:
+    case InboxOpenReason::NoInbox:
+    case InboxOpenReason::CurveUnavailable:
+    case InboxOpenReason::SchemaError:
+    case InboxOpenReason::Unknown:
+        return false;
+    }
+    return false;
+}
+
 /** Compile-time enum → string-view conversions for zero-alloc logging.
  *  Strings match the Python / Lua wire form so a Native plugin's log
  *  output reads identically to a Python plugin's. */
@@ -1091,6 +1177,36 @@ enum class PostEventResult : int
         return "init_timeout";
     }
     return "normal";
+}
+
+[[nodiscard]] constexpr std::string_view to_string(InboxOpenReason r) noexcept
+{
+    switch (r)
+    {
+    case InboxOpenReason::Opened:
+        return "opened";
+    case InboxOpenReason::NotReachableYet:
+        return "not_reachable_yet";
+    case InboxOpenReason::SenderNotRegistered:
+        return "sender_not_registered";
+    case InboxOpenReason::NoSuchRole:
+        return "no_such_role";
+    case InboxOpenReason::NoInbox:
+        return "no_inbox";
+    case InboxOpenReason::NoHubConnection:
+        return "no_hub_connection";
+    case InboxOpenReason::CurveUnavailable:
+        return "curve_unavailable";
+    case InboxOpenReason::SchemaError:
+        return "schema_error";
+    case InboxOpenReason::ConnectFailed:
+        return "connect_failed";
+    case InboxOpenReason::StartFailed:
+        return "start_failed";
+    case InboxOpenReason::Unknown:
+        return "unknown";
+    }
+    return "unknown";
 }
 
 /* ── C++20 concepts for visitor type safety (#194 Phase C) ────────────────

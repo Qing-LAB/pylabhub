@@ -365,6 +365,41 @@ struct PyInboxMsg
     uint64_t gap{0};
 };
 
+// ── InboxUnavailable — the answer when there is no handle ────────────────────
+
+/**
+ * @class InboxUnavailable
+ * @brief Falsy result of `api.open_inbox(uid)` when no handle could be made.
+ *
+ * Python has no second return value, so "nothing, and here is why" is
+ * expressed the way Python expresses it: an object that is falsy.  Existing
+ * `if handle:` code keeps working unchanged and simply never enters the
+ * branch; code that wants the reason reads `.reason`.
+ *
+ * The spelling is the shared vocabulary — the same word a Lua script and a
+ * native plugin see, and for the hub-sourced reasons the same word that was
+ * on the wire (HEP-CORE-0035 §4.9.7).
+ *
+ * @code
+ *   h = api.open_inbox("prod.sensor.uid12345678")
+ *   if h:
+ *       h.acquire(); h.send()
+ *   elif h.clears_on_retry:
+ *       pass                       # e.g. "not_reachable_yet" — try next cycle
+ *   else:
+ *       api.log("error", f"inbox unavailable: {h.reason} ({h.detail})")
+ * @endcode
+ *
+ * Calling a send method on it raises `AttributeError`, which is the correct
+ * outcome for code that ignored the check.
+ */
+struct InboxUnavailable
+{
+    std::string reason; ///< e.g. "not_reachable_yet"
+    std::string detail; ///< Human-readable specifics; may be empty.
+    bool clears_on_retry{false};
+};
+
 // ── InboxHandle — Python-facing wrapper for hub::InboxClient ─────────────────
 
 /**

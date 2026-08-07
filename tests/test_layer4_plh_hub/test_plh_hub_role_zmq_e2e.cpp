@@ -1843,7 +1843,14 @@ void write_inbox_sender_script(const fs::path &script_dir, const std::string &re
          "def on_produce(tx, msgs, api):\n"
          "    if not _sent[0]:\n"
          "        h = api.open_inbox(_RECV)\n"
-         "        if h is not None:\n"
+         // Truthiness, not `is not None`: a refused open answers with a
+         // FALSY object carrying the reason (HEP-CORE-0027 §4.2.2), so an
+         // identity check against None would take the success branch and
+         // call acquire() on it.  The reason is logged because the retry
+         // loop below is exactly the case it exists to explain.
+         "        if not h:\n"
+         "            api.log('info', 'inbox_send: refused reason=' + h.reason)\n"
+         "        else:\n"
          "            slot = h.acquire()\n"
          "            if slot is not None:\n"
          "                slot.value = 42\n"
