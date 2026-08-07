@@ -131,6 +131,24 @@ in commit `21b8696f`.
 
 ---
 
+## Recent Completions
+
+- **2026-07-25 — CMake audit fixes (commit `21b8696f`).** (1) `PYLABHUB_MAX_LOOP_RATE_HZ`
+  was a no-op — declared and range-validated in `ToplevelOptions.cmake` but never
+  turned into a `-D`, so a configure-time override was silently ignored and
+  `loop_timing_policy.hpp` always used its `#ifndef` 10000 default; now propagated
+  via `add_compile_definitions` (verified present in generated `flags.make`).
+  (2) Version-floor lie — root and 11 subdir CMakeLists advertised 3.28 while
+  `StageHelpers.cmake` (always included) requires 3.29, so 3.28 could never
+  configure; raised root to 3.29 and deleted the redundant subdir
+  `cmake_minimum_required` lines (IgorXOP keeps its own — standalone subproject).
+  (3) hubshell→plh_hub/plh_role naming drift in the build summary, a hub.json
+  comment, and README. Dropped on re-verification (not bugs): "XOP double-wired"
+  (SKBUILD force-off + `AND TARGET` guard are correct) and "dead options" plural
+  (only MAX_LOOP_RATE was unwired).
+
+---
+
 ## Backlog
 
 ### Clang-tidy quality pass

@@ -103,6 +103,218 @@ update the destination task's description, then delete the test.
   claim; see the task for the three candidate shapes.  `NoBackoff_
   IgnoresIteration` (line 245) has the same exposure.
 
+## Recent Completions
+
+- **2026-08-06 — `open_inbox` reason codes: three engines, each asserted
+  directly, and one link left honestly unpinned.**  The three existing
+  "without a broker" cases (`LuaEngineIsolatedTest.
+  Api_OpenInbox_WithoutBroker_ReturnsNil`, `PythonEngineIsolatedTest.
+  Api_OpenInbox_WithoutBroker`, `NativeEngineTest.
+  Api_InboxSend_NoBroker_GracefulReturn`) each asserted only that the call
+  came back empty.  All three now assert the REASON by name
+  (`no_hub_connection`) — which is what makes them tests of the design
+  rather than of the absence of a crash.  Mutation-verified together:
+  reporting `no_such_role` instead fails all three.
+  **Why the name matters more than the emptiness.**  A role with no hub to
+  ask has no evidence about the target at all.  "That peer has no inbox" and
+  "I could not ask anyone" are both empty answers and only one of them is
+  true; an emptiness-only assertion cannot tell them apart, which is
+  precisely the confusion the change exists to remove.
+  **Latent break this surfaced.**  The L4 sender script used
+  `if h is not None`, which is always true against a falsy result object —
+  it passed only because the open happened to succeed on the first try in
+  that test, so the branch was never taken.  Fixed to truthiness.  Worth
+  remembering: a green suite did not mean the callers were correct, it meant
+  the broken path was unvisited.
+  **Not pinned, deliberately.**  Nothing drives a *hub-sourced* reason
+  (`not_reachable_yet` / `sender_not_registered`) end to end into a script.
+  The enum↔wire spelling is `static_assert`-ed both ways, the broker's side
+  is pinned by
+  `Pattern4BrokerProtocolTest.UnconfirmedTargetIsRePushedTheSameRoster`
+  (which asserts `reason == "not_reachable_yet"` on the wire), and the three
+  L2 cases pin delivery to each engine — so the only unproven link is the
+  JSON field read in between, and both ends of it name the same field.  An
+  L4 attempt would be timing-dependent for the reason recorded in the #101
+  entry below: a live role converges in microseconds, so the interesting
+  reason cannot be held open long enough to assert on reliably.  Cheap and
+  deterministic beats end-to-end and flaky.
+
+- **2026-08-06 — #101 roster coverage; the layer a behaviour is testable at
+  is decided by who drives the clock.**  Two tests, one that covers what it
+  claims and one that was proven not to.
+  `Pattern4BrokerProtocolTest.UnconfirmedTargetIsRePushedTheSameRoster`
+  (L3) asks twice about a target that never confirms and asserts both
+  identical pushes arrive; `ZmqE2E_InboxTwoSendersOneUnconvergedReceiver`
+  (L4) was written for the same purpose and **disable-and-rerun showed it
+  passes with the fix removed**, because a live role responds in
+  microseconds and the periodic safety net closes the gap inside any budget
+  a subprocess test can use.
+  **The rule.**  A duplicate that only exists in the window between a push
+  and its answer cannot be forced where both ends are real — driving it
+  needs either a backdoor or a sleep, and both pin timing instead of
+  behaviour.  Where the test IS one of the ends, it simply declines to
+  answer and the duplicate becomes the only outcome.  So: when a race is
+  the trigger, move DOWN a layer until the test owns one side of it, rather
+  than widening the window at the layer you started on.
+  Corollary worth its own line: **the safety net masks the fault it is a
+  net for.**  A periodic reconciler makes the one-shot fix it backs up
+  untestable by outcome — only the mechanism distinguishes them.
+
+- **2026-08-02 — #96 broadcast-forgery and heartbeat-forgery pinned; the
+  mutation check rewrote both tests.**  Three Pattern-4 cases:
+  `Broadcast_AttributedToProvenKey_NotRoutingId` (a peer proving Alice's key
+  under Bob's routing id is fanned out as Alice),
+  `Broadcast_BodyDeclaringSender_Refused`, and
+  `HeartbeatNotify_ProvenKeyClaimingAnotherRole_Rejected`.
+  **The lesson is about fire-and-forget rejection tests.**  Both new cases were
+  first written to wait for the ERROR reply and assert on it.  Under mutation
+  they did fail — but on "no reply arrived", after burning the full 60 s
+  budget, because a message that is ACCEPTED draws no reply at all.  The test
+  reported a timeout while the real outcome was a forged broadcast delivered
+  and forged metrics stored on the victim's presence.  Rewritten to assert the
+  HARM first and unconditionally (was it delivered? did the state change?),
+  with the reply checked afterwards under `EXPECT`, both now fail in seconds
+  and name what actually went wrong.  Rule: when the accepted path is silent,
+  never gate a rejection test on the rejection message — the assertion order
+  decides whether a failure is legible.
+  Second, smaller: `poll_until` for a connection whose routing id is still
+  being released must poll on something answered in BOTH outcomes (a query),
+  never on the message under test; and the winning client has to be kept —
+  dropping it releases the id and the next attempt starts the wait over.
+
+- **2026-08-02 — #95 channel-teardown attack pinned, side effect and all.**
+  `DeregReq_ProvenKeyTargetingAnotherRole_Rejected` drives a valid role using
+  its own key to deregister a different role.  Mutation-checked: without the
+  ownership gate the broker replies `CHANNEL_CLOSING_NOTIFY`
+  `reason="producer_deregistered"` and the victim is gone.
+  **The reply assertion alone would not have been enough.**  A gate that
+  returned an error while the handler still dropped the producer passes a
+  rejection-only check and loses the channel anyway, so the test re-queries
+  the victim afterwards and requires him still present.  Assert the state, not
+  just the answer.
+  Test-design note now in `README_testing.md` § Pattern 4 "One routing id, one
+  live connection": a ROUTER drops a second peer on an in-use routing id, and
+  any test of "acting under another role's identity" needs that collision by
+  construction — so the victim must release first, and the wait is
+  `poll_until` on the wire condition (does the hostile request get answered).
+  First attempt spent 60 s timing out on the collision; the second "fixed" it
+  with a round trip on a THIRD connection, which is not a barrier at all — a
+  reply there says the broker handled that message, not that it processed the
+  disconnect ahead of it.  It passed by coincidence.  Two lessons, both already
+  rules: scan `tests/test_framework/` before hand-rolling (`poll_until` lives
+  in `test_sync_utils.h`), and a "barrier" that does not wait on the exact
+  condition is not a barrier.
+
+- **2026-08-02 — #83 attested-identity coverage gap closed, and a mutation
+  check to prove it.**  Two Pattern-4 cases in
+  `test_pattern4_broker_protocol.cpp` drive a live peer that completes a real
+  CURVE handshake with Alice's key and then registers as Bob: announcing
+  Bob's key rejects `PUBKEY_MISMATCH`, announcing Alice's own rejects
+  `IDENTITY_MISMATCH`.  Both roles sit in the roster, so neither rejection can
+  come from an unknown key — the only thing separating them is which key the
+  connection proved.  A positive control (Alice admitted as Alice) makes the
+  rejection specific rather than blanket.
+  **The tests were verified by mutation, not by passing.**  Reverting the gate
+  to the old roster lookup makes both fail, and the failure output is the
+  broker answering `REG_ACK … "Producer registered successfully"` to the
+  impersonator.  Worth repeating for any security test: a green run proves
+  nothing until the test has been seen to fail against the defect.
+  L1 gate tests were re-shaped to match what each layer can observe —
+  `AttestedKey` is unforgeable by construction (its only factory reads a
+  proven key off a live ZAP-armed socket), so L1 scripts the verdict and pins
+  the verdict→reject mapping plus argument forwarding, L2 drives real
+  handshakes, L3 drives the whole path.  Frame-shape suites hand parse an
+  unarmed socket through one documented helper rather than repeating the
+  justification at each call site.
+
+- **2026-07-26 — #74 objective peer counts (L4 e2e + regression re-pin).**
+  Extended `ZmqE2E_MultiProducer_TwoAuthorized` (fan-in 3P→1C) to assert every
+  role — the consumer AND both DIALING producers — reads `producer_count=2
+  consumer_count=1` via the broker's new `CHANNEL_COUNT_NOTIFY`; the dialing
+  producers seeing their sibling is the #74 win. Re-pinned
+  `BrokerRequestCommTest.NotificationDispatch` to match on the
+  `CHANNEL_CLOSING_NOTIFY` type (the broker now also fans `CHANNEL_COUNT_NOTIFY`,
+  so "the notification received" is no longer uniquely the close notify) —
+  test-pins-reality handoff. Also fixed a pre-existing flake:
+  `test_plh_hub_runmode` `RunMode_LogShowsCorrectStartupAndShutdownOrdering`
+  asserted cross-thread log-file order (a race); now asserts presence of every
+  marker + order only within a single thread's stream. **Deferred:** an L2
+  broker unit test for `compute_channel_live_counts` (live vs registered) +
+  `CHANNEL_COUNT_NOTIFY` fan-out — the L4 e2e covers the behavior end-to-end,
+  but a focused L2 pin is cheaper for regressions. Design (archived 2026-07-26, folded into HEP-0028/0007/0017/0036):
+  `docs/archive/transient-2026-07-26/tech_drafts/DRAFT_objective_peer_counts_2026-07-26.md`.
+
+- **2026-07-21 — #70 resource-leak sub-issues: BRC pending-request reaper + Lua eval stack-clear.**
+  Closed the two non-hub/role leak findings from the FullSystem review.
+  (1) **BRC** — a never-answered request leaked forever in `pending_requests`;
+  added a ctrl-thread time-only reaper (`reap_abandoned_requests`) that removes
+  abandoned entries past a retention grace (`Config.abandoned_reap_grace_ms`,
+  default 10s). New L3 test `BrokerRequestCommTest.ReapAbandonedOnDeadBroker`
+  (reuses `start_hubhost_broker`) kills the broker, times out a request, and
+  asserts the production `reaped_abandoned()` counter rises — reads production
+  state per README_testing §1.1 principle 1, no log-marker dependency.
+  (2) **Lua** — `eval()` error path leaked one scratch-stack slot per failure;
+  now clears the stack and logs the error text (symmetric with `invoke`). Added
+  **Detection B** (`event=LuaStackDirtyAtFinalize` WARN at engine finalize) as a
+  production leak safety net + test observable; strengthened
+  `LuaEngineIsolatedTest.Eval_SyntaxError_ReturnsScriptError` to 5 consecutive
+  failing evals and asserts the marker is absent. Full sweep 2632/2632.
+
+- **2026-07-21 — #71 sub-issue 3/4: synchronous logging path pinned (`LoggerTest.SyncLogging`).**
+  Closed the last of the four critical-path coverage gaps in the FullSystem
+  review. New Pattern-3 worker `logger::test_sync_logging`
+  (`tests/test_layer2_service/workers/logger_workers.cpp`) pins the three
+  HEP-0004 §"Synchronous Logging" guarantees the async path cannot make:
+  (a) **immediacy** — a sync line is on disk before any `flush()` (proves the
+  queue bypass); (b) `[LOGGER_SYNC]` prefix vs async `[LOGGER] `; (c) level
+  filter drops a sub-threshold sync message. Deterministic/CI-robust — no
+  sleeps, because `BaseFileSink::fwrite` is a raw `::write(fd)` syscall so the
+  bytes are reader-visible the instant `write_sync` returns. 20× repeat, 0
+  fail. This completes #71 sub-issues 1–4 (HubHost un-mask, classify_peer
+  bug+tests, sync logging, loop-timing math).
+
+- **2026-07-11 — Loop-ready gate + fan-in binding-side reader arc coverage.**
+  Full arc E2E-covered by existing L4 tests + one new L2 test
+  pinning the AND-composition invariant.  Coverage matrix:
+  - **L4 fan-in `ZmqE2E_MultiProducer_TwoAuthorized`** — pins Bug A
+    binding-queue resolution (rx_queue on fan-in binding-side
+    consumer), G2 `allowlist_cache` seed in `apply_consumer_reg_ack`,
+    broker's topology-aware `GET_CHANNEL_AUTH_REQ` authorization,
+    `_on_channel_access_opened` for fan-in consumer-opens path,
+    fan-in consumer self-admission suppression, `CHECK_PEER_READY_REQ`
+    + consumer-branch `CHANNEL_AUTH_APPLIED_REQ`, producer's
+    `wait_for_peer_ready` + `dial_now()`, CURVE handshake ordering.
+    Runs in ~3.4 s (previously failed with 20 s timeout).
+  - **L4 fan-out `ZmqE2E_AuthorizedConsumerReceivesAllSlots`** —
+    regression coverage for the dialing-consumer + binding-producer
+    path.  Would fail if G2 removed (dialing consumer's
+    `allowlist_cache` empty → gate holds forever → InitTimeout).
+  - **L2 `RunDataLoopTest.FrameworkFloorHoldsGate` (NEW)** —
+    load-bearing regression guard on the AND-composition invariant.
+    Framework floor NotReady + user script `on_init` Ready → gate
+    MUST hold; loop MUST time out with `StopReason::InitTimeout`.
+    Catches: AND inverted to OR, short-circuit that skips framework
+    default when script hook present, `init_timeout_ms` budget
+    silently disabled.  Runs in 0.56 s.
+  - **L2 `ZmqQueueTest.TopologyFactory_FanInProducer_WireApplyMasterApproval`
+    (updated)** — pins the two-phase deferred-connect flow:
+    `apply_master_approval` returns Standby → Configured (deferred),
+    `dial_now()` completes Configured → Active.  Before Task #9
+    this test asserted the old single-phase flow.
+- **2026-06-27 — #177 KeyStore fixture infrastructure shipped.**  `CurveKeyStoreFixture`
+  RAII guard (`tests/test_framework/curve_test_setup.h`) constructs
+  `SecureMemorySubsystem` + `KeyStore` and seeds identities under
+  `"hub_identity"` + `"role.<uid>"` names per HEP-CORE-0040 §172.
+  Validated by 5-mutation protocol sweep in
+  `tests/test_layer2_service/workers/curve_test_fixtures_workers.cpp`.
+  Migrated files this session: L3 `hub_host_integration` +
+  `hub_lua_integration` + `hub_python_integration` workers.  Side-effect:
+  L3 `HubHost_Shutdown_BreaksClientConnection` deleted (libzmq shared-
+  context CURVE quirk; L4 replacement filed as #296).  Commits
+  `6e819b73` + `db774840`.  Remaining L3 broker test migrations
+  (broker_health, role_state_machine, broker_protocol, metrics,
+  zmq_endpoint_registry) are AUTH-6 (#154) batch 2a/2b scope.
+
 ## Current Focus — Open coverage gaps
 
 ### ⚠ OPEN (LOW) — three two-side branches one hub cannot reach (#101/#102, corrected 2026-08-06)
@@ -145,6 +357,172 @@ rule, each engine needs a test that a real script SENDS a channel broadcast and
 RECEIVES one, verified directly rather than inferred from a sibling engine.
 Send and receive must both be exercised: they are independent bindings and
 either could regress alone.
+
+### ✅ CLOSED 2026-08-02 — `InboxQueue::recv_gap_count` now pinned by a real loss
+
+`InboxQueueTest.GapCount_TracksDroppedSends`.  An earlier pass called this
+untestable because a hand-built frame cannot carry a valid schema tag
+(`compute_inbox_schema_tag` is file-static).  That was the wrong question: the
+counter is not reached by FORGING a frame, it is reached by CAUSING a loss.
+Set a small `rcvhwm`, stop draining, and `InboxClient::send` drops — its
+documented behaviour when the receiver is backed up.  Because `send()` consumes
+a sequence number BEFORE it attempts the write, each drop burns a seq that
+never reaches the wire, so the next delivered message's gap equals the number
+lost exactly.  Mutation-checked: forcing `gap = 0` in the receive path fails the
+test on the per-message-gap assertion.
+
+Two traps this test hit, both now guarded by comments in the worker — do not
+re-introduce them:
+- **Measure only after the link is PROVEN.**  `send_blocked_count` rises both
+  for "no writable peer yet" and for "peer's queue full", and only the second is
+  the subject.  Blasting straight after `start()` trips the first and measures
+  nothing.
+- **Do NOT set `rcvhwm` to 1.**  libzmq carries the ZMTP handshake through the
+  same pipe; a one-message backlog starves it and the connection never
+  establishes (observed: a 20 s no-op).  16 is small enough to force drops
+  quickly and large enough to connect.
+
+Note this is a METRICS counter — the review that raised it filed it as
+"security-adjacent", which it is not.
+
+### ✅ Delete `HubConfig::load_known_roles_from_vault`; L3 hub harnesses onto production `load_keypair` (task #65, DONE 2026-07-20)
+
+**Smell (removed):** `HubConfig::load_known_roles_from_vault` was a production method
+with ZERO production callers — used only by the L3 harness helper
+`hub_vault_test_seed.h::seed_vault_known_roles`.  It existed solely to dodge an identity
+double-seed: the harnesses faked the hub identity via `seed_curve_identities`, so the
+production `load_keypair` (which seeds identity AND allowlist from the vault in one call)
+would re-add `hub_identity` and throw.  Violated §1.2 (no production surface just for
+tests).
+
+**What shipped:**
+1. DELETED `load_known_roles_from_vault` (`hub_config.hpp` decl + `.cpp` def + comment).
+   known_roles now loads ONLY through the production `load_keypair` path.
+2. `hub_vault_test_seed.h`: `seed_vault_known_roles` → `provision_hub_vault`
+   (`HubVault::create` mints the keypair → `set_known_roles` → `save`; writes the vault
+   only, no load-back) + new `load_hub_keypair_fresh` (evicts any stale `hub_identity`,
+   then calls the PRODUCTION `cfg.load_keypair` — seeds identity + allowlist from the
+   real vault, exactly like a hub boot).  The evict makes it **re-boot-safe** for the
+   `run_with_host` `.reset()`/re-emplace idiom (in-process second boot = KeyStore-global
+   `hub_identity` would otherwise collide; mirrors a real restart = fresh process).
+3. Identity ownership split: **caller** seeds role identities once
+   (`seed_curve_identities` → new `seed_role_identities`, roles only); the **harness**
+   owns `hub_identity` via the vault.  The 3 boots (`start_hubhost_broker`,
+   `start_broker_in_thread`, hub_lua Cat-B ×2) call `provision_hub_vault` +
+   `load_hub_keypair_fresh`; hub pubkey via `broker_pubkey()` (1-line reroute — callers
+   already went through the handle, so the feared ~20 `setup.hub.public` reroute was 1).
+4. Hub keypair comes FROM the vault (production-faithful), not `setup.hub`.
+
+**Actual scope:** prod 2 files (`hub_config.hpp/.cpp`); framework 2 (`curve_test_setup.h`,
+`hub_vault_test_seed.h` + `broker_test_harness.cpp`); 13 pure vault-hub caller sites
+(`broker_admin` 1, `hub_host_integration` 2, `datahub_metrics` 1,
+`datahub_broker_protocol` 1, `datahub_broker_request_comm` 4, `datahub_broker_health` 4)
++ `setup_broker_test` + hub_lua Cat-B ×2.  Verified: full build clean + full ctest
+**2596/2596** (2026-07-20).
+
+**Untouched (verified per-file, correctly out of scope):** all direct-broker sites
+(`datahub_role_state` ×10 via `start_direct_broker`, `datahub_broker_health:569`
+`client_setup`, `datahub_broker_workers:2419` `start_broker_in_thread` direct),
+Pattern-4, L2, `role_api_flexzone`, and hub_lua/hub_python **Cat-A** (`HubHost` booted
+with `make_curve_setup({})` and NO vault).
+
+**Follow-up (task #66): ✅ DONE 2026-08-01.** Cat-A HubHost tests now take the
+production path — `provision_hub_vault(cfg, setup)` then `load_hub_keypair_fresh(cfg)`
+— instead of pre-seeding `hub_identity`.  11 sites, not the 9 estimated here:
+hub_lua ×10, `hub_python:202`.  Verified Debug 2740/2740 + Release 2737/2737.
+
+### ✅ `sleep_for`-ordering audit in test_hub_zmq_queue.cpp (RESOLVED 2026-07-18)
+
+`ZmqQueueTest.TopologyFactory_FanOut_LateJoiner_ReceivesFramesAfterSubscribe`
+flaked ~1-in-4 in Release from a `sleep_for(200ms) // slow-joiner settle` race
+(async `send_ring_` leaks pre-subscribe frames to a late SUB).  Fixed +
+**all 4 fan-out slow-joiner settles converted** to deterministic `poll_until`
+(commits `102d92a7` + follow-up): `FanOut_LateJoiner`, `FanOut_TwoSubscribers`,
+the round-trip `PubSub` test (~L2559), plus the negative/timeout `WrongServerPubkey`
+(settle removed — read-timeout is the check) and `PubStop` (warm-up until the
+CURVE handshake completes, else `pub->stop()` races the ZAP domain unregister →
+"no domain registered" WARN).  0 `sleep_for(200ms)` settles remain; verified
+40/40 under 1-core load.  The `sleep_for(50ms) // connection setup` calls are
+the documented TCP-establishment carve-out — left as-is.
+
+### L4 test-failure evidence log (all entries currently RESOLVED)
+
+**Status 2026-07-18:** the one logged failure (#2480) is RESOLVED
+(VersionedAdmissionLedger, 30/30 under stress — see below); no
+uninvestigated L4 failures open.
+
+**Rule:** every L4 test failure gets an entry here, even if reruns
+subsequently pass.  L4 tests exercise real subprocesses, real
+sockets, real timing, real signals — a failure that "rerun-passes"
+is a **transient bug**, not a "flake."  There is nothing flaky
+about tests.  This log ensures the deep/transient bugs L4 tests
+reveal don't get papered over by a rerun-based dismissal.
+
+Each entry records: (a) test name + ctest test id, (b) when it
+was observed, (c) what evidence is available, (d) whether the
+failure has been reproduced under the evidence-preserving
+wrapper, (e) any partial diagnosis.
+
+#### 2480 — `PlhHubCliTest.ZmqE2E_MultiProducer_TwoAuthorized`
+
+- **Observed**: 2026-07-12 during an unfiltered `ctest -L layer4
+  -j 2` sweep (session context: post-REG-arc-commit review).
+  The sweep reported "99% tests passed, 1 tests failed out of 134"
+  and `LastTestsFailed.log` named test #2480.
+- **Evidence available**: NONE.  I violated
+  `feedback_read_log_before_rerun` and ran `ctest --rerun-failed`
+  which OVERWROTE `build/Testing/Temporary/LastTest.log`.  The
+  fresh copy showed only the passing rerun.  Fixture-preserved
+  artifact dirs for the failure run don't exist either — checking
+  `build/stage-debug/test_artifacts/plh_hub_l4/` shows only a
+  passing-rerun dir (`plh_hub_l4_zmqe2e_fanin_hub_619969_0`,
+  mtime 2026-07-12 13:52) and older dirs from 2026-07-11.  The
+  most plausible explanation for the missing failure-run artifacts
+  is that the test process died before the fixture's `tmp()` call
+  registered any paths in `paths_to_clean_` — i.e., a crash in
+  the setup phase before subprocess spawn.  Not confirmed.
+- **Reproduced under wrapper**: NO.  Investigation requires
+  running `tools/ctest_evidence.sh -R
+  '^PlhHubCliTest\.ZmqE2E_MultiProducer_TwoAuthorized$' -j 1`
+  in a loop until the failure recurs, then reading the preserved
+  logs (`build/Testing/logs/ctest-<ts>-pid<N>.log`) BEFORE any
+  further action.  Do NOT invoke `ctest --rerun-failed` on this
+  test — the wrapper will refuse without an evidence-read marker
+  anyway.
+- **Partial diagnosis**: none.  The fan-in E2E exercises 2
+  producers dialing 1 binding-side consumer over CURVE, with the
+  producers' `finalize_channel_connect` polling the broker for
+  peer readiness.  A transient failure at this test could
+  indicate: (a) a race between the two producers'
+  `finalize_channel_connect` polls and the consumer's
+  APPLIED_REQ ack; (b) a port collision on the PID-derived offset
+  under parallel `-j N`; (c) the CURVE-DENY-is-terminal libzmq
+  race the whole prior arc was closing; (d) an L4 harness bug in
+  subprocess reap/timeout.  Cannot narrow without the log.
+
+- **RESOLVED 2026-07-13** — root cause was hypothesis (a) +
+  (c): broker's `_on_binding_confirmed` set-snapshot mechanism
+  over-confirmed pubkeys admitted after consumer's APPLIED_REQ
+  was sent but before broker processed it, so producer B's
+  `CHECK_PEER_READY_REQ` returned `ready` prematurely; producer
+  B dialed, CURVE handshake arrived at consumer's ZAP
+  ~50ms before consumer installed B's pubkey, was silently
+  DENIED terminally (libzmq does not retry after ZAP DENY).
+  Preserved artifacts at PID 710828 (2026-07-12 17:10) gave
+  the full timeline post-hoc after the DENY-WARN log
+  instrumentation was added.  Fix: unified
+  `VersionedAdmissionLedger` retires the set-snapshot path;
+  broker uses per-role monotonic confirmed_version against
+  per-pubkey admission_version.  See
+  `docs/tech_draft/DRAFT_versioned_admission_ledger_2026-07-13.md`
+  + HEP-CORE-0042 §5.5.2 amendment 2026-07-13 + §5.5.2.1
+  INVARIANT-BIND-CONFIRM-1..3.  Verified: 30/30 pass under 4x
+  CPU stress (probability at pre-fix ~14% failure rate:
+  ≈1%).
+
+**When to pick this up.**  Before the next unfiltered L4 sweep
+lands green claims in any commit or docs.  A "green" claim that
+runs on a sweep that hides an earlier "flake" is a false claim.
 
 ### L4 fixture scoreboard: startup sweep for crash-orphans (2026-07-12)
 

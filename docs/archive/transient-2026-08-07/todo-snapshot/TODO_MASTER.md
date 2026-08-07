@@ -12,10 +12,47 @@ post-reconcile shipped-sprint detail).
 
 ## Current status (2026-08-03)
 
-> **Shipped-work narrative lives in git and in
-> `archive/transient-2026-07-22/todo-completions/`.**  Task-list validations
-> (2026-08-03, 2026-08-07) are recorded in `DOC_ARCHIVE_LOG.md`; what they
-> found that is still OPEN is in the next-actions table below.
+> **Reconciled 2026-07-22** against `git log b0aa0f51..fc08850f` (34 commits since
+> the 2026-07-18 fact-check), the subtopic TODOs, and code.  Shipped-work detail
+> (admin CURVE commits, vault/inbox-replay, schema two-zone, the 27 resolved
+> review findings) extracted to
+> `archive/transient-2026-07-22/todo-completions/TODO_MASTER_completions_2026-07-22.md`.
+
+> **Task-list validation 2026-08-03.** Every open harness task was re-checked
+> against code. Four were already done and unmarked — **#93** (socket monitor
+> makes disconnect terminal), **#70** (consumer failure-path teardown, which is
+> now the *opposite* of the finding — consumer has more teardown sites than
+> producer), **#71** (the L2 HubHost suite was never masked), and **#98**
+> (channel broadcast; its missing parity test moved to `TESTING_TODO.md:265`
+> rather than holding a shipped feature open).  Still genuinely open and
+> re-confirmed: **#52** (53 `HubHostBrokerHandle` usages), **#55**, **#56**,
+> **#97**.  **Not** re-checked this pass — #58, #82, #85, #87, #89.
+>
+> Also shipped: the broker's three role-presence FSM counters now carry the
+> §2.1 state names (`connected_to_pending_total`, `pending_to_connected_total`,
+> `pending_to_disconnected_total`).  HEP-CORE-0023 §2.5 had documented the old
+> spelling and deferred the rename for "production log scrapers" — a
+> justification about the outside world that nobody had verified.  Confirmed
+> with the owner that no scraper exists; the deferral ended.  `ready_timeout`
+> and `ready_miss_heartbeats` keep their spelling: they are config keys, and
+> renaming them would change a user's config file.
+
+> **Auth-list replication shipped 2026-08-06 (#101, HEP-CORE-0035 §4.9).**
+> Roles now converge on the hub-owned key list, and a hub discloses a role's
+> inbox address only to a sender that role can already admit — because a
+> refused CURVE handshake is terminal (libzmq tears the session down and the
+> project's socket policy independently forbids the retry), so an early knock
+> costs a dropped message and a dead socket rather than a delay.  Debug
+> 2779/2779, Release 2776/2776.
+>
+> Two things worth carrying forward.  **Five substantive defects were found by
+> review or owner pushback and none by the suite**, which went 2774/2774 with
+> the first of them live.  And **two tests were disproved rather than trusted**:
+> disable-and-rerun showed one L4 case passing with its fix removed, because
+> the periodic safety net closes the gap inside any budget a subprocess test
+> can use — the net masks the fault it is a net for.  That case now states what
+> it does and does not cover, and the behaviour is pinned at L3 instead, where
+> the test owns one end of the wire and the duplicate is not a race.
 
 **Closed lines** (detail in the completions index above):
 - **Line 1 — CURVE auth chain:** 🟢 Phase 1 production-ready (REVIEW-E); + vault
@@ -74,30 +111,11 @@ post-reconcile shipped-sprint detail).
 >
 > | # | Band | What it covers |
 > |---|---|---|
-> | **1** | **Security items** | **Open:** vault hot reload (HEP-0035 §4.8.5) — its stated prerequisite (§4.9 roster replication) shipped 2026-08-06, so it is now buildable; #103 admin anti-hijack L2 test; #89 SMS/vault script surface; #87 privilege audit.  The impersonation arc (#83/#95/#96 + inbox sender) is CLOSED on every plane — narrative in git, not here.  **Federation is NOT in this band** — see the parked entry below. |
+> | **1** | **Security items** | ✅ CLOSED: dead/no-op identity + authority validators (#68, verified 2026-07-27); #66 Cat-A vault harness (2026-08-02); **#83 registration now decides on the key the peer PROVED, not the key it claimed** (2026-08-02) — malformed roster entries are fatal, the attested key rides the envelope, and two Pattern-4 cases pin a live impersonation attempt.  #95 (same defect on DEREG / ENDPOINT_UPDATE / CHANNEL_AUTH_APPLIED, 2026-08-02) — `gate_attested_role_ownership` now runs there, sharing one implementation with the registration check.  **#96 (2026-08-02)** — the last two homes of the same defect: the channel broadcast took its `sender_uid` from the request body and forwarded it verbatim, so any handshaked peer could forge message origin; and the control tier checked a claimed `role_uid` only against the routing id, which the same client picks.  Now the broadcast request carries no sender at all (broker_proto 7→8) and the broker stamps it from the proven key via `PeerAuthority::attribute_sender`, while `run_control_gates` binds every caller's-own-uid claim — heartbeat, band join/leave/broadcast — to that key.  Three Pattern-4 cases, each mutation-checked to fail on the harm (a forged broadcast delivered, a forged heartbeat's metrics landing on the victim's presence) rather than on a missing error reply.  **#83 inbox plane closed (2026-08-06)** — the queue names its sender from the proven key, not from the routing id the sender writes, and the roster carries `{uid, pubkey}` pairs so it can.  **The "admin session binding" slice was never open** — verified against `admin_service.cpp` on 2026-08-06: the sealed session id is minted over hub-observed connection facts and re-checked against the arriving connection on all eleven methods.  What HEP-0033 §11.0.6 defers is pubkey-derived operator identity, which needs an admin ZAP domain and is coupled to federation (#69).  **Open on #83:** one L2 test (#103) — a second real connection replaying a valid session id must be refused; today that is pinned only at module level.  The "three coverage gaps" that used to head this list were validated against code on 2026-08-02: two were false and the three real ones (vault `known_roles`, logger diagnostic, inbox gap-count) are all closed — detail below.  **Federation is NOT in this band** — see the parked entry below. |
 > | **2** | **Shared-memory observer feature** | HEP-CORE-0045 Line 3 remaining phases: `PeerDeathWatcher` → broker dial worker + fd cache → opt-out → `collect_shm_info` → L4 tests → pointer refresh. |
 > | **3** | **Backlog of smaller polish items** | The P0/P1 batches below (startup log lines, config defaults, per-area subtopic items) — small, independently shippable. |
 > | **4** | **Role-program unification (C++ RAII framework)** | #292 collapse of the three role-host files, taken together with the Template-RAII layer (Phase 2b: `TypedInboxClient`, `SimpleRoleHost`) since both reshape the same surface; #55 test re-homing rides along. |
 > | **5** | **The rest** | Topology T4/T5 residuals, the Pattern-4 test migration (#52), Windows/CI coverage, and everything else in "Open work by area". |
-
-### Next actions — code-verified 2026-08-07
-
-Each row was checked against source in this pass.  Nothing here rests on a
-`✅` marker, a commit message, or a comment.
-
-| Next | Why now | Evidence checked |
-|---|---|---|
-| **Vault hot reload** (HEP-0035 §4.8.5) | The biggest open security item, and it just became buildable.  §4.8.5 states its own precondition — *"Implement §4.9 first, or reload ships a guarantee it does not have"* — because re-reading the vault fixes only the hub's own gate while every running role keeps deciding on the roster it got at registration.  §4.9 shipped 2026-08-06. | No reload method exists: the admin surface has 14 `kAdmin*` msg_types and none of them reload.  `grep -i reload` over `admin_service.*` + `hub_vault.hpp` returns nothing. |
-| **#103 — admin anti-hijack L2 test** | Small, and it is the last thing standing between #83 and closed. | Only `test_admin_session.cpp` exercises the fact-match, at module level.  The L2 fixture already mints consoles with distinct routing ids, so no new harness is needed. |
-| **`origin_uid`: build the scoped origin, or amend §11.0.5** | A doc-vs-code split, and the doc currently promises the larger thing.  Owner's call which way it resolves. | `origin_uid` is hand-threaded into two queue records and emitted on two notifies (`broker_service.cpp:1434`, `:1472`).  The scoped "current actuation origin" §11.0.5 describes — inherited automatically by every log line and NOTIFY in a teardown cascade — does not exist anywhere in `src/`. |
-| **#98 — `channel_broadcast` three-engine parity test** | A shipped feature whose per-engine bindings are compile-verified only, against an explicit project rule that each engine is verified directly. | The four L2 dispatcher tests drive a **fake** engine: `test_dispatch_notifications.cpp` defines its own `invoke_on_channel_broadcast` that records calls.  No real Lua/Python/Native binding is exercised anywhere. |
-| **Topology Phase E retirement** (T4) | Unblocked since 2026-07-25; the legacy message is still carried. | `CONSUMER_ATTACH_REQ_ZMQ` live in 4 files / 10 references (`broker_service.cpp` ×7, `wire_dispatch.hpp`, `broker_request_comm.cpp`, `plh_version_registry.hpp`). |
-
-**Deliberately not promoted:** #102 (LOW — three branches, two of them the
-same loop body at a different index; explicitly *not* via two hub
-processes), and #87 / #89, which were not re-verified in this pass and
-should be re-scoped against code before anyone starts them.
-
 
 > **Review findings are not the plan.**  A finding produced by a review pass
 > is a CLAIM until someone validates it against code and the owner accepts it.

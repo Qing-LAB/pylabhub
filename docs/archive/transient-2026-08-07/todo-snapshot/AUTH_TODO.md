@@ -22,62 +22,145 @@ observer) see HEP-CORE-0045 §10.
 **Status source of truth:** `docs/TODO_MASTER.md` § "Resume point"
 — three-line summary + per-line remaining work (2026-07-08).
 
-## Open items — admin plane and verified peer identity
+**✅ Admin plane CURVE migration — SHIPPED 2026-07-19.**
+The AdminService socket is now CURVE-secured (reuses the broker CURVE keypair to
+`curve_server`; the admin token stays a mandatory, now-encrypted gate; loopback
+default) with a typed operator-console (ROUTER + session + all 11 methods) and
+in-session replay defense (`HubHost::nonce_seen`). Commits: `132732ca`,
+`07ca94c9`, `be9d8dfc`, `5cd3be62`, `43050a98`, `f54da590`. Design of record:
+**HEP-CORE-0033 §11.1 + §11.3** (the `DRAFT_curve_admin_protocol_2026-07-15`
+checklist is superseded → archived `transient-2026-07-22`). Per-operator
+`known_admins` allowlist / streaming remain future expansion, noted in §11.
+**Residual polish only** (see the Line E table below): reverse-notify channel,
+`origin_uid` stamping, and migrating the 3 admin-triggered HubHostBrokerHandle-
+sweep tests (`close_channel` ×2, `broadcast_hub_queue`) off their L3 RATIONALE
+stubs now that the admin CURVE socket + console client have landed.
 
-The admin plane is CURVE-secured with a typed operator console and
-in-session replay defence (design of record: HEP-CORE-0033 §11.1 / §11.3);
-registration, the REG family, the control tier, the channel broadcast and
-the inbox sender are all decided on the key the peer proved.  What that
-work left behind, verified against code on 2026-08-07:
+**✅ SHIPPED 2026-08-06 — reachable inbox (task #101, HEP-CORE-0035 §4.9).**
+Two invariants, one arc: **I-ROSTER-PRESENT** (a replicated roster names
+roles the operator configured AND the hub currently has registered) and
+**I-INBOX-REACHABLE** (a hub discloses a role's inbox address only to a
+sender that role can already admit).  The second exists because a refused
+CURVE handshake is TERMINAL — libzmq tears the session down and the
+project's own socket policy independently forbids the retry — so an early
+knock costs a dropped message and a dead socket, not a delay.
 
-- **`origin_uid` reaches two paths, not the cascade HEP-0033 §11.0.5
-  describes.**  An admin close and an admin broadcast each carry
-  `origin_uid` into their queue record and out on the resulting notify
-  (`broker_service.cpp:1434`, `:1472`).  The section also specifies a
-  *scoped* "current actuation origin" that every log line and NOTIFY in the
-  resulting teardown inherits automatically — grep finds no such mechanism
-  anywhere in `src/`.  So the audit trail the HEP promises for a cascade
-  (the pending-attach denials, the producer-disconnect) is not there.
-  Either build the scoped origin or amend §11.0.5 to describe the two
-  explicit paths that exist; do not leave the doc claiming the larger one.
-- **Reverse-notify channel** — admin console receives no asynchronous
-  notifications; polling only.
-- **Three admin-triggered `HubHostBrokerHandle` tests** (`close_channel` ×2,
-  `broadcast_hub_queue`) still sit on L3 RATIONALE stubs; the admin CURVE
-  socket + console client they were waiting for have landed (task #52).
+Implemented in five layers: one ledger answering both questions and moved
+only by wire evidence; every adoption acknowledged from the single adoption
+point; reachability decided where the address is disclosed; the four
+outcomes made distinguishable to the caller; tests.
 
+Design is consistent across HEP-CORE-0035 §4.9, HEP-CORE-0027 §3.5/§4.2
+(which now carries the full connection/retry/script narrative and the
+interleaved two-level sequence), and the HEP-CORE-0047 registry.
 
-**Verified peer identity (task #83) — one [TEST] item left.**
-Every plane now decides on the key the peer proved: registration (#83), the
-post-registration REG family (#95), the control tier and channel broadcast
-(#96, broker_proto 7→8), and the inbox sender (2026-08-06).  The admin plane
-mints a session id sealed over hub-observed connection facts and re-checks
-them on all eleven methods (`admin_service.cpp:374`).
+**Five defects found by review, none by the suite** — which went 2774/2774
+with the first one live: a stale confirmation surviving revoke (a restarted
+role reported reachable before adopting anything); roles with no inbox
+polling their hub forever; a dead branch and two docs describing a removed
+path; a sleep-to-order spread into a new caller; and the version guard
+accepting EQUAL versions, which defeated the purpose of versioning and made
+every repeated push reparse, rebuild, republish and report back.
+**Versions now start at 1 and 0 means "no roster"** — the sentinel IS the
+version, so nothing can drift out of step with it.
 
-Two claims that stood in this file until 2026-08-07 were false and are
-recorded here so they are not re-derived: "no code yet compares a claimed
-identity against the connection's verified key", and "`PubkeyOrigin` /
-`pubkey_to_origin` … neither exists in `src/`".  Both were written before
-the work landed and were never revisited — `struct PubkeyOrigin` is
-`security/pubkey_origin.hpp:68` and `PeerAuthority` is `:193`.
+**Where the version guard is actually covered, and where it is not.**  The
+guard fires when a role is offered a roster it already holds, and the only
+thing that produces one is the hub re-pushing to a target that has not
+confirmed.  That is pinned at L3 — `UnconfirmedTargetIsRePushedTheSameRoster`
+drives two asks about one unconfirmed target and asserts both pushes arrive
+carrying the same version, with the coordinates still withheld.  It is
+deterministic because a wire client never confirms, and verified
+load-bearing by suppressing the push (test FAILS).
 
-**Open — [TEST], small:** the anti-hijack half is pinned only at module
-level (`test_admin_session.cpp` calls `verify_session_id` with a mismatched
-address / routing id).  Nothing drives a *second real connection*
-presenting a valid sealed id.  ~15 lines using the existing L2 fixture:
-alice establishes and succeeds, mallory connects with her own routing id and
-replays alice's exact id, expect `unauthorized`, and alice still works
-afterwards.  Mutation check: drop the fact comparison at
-`admin_session.cpp:149` and mallory must start succeeding.  Honest framing
-for the comment — the ROUTER refuses a duplicate routing-id claim outright
-(no `ROUTER_HANDOVER` in the tree), so this pins the second layer of a
-two-layer defence, not the only barrier.  Task #103.
+The L4 companion, `ZmqE2E_InboxTwoSendersOneUnconvergedReceiver`, was
+written, kept, and **verified NOT to cover the guard**: a live role confirms
+the first push in microseconds and the periodic report rescues the hub's
+view within a tick, so the test passes with the fix disabled.  It is
+retained for the fan-in path it does cover, and its comment says so.  An
+earlier idea — that a role with two channels on one hub would receive two
+same-version REG_ACKs — is wrong: a producer has one channel, and a
+processor's two registrations land on different sides.
 
-**Deferred, coupled to federation (#69):** operator identity derived from
-the client CURVE pubkey needs admin to have its own ZAP domain plus a
-`known_admins` allowlist (HEP-CORE-0033 §11.0.6).  The admin ROUTER runs
-with no ZAP domain deliberately — `admin_service.cpp:170` says why.
+Both sweeps green after the last production changes: **Debug 2778/2778,
+Release 2775/2775** (the 3-test difference is the NDEBUG-gated helpers).
+Full record, including the rejected alternatives and the reverted test
+backdoor, in
+`docs/archive/transient-2026-08-06/PLAN_auth_list_replication.md`.
 
+**✅ CLOSED 2026-08-06 — the inbox names its sender from the proven key
+(task #83 slice 4).**  `hub_inbox_queue.cpp` read the ZMQ routing id — a
+label the sender writes — and used it as the replay key, the per-sender
+sequence key, and the name the receiving script sees.  The CURVE handshake
+proves a key and ZAP hands it back as `User-Id`, but the gate returned
+`bool` and discarded it.  HEP-CORE-0027 §3.7 forbids this in a MUST and
+§3.5 names the function, so there was no design work: the queue now holds
+an `InboxAuthority` (admit + name, one binding, both answered from the same
+table) and drops any frame it cannot attribute.  The routing id survives
+only as what it always was — the return address for the ACK.  Commits
+`f507b334` (fix) + `e73f9340` (test).
+
+The test that proves it is `SenderName_ComesFromTheKey_NotTheRoutingId`:
+one sender whose true uid and claimed routing id **differ**, which nothing
+in the suite had ever arranged.  Mutation-checked — it fails under the old
+behaviour while `SenderUid_IsPreserved` still passes, so the 56 existing
+inbox cases could not have caught this.  Exposure was bounded: the stock
+`InboxClient` sets its routing id to its own uid, so no running deployment
+was mis-attributing; the hole was open to a hand-rolled client.
+
+**🟡 PARTLY CLOSED — Verified peer identity (task #83; design ratified
+2026-07-27).**
+The CURVE handshake proves which key is on a connection, and the broker
+control plane now reads it.  **Closed on the broker plane (2026-08-02):**
+registration decides on the proven key (#83), every post-registration
+REG-family message is bound to it (#95), and the control tier plus the
+channel broadcast are bound and attributed from it (#96 — broker_proto 7→8,
+the broadcast request no longer carries a sender).  **Closed on the inbox
+plane (2026-08-06):** the queue names its sender from the proven key, and the
+roster carries `{uid, pubkey}` pairs so it can.
+
+**The admin slice was already built — verified against code 2026-08-06.**
+This entry previously listed "admin session" as a remaining slice; reading
+`admin_service.cpp` shows otherwise.  The token is verified once, a session
+id is minted sealed over the hub-observed connection facts, and all eleven
+methods pass through a gate that re-opens the seal and compares those facts
+to the connection the message actually arrived on (`:374`); an unknown
+`msg_type` is refused.  What HEP-CORE-0033 §11.0.6 *defers* is a different
+thing — operator identity derived from the client CURVE pubkey, which needs
+admin to have its own ZAP domain plus a `known_admins` allowlist, and is
+coupled to federation (#69).  The admin ROUTER deliberately runs with no ZAP
+domain today, and says so at `admin_service.cpp:170`.
+
+**Residual (small, [TEST]):** the connection-binding half is pinned only at
+the module level (`test_admin_session.cpp` calls `verify_session_id` with a
+mismatched address / routing id).  Nothing drives a *second real connection*
+presenting a valid session id.  The L2 fixture already mints consoles with
+their own routing ids, so the case is ~15 lines: alice establishes and
+succeeds, mallory connects and replays alice's exact sealed id, expect
+`unauthorized`, and alice still works afterwards.  Honest framing for the
+test comment: the ROUTER refuses a duplicate routing-id claim outright (no
+`ROUTER_HANDOVER` anywhere in the tree), so this pins the second layer of a
+two-layer defence, not the only barrier.
+
+Original net effect, for the record: any holder of
+any vault key could register, deregister, or re-endpoint any other role.
+Data confidentiality was unaffected — the data plane is separately keyed —
+so the exposure was control-plane integrity/availability.
+
+This is **not new design**: HEP-CORE-0035 §4.2 already specifies
+`PubkeyOrigin` / `pubkey_to_origin` as "the single structure that answers what
+this pubkey means to this hub," and §4.3 already defines the three federation
+trust modes.  Neither exists in `src/`; §4.2 is still listed as pending in
+this HEP's own status banner.  The body-claim model in HEP-0036 §6.3 was
+substituted for it.
+
+Amendments landed 2026-07-27 (docs only): HEP-0035 §2 (four new invariants),
+§4.1 (Layer-2 box restored to origin-based), §4.2 (completed with ingress
+capture + per-plane consumption + the claim-and-compare rejection);
+HEP-0036 §6.3 (contradicting rationale withdrawn, authority resolved to
+HEP-0035); HEP-0046 §14.5 (identity resolution added as step 0, routing-id
+trust gate retired, replay dedup re-keyed onto the principal); HEP-0027 §3
+and HEP-0033 §11 pointers.
 
 **Known coverage gap — deferred with the federation design (#69), owner-noted
 2026-07-27.**  The federation-peer half of the CTRL allowlist has no active
@@ -234,6 +317,69 @@ close structurally after SEC-Fold-2.
   unified HEP §7.3.
 
 ---
+
+## Auth-list replication — steps 1-6 of 9 built, uncommitted (task #101)
+
+**Status 2026-08-04.**  Execution order, current state, and what each step
+still owes live in `docs/archive/transient-2026-08-06/PLAN_auth_list_replication.md` — that
+file is the working record; this section is the why.  Built and passing but
+NOT committed: `PeerAuthority` carries its own version and `admits()`; the
+broker stamps snapshots from a hub-scoped `roster_ledger_`; both ACKs carry
+`{uid,pubkey}` pairs plus `known_roles_version`; the role publishes one
+`PeerAuthority` **per side** and replaces rather than merges; the duplicated
+roster emission collapsed into `roster_ack_block()`; and the inbox ROUTER's
+ZAP gate now ASKS the role (`set_admission_authority`) instead of holding a
+pushed copy — `InboxQueue::set_peer_allowlist` is inert.
+
+Open: attribution (step 7), refresh request/reply + periodic trigger
+(step 8), and tests (step 9).  **Step 9 is not "a test for the happy path"** —
+stale-version rejection, whole-roster refusal on a malformed entry, the
+two-sided OR, and the two step-6 deny paths (no authority bound, non-CURVE
+peer) are all uncovered today.  A version-0 hole in the monotonic guard
+shipped and survived a rewrite of the function around it precisely because
+none of those had a test.
+
+`HEP-CORE-0035 §4.9` (2026-08-04) specifies how a role keeps a hub-owned
+key list current.  **This is not a bug fix.**  The hub's roster is built
+once at broker startup from the vault and never rebuilt, and runtime
+reload is deferred (§4.8.5), so no role can currently be out of date.
+It is the structurally-absent half of two deferred capabilities.
+
+Why it matters before either of them is built:
+
+- **Runtime roster reload (§4.8.5).**  Re-reading the vault updates the
+  hub's own gate and nothing else.  Roles hold their own copy, so a
+  revoked key stays admitted by every running role's inbox and an added
+  key stays refused.  Reload without replication is a hub-local edit
+  wearing a system-wide name.
+- **Inbox sender attribution (HEP-0027 §3.5).**  The roster ships bare
+  keys, so a receiver can admit a sender and cannot name it — which is
+  why `sender_uid`, the replay key, and the per-sender sequence state
+  all currently key off the string the sender wrote rather than the
+  identity it proved.
+
+The design reuses rather than adds: `PeerAuthority` is the replication
+unit on both ends (it is a pure security-layer type, so a role holds the
+same snapshot the hub does and asks it the same questions);
+`VersionedAdmissionLedger` supplies versions, confirmation, and revoke;
+`RosterEntry{uid,pubkey}` is the wire entry; the existing per-role
+periodic task carries the freshness check.  Nothing new is introduced at
+the framework level — the second list to be replicated should add a
+snapshot, not a protocol.
+
+Two things to know before starting:
+
+- The wire change is **3 sites**, not the ~40 files that mention
+  `known_roles`.  Two writers (`broker_service.cpp:2891,4064`) and one
+  reader (`role_api_base.cpp:521-529`).  Everything else by that name is
+  the operator's vault roster — vault, CLI, config, L4 vault tests — and
+  is untouched.  The name collision is what makes the change look risky;
+  consider renaming the wire field in the same commit, since it is
+  already breaking.
+- Role-side convergence must **replace**, never merge.  The
+  pre-2026-08-04 `merge_inbox_known_roles` only ever inserted, so a merged
+  roster could not drop a revoked key.  Now `adopt_inbox_roster`, which
+  replaces one side per ACK.
 
 ## Phase 1 — CURVE chain close (active critical path)
 

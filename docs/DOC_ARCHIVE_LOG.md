@@ -6,6 +6,60 @@
 
 ## Archive batches
 
+### 2026-08-07 (TODO quality check per DOC_STRUCTURE §2.1.1 — 6136 → 5066 lines)
+
+The subtopic TODOs had drifted from "what to do" into "what has been done":
+every major file was 3–5× the ~300-line trigger, and the two most recent
+entries I added myself were "Recent Completions" walls, which §2.1.1
+explicitly forbids.
+
+**Snapshot:** `docs/archive/transient-2026-08-07/todo-snapshot/` holds all
+nine files verbatim as of this pass, so nothing below is lost.
+
+**Trimmed in place** (git holds the history; the working surface should not):
+
+| File | Was | Now | What went |
+|---|---|---|---|
+| `TESTING_TODO.md` | 1463 | 1084 | `## Recent Completions` wall + 3 ✅ sections + the all-RESOLVED L4 evidence log |
+| `MESSAGEHUB_TODO.md` | 1178 | 803 | `## Recent Completions` wall + 7 completed ### sections + the closed native-inbox parity gap |
+| `AUTH_TODO.md` | 956 | 809 | completed header narrative (CURVE migration, #101, slice 4) + the whole task-#101 section |
+| `API_TODO.md` | 770 | 661 | 3 ✅ FIXED sections + the S-11 entry |
+| `TOPOLOGY_TODO.md` | 553 | 506 | the ✅ SHIPPED fan-in arc |
+| `PLATFORM_TODO.md` | 207 | 188 | `## Recent Completions` wall |
+
+**Corrections found by reading code, not markers** — the reason §2.1.1 says
+to verify against source:
+
+- `API_TODO` carried `#92 S-11` as **❌ OPEN**. `hub_zmq_queue.cpp:525` shows
+  the send loop checking `send_stop_ || ctx.shutdown_requested()`, with a
+  comment explaining the asymmetry it fixed. Fixed; entry removed.
+- `AUTH_TODO` asserted "**no code yet compares a claimed identity against
+  the connection's verified key**" and that `PubkeyOrigin` /
+  `pubkey_to_origin` "**neither exists in `src/`**". Both false —
+  `struct PubkeyOrigin` is `security/pubkey_origin.hpp:68`, `PeerAuthority`
+  is `:193`, and #83/#95/#96 shipped the comparison. Written before the
+  work landed, never revisited.
+- `AUTH_TODO` still titled a section "steps 1-6 of 9 built, **uncommitted**"
+  for task #101, which shipped and committed on 2026-08-06.
+
+**Verified still open** (kept, with the evidence): `channel_broadcast` has
+no three-engine parity test — the four L2 dispatcher tests drive a *fake*
+engine (`test_dispatch_notifications.cpp` defines its own
+`invoke_on_channel_broadcast` capturing double), so no real binding is
+exercised. `CONSUMER_ATTACH_REQ_ZMQ` is live in 4 files / 10 references
+(Topology Phase E). `expected_schema_owner` is live in `wire_bodies.hpp` +
+`broker_service.cpp`. HEP-0033 §11.0.5's *scoped* actuation origin does not
+exist in `src/` at all — `origin_uid` is hand-threaded into exactly two
+queue records.
+
+**Not done in this pass, recorded so it is not mistaken for done:** the
+large narrative bodies (`MESSAGEHUB` "Current Status" ~600 lines,
+`API_TODO` "Current Focus", `TESTING_TODO` "Current Focus" ~1000 lines)
+were not line-by-line re-verified — only their completed-marked
+subsections were removed. And `TESTING_TODO` lines 16–106 hold *permanent*
+test-design rules living in a transient file; they belong in
+`README_testing.md`, and moving them is filed rather than done.
+
 ### 2026-07-31 (#92 security-tree review — 11 findings, merged into HEP-0035 + IMPLEMENTATION_GUIDANCE)
 
 `REVIEW_SecurityTree_2026-07-30.md` completed (S-1..S-11 all ✅ FIXED) and moved

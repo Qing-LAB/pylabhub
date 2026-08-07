@@ -12,6 +12,136 @@ the fix is in production code at `native_engine.cpp:289-305`).
 
 ---
 
+## Recent Completions
+
+### 2026-08-06 — `open_inbox` tells the script WHY, in one vocabulary
+
+The hub answers `ROLE_INFO_REQ` with a precise reason —
+`not_reachable_yet`, `sender_not_registered`, `no_such_role`, `no_inbox`
+(HEP-CORE-0035 §4.9.7) — and `open_inbox_client` computed it, wrote it into
+a carefully worded log line, and then returned `std::nullopt`.  Every engine
+flattened that to `nil` / `None` / `NULL`.  The two conditions that call for
+*opposite* reactions were therefore indistinguishable to the one caller that
+has to choose: retrying `not_reachable_yet` is correct and clears within a
+hub round trip; retrying `sender_not_registered` is a livelock.
+
+**This was not new design.**  HEP-CORE-0027 §4.2.2 already specified the
+four reasons in a table with a "clears by itself?" column — the same shape
+of defect as the sender-attribution slice: the document was right and the
+code did not implement it.
+
+`InboxOpenResult` now carries `reason` + `detail` + `ok()` (the
+`CitationOutcome` shape from `schema_record.hpp`) and is returned by value,
+so `std::optional` stops being the failure channel for nine distinct
+conditions.  The script-visible word is byte-identical to the wire word.
+
+One vocabulary, three grammars — each language's own way of saying "nothing,
+and here is why", rather than one shape imposed on all three:
+
+- **Lua** — `h, reason, detail = api:open_inbox(uid)`; `if not h` unaffected.
+- **Python** — a falsy object with `.reason` / `.detail` / `.clears_on_retry`;
+  `if handle:` unaffected.  Deliberately NOT an exception: a peer that has
+  not converged is the ordinary startup path, and raising on it would make
+  normal operation look like a fault.  Exceptions stay for malformed args,
+  which is where `post_event` already puts them.
+- **Native** — `open_inbox(ctx, uid, &reason)` → NULL + `PLH_INBOX_OPEN_*`
+  (ABI **v14 → v15**, signature change).  C has no exceptions, so the
+  out-param is what this ABI has always used for a "why" (cf. the
+  `PostEventResult` tristate).
+
+Drift protection, because two of these couplings rot silently: the C++ enum
+and the C macros are `static_assert`-ed equal value-for-value, and the
+wire↔enum spelling is `static_assert`-ed to round-trip in both directions
+for all four hub-sourced reasons, plus an assert that an unrecognised word
+maps to `unknown` rather than to a plausible-looking neighbour.
+
+**A real caller was relying on the old shape.**  The L4 sender script tested
+`if h is not None` — with a falsy object that branch is always taken, so it
+would have called `acquire()` on the refusal.  Truthiness now, and the
+script logs the reason.  This is the migration cost of the Python choice and
+it is worth naming: `is None` checks against `open_inbox` are now wrong.
+
+Mutation-verified: reporting a plausible-but-wrong reason
+(`no_hub_connection` → `no_such_role`) fails all three engine tests.
+
+### 2026-08-03 — FSM counters renamed to the state vocabulary they count
+
+The broker's three role-presence transition counters were named for states
+the enum stopped using: `ready_to_pending_total`, `pending_to_ready_total`,
+`pending_to_deregistered_total`, against a `RoleState` of `{Connected,
+Pending, Disconnected}`.  They are now `connected_to_pending_total`,
+`pending_to_connected_total`, `pending_to_disconnected_total`.
+
+The drift was not an oversight — HEP-CORE-0023 §2.5 documented it and
+deferred the rename, citing backward compatibility with "production log
+scrapers".  That justification was never verified.  The owner confirmed
+2026-08-03 that no such scraper exists, which voided the deferral and let
+the rename proceed.  HEP-0023 §2.5 and HEP-0033 §9.4 were updated first,
+then the code.
+
+Deleted with it: the `BrokerCounters` comment block instructing every future
+reader to write "Ready (= Connected post-§2)" and never mix the terms.  That
+convention existed only to paper over the mismatch; with the names aligned
+there is nothing to bridge.
+
+`ready_timeout` / `ready_miss_heartbeats` deliberately keep their spelling —
+they are configuration keys reaching a user's config file via
+`hub_host.cpp:313`, a different surface with a different answer.  Both the
+HEP and the field docstring now say so, so the rename is not "finished"
+later by someone breaking a config.
+
+Also fixed while reading: `datahub_role_state_workers.cpp` claimed a first
+heartbeat bumps the recovery counter, while the same test asserted that
+counter is zero and the HEP agreed.  The comment contradicted its own
+assertion, not just the vocabulary.
+
+### 2026-07-30 — Inbox delivery semantics + two admission backdoors closed
+
+Started from one hanging test (`InboxQueueTest.CurveUnknownSenderDenied`,
+SIGTERM at 60 s) and ended in the admission gate.  Detail in HEP-CORE-0027
+§3.7/§3.8 and HEP-CORE-0047 §3.9; tasks #90, #91.
+
+- **`InboxClient::send` could park a caller forever.**  libzmq's default
+  `ZMQ_SNDTIMEO` is -1, so a DEALER with no writable pipe waits indefinitely —
+  a denied CURVE handshake or a departed peer froze the calling thread with no
+  error, no timeout, no log.  Transmit is now non-blocking.
+- **Parts are sent individually.**  A mid-message failure arms libzmq's
+  discard mode, which silently eats following parts *while reporting success*;
+  abandoning the message there let it consume the NEXT one whole.  Which part
+  failed decides whether the remainder is flushed — flushing after a
+  first-part failure would emit a malformed message instead.
+- **ACKs carry the acknowledged `seq`.**  A receipt whose send had already
+  timed out was being returned as the next message's result — and since `0` is
+  the only code production emits, that meant a stale SUCCESS for work never
+  done.  The ACK rides the existing `wire_detail` codec (HEP-0047 §3.0), so
+  correlation cost nothing: `seq` was already an envelope element.
+- **`InboxItem::gap`** reports per-message loss to the receiving handler
+  (Lua/Python/native).  Framework drops; receiver decides.
+- **`inbox_overflow_policy` retired.**  Dropping on a full inbox is framework
+  behaviour, not an operator choice — and the `"block"` value had been
+  selecting `rcvhwm = 0`, which libzmq treats as NO LIMIT (`pipe.cpp:533`,
+  `_hwm > 0 &&`).  The option named for back-pressure was the one that removed
+  every bound.
+
+**Two backdoors, both unreachable-today and therefore unwatched:**
+
+- **Unarmed CURVE** — the arm was guarded on `if (!identity_key_name.empty())`,
+  so a caller who forgot to arm got a working PLAINTEXT socket.  Now PANICs.
+  It immediately caught 16 tests across two files standing up unauthenticated
+  ROUTERs, including one in `datahub_broker_workers.cpp` that reading the inbox
+  sources would never have surfaced.
+- **`PeerAllowlist::unrestricted`** — one bool that made `contains()` admit
+  every identity, documented as a supported escape hatch, protected only by a
+  comment saying production must not set it.  DELETED, so it is a compile
+  error rather than a runtime abort.  That named 5 sites in
+  `zap_router_workers.cpp` using it as an admission shortcut.
+
+**Constraint this places on #69 (federation):** "trust this peer hub" must be
+real entries in `peers` resolved from an authority.  There is no blanket-admit
+primitive left, and reintroducing one is not an option.
+
+---
+
 ## Current Status (broker-specific summary)
 
 | Track | Where it stands | Active item here |
@@ -196,6 +326,174 @@ DOC_ARCHIVE_LOG.md 2026-07-27).
       HEP-0007 §12.3 SCHEMA-vs-DISC complementarity note).
 - [ ] G2 → #292: observer (control-plane-only) role kind named as a
       unification requirement.
+
+### Envelope-framework fresh-eyes review — 3 ratifications + doc corrections (2026-07-24) ✅
+
+Second full review of the typed-envelope framework (2 independent
+verifiers + targeted pass) after Phase B closure.  Core verdict: wire
+behavior sound (frame layout, gate order, §14.7 conformance of all nine
+handlers, adapter triple list all verified consistent).  Three
+ambiguities RATIFIED + drift tail fixed:
+
+- **role_name = display-only, deliberately unvalidated (ratified).**
+  Two HEPs claimed boundary grammar enforcement that existed nowhere
+  (the gate skips it; the "commit callback" it deferred to was the
+  retired skeleton).  No enforcement added — the validated name lives
+  inside `role_uid` by construction; consumers treat role_name as
+  untrusted display text.  HEP-0023 §2.5.4 (now also documents the
+  two-layer grammar model: gate sanity check + HubState full
+  `is_valid_identifier` re-check), HEP-0046 §14.5 step 3 + §14.3 note,
+  gate + ctor comments all reconciled.
+- **STALE_INSTANCE ERROR reply ratified (was "silent drop").**  The
+  doc's no-reply text assumed stale ⇒ dead sender; the live re-REG
+  race (role_api_base handles it by name) needs the error, and
+  correlation keying + unroutable-drop make the reply harmless to dead
+  senders.  HEP-0042 §5.4 (steps reordered to shipped
+  guard→advance→drain→reply, + ratification note), §5.5.2, §12
+  diagram; the broker comment's phantom "Phase 2.4" apology deleted.
+- **ChannelAuthAppliedAckBody aligned to the emitted shape** —
+  `{status, channel_name, applied_version}`; the draft-era
+  `confirmed_version` (never emitted, yet validated by the BRC's live
+  inbound check) retired; reply-value semantics (post-clamp confirmed
+  version) documented in §5.5.2 + §14.3; L1 re-pinned.
+- Drift tail: §7.1 reject-code rows corrected (ctor→BODY_SCHEMA_VIOLATION;
+  gate grammar/pubkey-length→INVALID_REQUEST — fixing a misattribution
+  introduced in the earlier §7.1 edit); §14.2 illustrative API renamed to
+  the shipped build_*_send/parse_*_recv (no `body_as` — typed
+  construction is the dispatch layer's job, stated); §14.4 example
+  rewritten to receive_and_validate + std::visit; §14.3 catalog
+  (producer_hostname/metadata added, spurious ConsumerRegAck
+  correlation_id body field removed, channel_topology marked optional);
+  §14.5 step 5 now names UNKNOWN_ROLE; HEP-0036 §5b.4/§5b.6 retire the
+  separate `inbox_packing` rows (Forbidden tables) + gain
+  abi_fingerprint/build_id/channel_topology rows; §5b.7 gains
+  broker_abi_fingerprint/broker_build_id/known_roles; HEP-0042 §12
+  consumer-attach msg_type fixed (_ZMQ) + §5.5.2 documents the
+  registration/anti-poisoning guard.
+
+### Wire-field reconciliation — APPLIED_REQ strict contract + consumer transport (2026-07-24) ✅
+
+- **CHANNEL_AUTH_APPLIED_REQ strict wire** (HEP-0042 §5.5.2 amendment
+  2026-07-24, migration window closed): `role_type` REQUIRED
+  ("producer"|"consumer" — ctor `require`s it; the dead absent→"producer"
+  handler default deleted), `instance_id` always present (producer echoes the
+  §5.5.3 shift number; consumer sends 0, broker ignores), `producer_role_uid`
+  alias retired (BRC dual-write deleted; broker never read it).  §5.5.3 gained
+  the normative `instance_id` definition (fencing token — NOT identity, NOT an
+  index) + hop-by-hop integration table + crash-restart race diagram.  L1 pins:
+  `ChannelAuthAppliedReqBodyRejectsMissingRoleType` (+ fixture now carries
+  role_type / consumer-shape instance_id=0).
+- **Consumer transport arbitration moved onto `data_transport`** (HEP-0036
+  §5b.6): the handler now value-checks (`∈{shm,zmq}` else INVALID_REQUEST) and
+  arbitrates the REQUIRED `data_transport` (was: DELETE-scheduled
+  `consumer_queue_type`, which production never sent — the §5b.6 reject was
+  unenforced in production).  Fan-in open path stores the declared transport
+  (silent `"zmq"` default removed).  `consumer_queue_type()` accessor deleted.
+  §5b.6 gained the explicit two-path arbitration table.  L3 re-pins:
+  `TransportMismatch_ShmProducer_ZmqConsumer_Fails` +
+  `TransportMatch_ShmConsumer_ShmProducer_Succeeds` now drive
+  `data_transport`; `TransportMatch_NoDriverField_AlwaysSucceeds` (pinned the
+  abolished no-field-skips-arbitration behavior) replaced by
+  `TransportValue_Bogus_RejectedInvalidRequest`.
+- **HEP-0036 §5b.4/§5b.6 `role_name` rows** corrected YES→OPTIONAL (rationale
+  owned by HEP-0046 §14.3); HEP-0046 §14.3 catalog entries for
+  `ChannelAuthAppliedReqBody` (adds role_type) + `HeartbeatNotifyBody` (adds
+  role_type / producer_pid / metrics) reconciled with the shipped ctors.
+- Verified clean in the same field audit (no action): `instance_id` (live
+  HEP-0042 fencing token), `applied_version`, `snapshot_version`,
+  `broker_observer_pubkey_z85`, `producer_hostname`, `metadata`,
+  `consumer_pid`/`consumer_hostname`, `channel_topology`, `flexzone_*`,
+  `inbox_*`.
+
+### Phase-B drift cleanup — stale refs, pairing-rule completion, optional-absent pins (2026-07-24) ✅
+
+- **Stale-doc/comment sweep**: `wire_dispatch.hpp` header reconciled (typed
+  pathway COMPLETE; correct gate list — no key-rotation gate, role-tag added;
+  RegFamily vs authenticated tier split documented); retired-symbol citations
+  (`validate_identity_fields`, `verify_known_role_binding`) replaced with the
+  live `gate_grammar` / `gate_known_role_binding` references across
+  role_uid.hpp, hub_state.hpp, hub_state.cpp, admission_gates.cpp,
+  broker_service.cpp; dangling "zmq_pubkey enforcement above" comments
+  re-pointed at gate_grammar; all "(B.1x)"/"Phase B" phase labels stripped
+  from broker_service.cpp comments (no-phase-labels rule).
+- **HEP-0046 internal consistency**: §14.7 no longer claims the envelope
+  carries broker_proto; §12 step 6 + §14.7 now cite §14.5 steps 1-6/7-8
+  correctly; §14.5 step 5 names `gate_known_role_binding`; §7.1 rejection
+  table split into BODY_SCHEMA_VIOLATION (missing/wrong-typed/grammar, at
+  parse) vs INVALID_REQUEST (semantic value checks, in handler) — matching
+  the shipped wire + L3 pins.
+- **§14.3 pairing rule fully applied**: every optional field on every wire
+  body now has `validate_if_present` in its ctor (53 call sites) — wrong-typed
+  optionals reject as BODY_SCHEMA_VIOLATION at parse instead of INTERNAL_ERROR
+  mid-handler; wrong-typed `metadata` is now rejected rather than silently
+  ignored.
+- **Optional-absent test pins**: L1 `ProducerRegReqBodyOptionalFieldsAbsentDefaults`
+  + `RejectsWrongTypedOptional` + first-ever `ConsumerRegReqBody` L1
+  construction (`ValidatesRequiredFields` + `OptionalFieldsAbsentDefaults`) +
+  `HeartbeatNotifyBodyOptionalFieldsAbsentDefaults`; L3
+  `RegReq_WithoutRoleName_Succeeds` (end-to-end regression pin for the
+  2026-07-24 role_name accessor crash).
+- Still open (deliberately): direct `receive_and_validate` unit test (B.4
+  residual drift-guard), id_frame/ABI-probe dedup cosmetics, stale 3-frame
+  comments in `broker_wire_client.h`.
+
+### PID is debug/record only — never a validation input (2026-07-24) ✅
+
+- **Design ratified**: a PID is machine-local and meaningless to a hub on
+  another host, and `role_uid` is already the authoritative unique key (same-uid
+  REG is a restart-replace, so a channel never holds two presences under one
+  `role_uid`).  So `producer_pid` / `consumer_pid` may be transferred, stored,
+  and logged for debug/record, but **no broker decision may read a PID**.
+- **DEREG + CONSUMER_DEREG resolve by `role_uid` ALONE** (was the residual
+  `(pid, role_uid)` tuple).  The tuple had only ever added `role_uid` to fix
+  pid-alone raciness; the pid half was redundant.  broker_service.cpp `handle_dereg_req`
+  + `handle_consumer_dereg_req`.
+- **Heartbeat**: removed the `LOGGER_ERROR("missing or zero producer_pid")` — a
+  debug field's absence is not an error.  This is the **#308 source-side fix**, so
+  the `datahub_metrics_workers` ERROR allow-list entry retired with it.
+- **Docs**: HEP-CORE-0023 §"role_uid is the sole key" + "A PID is debug/record
+  only"; HEP-CORE-0007 DEREG/CONSUMER_DEREG effects + NOT_REGISTERED row reconciled.
+- **Test**: `broker_dereg_pid_mismatch` → `broker_dereg_ignores_pid`
+  (`DatahubBrokerTest.DeregIgnoresPid_ResolvesByRoleUid`) — now pins that a wrong
+  pid + correct role_uid SUCCEEDS, with a repeat-DEREG side-effect check.
+- **NOT retired (debug/record, intentionally kept)**: pid on the wire (REG/DEREG/
+  HEARTBEAT), `ProducerEntry.producer_pid` storage, admin/list/snapshot pid fields,
+  and the SHM data-plane crash-detection pid (a separate, co-located mechanism).
+
+### Schema registry — two-zone unification + inbox-record removal (2026-07-22) ✅
+
+- **Two-zone `SchemaRecord`**: one record carries datablock + flexzone un-merged;
+  single 64-byte `datablock_half ‖ flexzone_half` fingerprint (each half
+  `BLAKE2b(zone_blds||"|pack:"||packing)`, absent zone = zero half, never
+  all-zero). Unified API in `schema_utils.hpp`: `compute_zone_hash`,
+  `compute_fingerprint_from_wire` (was `compute_canonical_hash_from_wire`),
+  `make_schema_record` (THE single builder), `schema_records_equivalent`,
+  `verify_request_fingerprint`. Wire `schema_hash`/`expected_schema_hash` now
+  128 hex; `SCHEMA_ACK`/DISC_ACK/snapshot return both zones. Data-plane
+  `schema_tag` (`compute_schema_hash`) left folded — separate Job-1 mechanism.
+  Fixes the SCHEMA_REQ flexzone-loss bug (REVIEW_FullSystem finding).
+- **Inbox removed from the registry**: the broker no longer files a
+  `(uid,"inbox")` `SchemaRecord`; it only fail-fast validates `inbox_schema_json`
+  / `inbox_packing` (`INBOX_SCHEMA_INVALID` / `INVALID_INBOX_PACKING`). Inbox
+  schema is discovered as JSON via `ROLE_INFO_REQ` (HEP-0027 §4.0). Registry now
+  holds channel schemas only; `make_schema_record` is the sole creation path.
+- **Docs**: HEP-0034 (§2.2/2.4/3/4.1/4.3/6.3/9/10/11.4 + Mermaid + worked
+  examples), HEP-0027 §4.0 "Inbox initiation & execution", HEP-0033 §19.5. Two
+  design drafts archived (`docs/archive/transient-2026-07-22/`); DOC_ARCHIVE_LOG
+  updated. Green: 2639/2639.
+- **Note — flexzone wiring is already implemented (RETRACTED false "gap" list).**
+  An earlier draft of this entry listed a "wiring arc" of flexzone gaps sourced
+  from an unverified subagent map; on direct code review those were wrong.
+  Flexzone is carried and verified: SHM flexzone identity lives in the data-block
+  header (`data_block.hpp:237 flexzone_schema_hash[32]`) and the reader verifies
+  it (`hub::RxOptions::{fz_schema,fz_packing,verify_fz}`, `hub_queue_factory.hpp`);
+  mismatches are rejected (tests `FlexzoneMismatchRejected` /
+  `BothSchemasMismatchRejected`, `test_datahub_schema_validation.cpp`). Flexzone
+  is SHM-only by design (ZMQ folds `fz_spec` into the drift `schema_tag` only),
+  and flexzone-only SHM channels are supported. The only genuinely-deferred item
+  is the runtime role-side `SCHEMA_REQ` *sender* (owner decision (ii): handler
+  correct now, sender later) — and even that is optional, since roles resolve
+  named schemas from the local cache and the broker validates on REG_REQ.
 
 ### REG/REG_ACK Protocol Redesign — HEP-CORE-0046 promoted (2026-07-12)
 
@@ -464,6 +762,21 @@ L1 pin `test_wire_dispatch_table.cpp` updated.
 
 ## Open broker-specific items
 
+### ✅ CLOSED (no wire change) — band notifies' `role_name` (2026-07-24)
+
+Re-evaluated against the clarified framework goals and closed without a
+code change.  The load-bearing half was already fixed the same day: all
+four `role_name()` accessors (REG ×2 + band ×2) are lenient
+(`read_string_or_empty`), so the throwing-accessor crash class is dead.
+The residual ctor-side `require` on the two band bodies is deliberately
+KEPT: the broker is the sole sender and always populates the label, so
+the `require` pins the broker's actual output shape at the role-side
+parse; nothing branches on the value, and loosening it would be
+symmetry-only churn on a non-load-bearing field (per the
+minimal-honest-fix rule).  Rationale recorded at HEP-CORE-0046 §14.3
+band-body entry.  Revisit only under a dedicated band-family wire
+design pass.
+
 ### #72 reconciliation — `expected_schema_owner` is an uncanonical wire name (filed 2026-07-24)
 
 `ConsumerRegReqBody::expected_schema_owner()` (wire_bodies.hpp) is read by
@@ -534,6 +847,43 @@ federate under any circumstances, so refusing it at config load beats
 connecting and hoping a monitor is watched; and "trusted peer hub" must
 resolve to real entries in `peers` from an authority, because the
 blanket-admit primitive is gone (#91) and is not coming back.
+
+### Native engine inbox API parity gap (filed 2026-07-17; RE-SCOPED 2026-07-18)
+
+**CORRECTION (2026-07-18, verified against code):** the RECEIVE side is
+already fully wired for Native — the original note was wrong.  `NativeEngine`
+DOES override `invoke_on_inbox` (`native_engine.hpp:112`, impl
+`native_engine.cpp:1906`), resolves the `on_inbox` symbol
+(`native_engine.cpp:1384`), reports `has_callback("on_inbox")` (`:1600`), the
+fixture plugin `good_producer_plugin.cpp:347` exports `on_inbox`, and the L2
+test `native_engine.invoke_on_inbox_typed_data` passes.  A native plugin's
+`on_inbox` DOES fire.
+
+**Genuine remaining gap — SEND only.**  There is no `open_inbox` /
+inbox-send host callback in the native ABI (`PlhNativeContext`,
+`native_engine_api.h`), so a native plugin can RECEIVE inbox messages but
+cannot SEND them.  Lua/Python expose `api.open_inbox(target_uid)` →
+`InboxHandle:{acquire,send,discard,close}` (base:
+`RoleAPIBase::open_inbox_client`, `role_api_base.cpp:4282`).
+
+**✅ CLOSED 2026-07-18.**  Added the SEND host callbacks to
+`PlhNativeContext` — `open_inbox` (→ opaque `InboxClient*` handle, cached
+per-uid by RoleHostCore for role lifetime), `inbox_acquire`/`inbox_send`/
+`inbox_discard`/`inbox_close` — with `ctx_*` role-side impls delegating to
+`RoleAPIBase::open_inbox_client` + `InboxClient::{acquire,send,abort}`,
+`hub_stub_*` on the hub context, wired in both `wire()` branches
+(`native_engine.cpp`).  Native plugin ABI bumped v9→v10 (additive; appended
+before the opaque `_core`/`_api` tail; ComponentVersions registry unchanged).
+`good_producer_plugin` probes the surface; L2 test
+`NativeEngineTest.Api_InboxSend_NoBroker_GracefulReturn` pins the wiring
+(all 5 ptrs non-null) + graceful null on an unreachable target.
+
+**Coverage note:** the native SEND delegation is thin over the SHARED
+`InboxClient`, whose end-to-end delivery is proven by the L3 CURVE inbox
+tests + the L4 Python delivery test.  A native-*sender* L4 delivery test
+would need native-L4-role harness infra (the L4 harness is Python-only
+today) — deferred as disproportionate; the transport itself is already
+covered.  See `feedback_multi_engine_parity_audit`.
 
 ### Notify/broadcast message doc-consistency (2026-07-17)
 
@@ -620,6 +970,30 @@ AttachProtocol frames.  This omission is exactly what the drift test would catch
    message.  Designer decision.
 3. **Enumerate the Inbox (HEP-0027) wire family** into §3 when #191/#103 land.
 4. **Sweep residual old-names** listed above (0022/0033/0015/0023).
+
+### Doc-vs-code message audit — RESOLVED 2026-07-17
+
+Diffed every message token in the docs against the actual `src` wire literals.
+Four doc-only names were reconciled against code:
+- `ROLE_REGISTERED_NOTIFY` / `ROLE_DEREGISTERED_NOTIFY` — **not implemented**
+  (no `src` literal); kept as **planned** (federation role-presence
+  propagation).  HEP-0007 spec sections + HEP-0007/0015 event tables +
+  HEP-0047 registry now marked "planned, not implemented."
+- `BROKER_SHM_INFO_REQ` (HEP-0045) — same message as shipped
+  `SHM_BLOCK_QUERY_REQ` (`query_shm_info` / `handle_shm_block_query`); HEP-0045
+  renamed to the real wire name + §0 note that the observer extends its response.
+- `CREATE_CHANNEL_REQ` (HEP-0018) — phantom; channel creation is the first
+  `REG_REQ` / (fan-in) `CONSUMER_REG_REQ`, flagged by `admission.channel_opened`.
+  Fixed HEP-0018 §15.3 + added the definition to HEP-0047 §3.1.
+- `KNOWN_ROLES_REQ` (HEP-0040) — never a real message; `known_roles` is
+  file-provisioned (`KnownRolesStore::load_from_file`), and wire pubkeys arrive
+  via `CONSUMER_REG_ACK`/`REG_ACK.initial_allowlist`/`GET_CHANNEL_AUTH_ACK.allowlist`.
+  Fixed HEP-0040:800.
+
+Verified-legit (design-future / never-shipped / historical, left as-is):
+`CHANNEL_KEY_ROTATION_NOTIFY` (0041 Phase 2), `CHANNEL_WARNING_NOTIFY` (0019
+hypothetical), `METRICS_COLLECT_REQ` (0019 "never shipped"),
+`CHANNEL_AUTH_UPDATE_ACK` (0036 retired-design history).
 
 ### #92 (HIGH-leverage) — Audit all `_REQ` frames against HEP-0007 §12.2.1
 
