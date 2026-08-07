@@ -6,6 +6,73 @@
 
 ## Archive batches
 
+### 2026-08-07 (pass 4 — design session: two features decided out, one abstraction filed)
+
+Not a cleanup pass — a design session, recorded here because it retired a HEP
+and closed two open lines. Every claim below was checked against source before
+the decision was taken.
+
+**Vault hot reload — DECIDED AGAINST (#104).** Scope was clarified first: HEP-0035
+§4.8.5 covers the **allowlist only**; the vault also holds the broker keypair
+and admin seal key, but neither was ever in the proposal. Owner's call: hot-managing
+auth invites inconsistency. §4.8.5 argues the same side unprompted — a reload that
+stops at the hub leaves every role deciding on the roster it got at registration.
+**Restart is the revocation boundary.** Follow-up: §4.8.5 still reads "DEFERRED",
+which means "not yet"; rewrite it as a decision.
+
+**HEP-CORE-0045 SHM observer — RETIRED (not deferred).** The decisive fact was
+found by reading, not grepping: `snapshot_metrics_for_presence()` **is** the
+heartbeat payload and already ships `QueueMetrics` per presence, keyed and
+freshness-stamped; and the role's own handle already reads `DataBlockMetrics`
+(`ShmQueue::capacity()` calls `get_metrics()` today). Both halves existed and
+were never joined. Adding seven fields to `PYLABHUB_QUEUE_METRICS_FIELDS` (#117)
+feeds `api.metrics()` **and** the heartbeat from one X-macro — which is what the
+observer was built to deliver for a healthy channel. Lost: readings from a role
+that stopped heartbeating but still holds the segment mapped — a window the
+broker is already closing by reaping. Gained: a privilege surface removed (the
+broker stops mapping other processes' memory, and the by-name `collect_shm_info`
+read goes with it), and the end of a half-shipped state where the observer key
+was minted and published on every `PRODUCER_REG_ACK` with nothing dialling.
+
+**The ephemeral keypair mechanism is KEPT (#119)** — owner's call, and correct:
+mint at startup, publish the pubkey over an already-authenticated channel, peer
+stores it as the anchor for one scoped operation, never persisted, dies with the
+process. The abstraction ruling: **it must not become a third
+`PubkeyOrigin::Kind`.** That enum's docstring says its distinction is
+"load-bearing, not descriptive" — it governs *which identities a key may speak
+for*. This key speaks for none; it answers *what may the holder do*. Correct
+shape is a sibling in the security module. The tell that the abstraction was
+already blurred: the key is minted by `generate_and_add_identity(...)`, an
+**identity** API producing a **capability**, scope carried entirely by a name
+string.
+
+**Metrics design rulings (#117), recorded so they are not relitigated:**
+flat fields, not a conditional `shm` sub-group (the convention is stated twice
+in-tree: `metrics_json.hpp:10` and `ZmqQueue::metrics()`); **no `mechanism` field**
+— `api.queue_mechanism(side)` already exists with engine parity, and a property
+fixed at factory time is not a metric; **no N/A encoding** — JSON is not
+compatible with N/A, numbers are for the user to interpret.
+
+**A bad suggestion of mine, rejected and reframed (#118).** I proposed measuring
+`offsetof` to detect cache-line false sharing. Owner rejected it: machine-dependent
+(64B x86-64 vs 128B Apple Silicon), and pointless unless mechanistically addressed.
+The correct question is **static** — does `SharedMemoryHeader` group fields by
+access pattern and express it in source (`hardware_destructive_interference_size`),
+the way `SlotRWState` already does with `alignas(64)`? Filed as a review with an
+explicit "do not benchmark". Recorded because the failure mode is worth
+remembering: I proposed empiricism where design was called for, and kept
+explaining the mechanism instead of checking whether the answer was load-bearing.
+
+**System lifecycle / deployment (#116)** — opened in place of hot reload. If
+restart is the revocation boundary, restart must be orchestrated. Today
+`ADMIN_REQUEST_SHUTDOWN_REQ` stops one process and tells no role anything; roles
+infer death from a dead socket, so **an orderly shutdown and a crash are
+indistinguishable**; `StopReason`'s seven values cannot express "planned"; roles
+never reconnect, so hub restart always means role restart; and HEP-0023 §6's
+entire cold-start design for the hub layer is one sentence — *"Hub brokers are
+assumed to be running before any role starts."* No deployment doc exists.
+
+
 ### 2026-08-07 (pass 3 — verification pass: every resolution note checked against source, plus a full test sweep)
 
 **Why this pass ran.** Passes 1 and 2 retired records by reading them. This

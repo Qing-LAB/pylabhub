@@ -28,8 +28,13 @@ post-reconcile shipped-sprint detail).
 - **Line 4 — IAttachChannel (HEP-0044):** ✅ shipped.
 
 **Open lines:**
-- **Line 3 — Broker SHM observer (HEP-0045):** 🚧 Phases A/B + D1/D2 + C.2.a/b
-  shipped; **C.2.c–C.5 open** (below).
+- **Line 3 — Broker SHM observer (HEP-0045):** ⛔ **RETIRED 2026-08-07**, not
+  deferred.  The role already holds the SHM counters and already ships
+  `QueueMetrics` to the hub on every heartbeat — joining them (**#117**) does
+  what the observer was built to do, and retiring it removes a privilege
+  surface (the broker stops mapping other processes' memory).  Shipped pieces
+  come back out; the ephemeral-keypair mechanism is kept and abstracted
+  (**#119**).  Reasoning in HEP-CORE-0045 § "Retirement notice".
 - **Topology migration:** STATIC layer ✅ + live (topology factories, role-code
   migration C step 6 shipped `3d4fe07a`, multi-producer fan-in DATA plane
   proven green at L4 — code-verified 2026-07-25).  **DYNAMIC layer ✅
@@ -75,41 +80,40 @@ post-reconcile shipped-sprint detail).
 >
 > | # | Band | What it covers |
 > |---|---|---|
-> | **1** | **Security items** | **Open:** vault hot reload (HEP-0035 §4.8.5) — its stated prerequisite (§4.9 roster replication) shipped 2026-08-06, so it is now buildable; #103 admin anti-hijack L2 test; #89 SMS/vault script surface; #87 privilege audit.  The impersonation arc (#83/#95/#96 + inbox sender) is CLOSED on every plane — narrative in git, not here.  **Federation is NOT in this band** — see the parked entry below. |
-> | **2** | **Shared-memory observer feature** | HEP-CORE-0045 Line 3 remaining phases: `PeerDeathWatcher` → broker dial worker + fd cache → opt-out → `collect_shm_info` → L4 tests → pointer refresh.  **Coupled to the query layer — see below.** |
+> | **1** | **Security items** | **Open:** #103 admin anti-hijack L2 test; #89 SMS/vault script surface; #87 privilege audit (now also carries the catch-block re-sweep and, post-observer-retirement, the by-name `collect_shm_info` read).  Vault hot reload is **CLOSED — decided against 2026-08-07** (#104): restart is the revocation boundary.  The impersonation arc (#83/#95/#96 + inbox sender) is CLOSED on every plane.  **Federation is NOT in this band.** |
+> | **2** | ~~**Shared-memory observer feature**~~ — **RETIRED 2026-08-07** | HEP-CORE-0045 is ⛔ retired, not deferred.  The role already holds the SHM counters and already ships `QueueMetrics` to the hub on every heartbeat; joining them is **#117** (seven fields, one X-macro).  Retirement also removes a privilege surface — the broker stops mapping other processes' memory.  Residual work is **#117** → **#119** (abstract the ephemeral grant) → removal of the shipped observer pieces.  **This band is otherwise empty; the ordering below should be re-read with that in mind.** |
 > | **3** | **Backlog of smaller polish items** | The P0/P1 batches below (startup log lines, config defaults, per-area subtopic items) — small, independently shippable. |
 > | **4** | **Role-program unification (C++ RAII framework)** | #292 collapse of the three role-host files, taken together with the Template-RAII layer (Phase 2b: `TypedInboxClient`, `SimpleRoleHost`) since both reshape the same surface; #55 test re-homing rides along. |
 > | **5** | **The rest** | Topology T4/T5 residuals, the Pattern-4 test migration (#52), Windows/CI coverage, and everything else in "Open work by area". |
 
-#### Band 2 and the query layer are one arc (found 2026-08-07)
+#### The query layer after the observer retirement (2026-08-07)
 
-The SHM observer (band 2) and HEP-CORE-0039's query layer meet at exactly one
-function, and neither band table nor `QUERY_LAYER_TODO` said so:
+The coupling recorded earlier this day — band 2's `collect_shm_info` rewrite
+feeding HEP-CORE-0039's `list_shm_blocks` / `get_shm_block` — **dissolved when
+the observer was retired.**  What remains is simpler and worth stating so the
+old note is not re-derived:
 
-- Band 2 phase **C.3 rewrites `collect_shm_info`** (HEP-0045 §8.3) — fd lookup
-  plus a `metrics_source` field (`attached` / `heartbeat` / `unavailable`).
-- HEP-0039 **Phase 5 builds `list_shm_blocks` / `get_shm_block` over that same
-  function** — HEP-0033 §3293 says it outright: *"Query engine over `HubState`
-  + existing `collect_shm_info`."*  Both are specified (HEP-0039 §349-350,
-  §402-403) and neither is implemented.
-- `QUERY_LAYER_TODO` wants to retire `collect_shm_info_json` once those exist.
+- `collect_shm_info` is no longer being extended.  It is on the way **out**,
+  along with the broker's by-name SHM read; the hub gets the same numbers from
+  the heartbeat once **#117** lands.
+- HEP-CORE-0039's shm query functions were specified (§349-350, §402-403) and
+  never built.  With the collector retiring, they should read from `HubState`
+  — which the heartbeat already populates — matching the snapshot-based
+  signature the HEP gave them in the first place.
+- `QUERY_LAYER_TODO`'s retirement row for `query_shm_info` /
+  `collect_shm_info_json` is therefore **unblocked**: **#112**'s broker half
+  becomes a straight deletion rather than something waiting on band 2.
 
-So the order is **C.3 → HEP-0039 Phase 5 → retire the `_json` wrapper**, and
-`collect_shm_info` itself is extended by band 2, never retired.  The practical
-consequence: **decide the C.3 response shape with HEP-0039's consumers in
-view**, or `collect_shm_info` gets shaped for the observer and reshaped for the
-query layer weeks later.
-
-HEP-0039 currently appears in this file only as one clause under "MessageHub /
-broker protocol" ("Phases B+, Phase A shipped") — it is a designed subsystem
-with no band of its own.  Given the coupling, the cheapest correct placement is
-**with band 2**, not as a separate arc.
+HEP-0039 still has no band of its own — it appears once, as a clause under
+"MessageHub / broker protocol".  With band 2 empty it is the natural candidate
+to take that slot, but that is an owner call, not an assumption.
 
 #### Where the 2026-08-07 cleanup findings land
 
-Six new tasks came out of the review-verification + TODO cleanup passes. Slotted
-using the band definitions above — **these are placements, not priority
-decisions**; move any of them if the band reading is wrong.
+Ten tasks came out of the 2026-08-07 review-verification, TODO cleanup, and
+design passes.  Slotted using the band definitions above — **these are
+placements, not priority decisions**; move any of them if the band reading is
+wrong.  Rows marked *decision* are not schedulable until the owner rules.
 
 | Task | Band | Why there |
 |---|---|---|
@@ -119,6 +123,10 @@ decisions**; move any of them if the band reading is wrong.
 | **#115** retire `ChannelSnapshotEntry` | **3** | Gate already satisfied — zero test references. Smallest real item on the list. |
 | **#110** three doc sites naming retired mechanisms | **3** | Doc-only. Fold the `as_peer_allowlist` comment fixes into the `role_identity_policy.hpp` → `known_role.hpp` rename rather than doing them twice. |
 | **#114** regenerate clang-tidy, re-base the lint plan | **3** | Prerequisite for the whole lint backlog; the current plan cannot be actioned. Recipe is in `PLATFORM_TODO.md`. |
+| **#116** system lifecycle: hub-initiated shutdown + cold start | **decision first** | Replaces vault hot reload.  If restart is the revocation boundary, restart must be a real orchestrated operation — today `ADMIN_REQUEST_SHUTDOWN_REQ` stops one process, roles infer death from a dead socket, and `StopReason` cannot express "planned".  The scope fork is yours: framework provides mechanism (planned-shutdown notify, readiness marker, exit codes) and systemd/k8s owns policy — or pylabhub grows an orchestrator.  The first is much smaller and matches "mechanism, not policy". |
+| **#117** plumb SHM aggregates into `QueueMetrics` | **2 → now the whole of it** | Seven fields, one X-macro, feeds `api.metrics()` and the heartbeat at once.  Design fully settled; unblocked. |
+| **#118** `SharedMemoryHeader` field grouping | **3** (static review) | Does the struct group fields by access pattern and say so in source?  Review + written finding FIRST — it is a core structure, so any change triggers the Core Structure Change Protocol.  Explicitly **not** a benchmark. |
+| **#119** ephemeral capability grant abstraction | **before the observer removal** | The kept mechanism needs a home.  Must be a *sibling* to `PubkeyOrigin`, never a third `Kind` — that enum governs which identities a key may speak for, and this key speaks for none. |
 
 None landed in band 1. That is the honest result — the security band's open set
 is unchanged by this cleanup (#104 vault hot reload, #103, #89, #87), and
