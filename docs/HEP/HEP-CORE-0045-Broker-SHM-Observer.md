@@ -4,7 +4,7 @@
 |---|---|
 | **HEP** | `HEP-CORE-0045` |
 | **Title** | Broker SHM Channel Observer — Real-Time Metrics via Authenticated Attach |
-| **Status** | 🚧 **DESIGN AUTHORITATIVE; IMPLEMENTATION IN FLIGHT.**  D1 primitives + D2 producer-side storage + C.2.a broker keypair emission + C.2.b producer verify path all shipped.  Remaining: C.2.c (PeerDeathWatcher) + C.2.d (broker dial + fd cache) + D5 opt-out + C.3 metrics_source + C.4 L4 tests + C.5 status sync.  Promoted from `docs/tech_draft/DRAFT_broker_shm_observer_2026-07.md` (2026-07-08). |
+| **Status** | ⛔ **RETIRED 2026-08-07 — the problem it solves is solved more cheaply elsewhere.**  Not "deferred": the observer is not planned.  See §0 for the reasoning and for what is preserved.  Historical record only; do not implement the remaining slices.  (Was: design authoritative, implementation in flight — D1 primitives, D2 producer-side storage, C.2.a keypair emission, C.2.b producer verify path shipped; C.2.c/C.2.d/D5/C.3/C.4/C.5 pending.  Promoted from `docs/tech_draft/DRAFT_broker_shm_observer_2026-07.md` 2026-07-08.) |
 | **Transport scope** | **SHM data plane ONLY** (Linux `memfd_create` + `SCM_RIGHTS`; other-OS backends deferred to #259/#260/#261).  Broker→producer connection over the producer's `shm_capability_endpoint` (Unix socket).  No ZMQ equivalent is specified. |
 | **Created** | 2026-07-08 (content dates back to 2026-07-03 tech draft) |
 | **Depends on** | HEP-CORE-0040 §5 (KeyStore), HEP-CORE-0041 §5 (SHM capability transport + `shm_capability_endpoint`), HEP-CORE-0043 §6 (SMS asymmetric box), HEP-CORE-0044 (AttachProtocol — this HEP uses `role_type="observer"`) |
@@ -12,6 +12,101 @@
 | **Trackers** | task #317 (umbrella).  Shipped slices: Phase A `b3d5e36d`, Phase B `da2a5e76`, D1 slice A `d6f5d621`, D2 slice `f7d3a51e`, C.2.a `029bbe31`, C.2.b `ce956972`.  Remaining slices tracked in §10. |
 
 ---
+
+## Retirement notice (2026-08-07)
+
+### R1. Why this is retired
+
+This HEP exists to give the hub real-time SHM metrics. It does that by making
+the broker a fourth party on the segment: it dials each producer, receives a
+header-only memfd, caches the fd, and reads the counters itself.
+
+**The role already holds those counters, and already has a pipe to the hub.**
+
+- The role's own handle reads `DataBlockMetrics` whenever it likes —
+  `ShmQueue::capacity()` calls `get_metrics()` today.
+- `snapshot_metrics_for_presence()` is the heartbeat payload, and it already
+  ships `QueueMetrics` upstream per presence, keyed by
+  `(channel, uid, role_type)` and freshness-stamped.
+
+So the counters and the transport both exist; they were simply never joined.
+Adding the SHM aggregate fields to `PYLABHUB_QUEUE_METRICS_FIELDS` puts them on
+that heartbeat — and on `api.metrics()` — through one X-macro edit, because the
+same struct feeds both. That is the whole of what this HEP set out to deliver
+for a healthy channel.
+
+### R2. What is genuinely lost
+
+One thing: **readings from a role that has stopped heartbeating but still holds
+the segment mapped** — telling "hung but still committing" from "hung and
+stalled."
+
+That was judged not worth the cost. The window is also narrow by construction:
+a role that stops heartbeating is moved Connected → Pending → Disconnected and
+reaped, so the observer would be reading during a gap the broker is actively
+closing. The second theoretical benefit — ground truth independent of a role
+that reports wrong numbers — does not survive scrutiny either, because metrics
+are not a security control and a lying role's counters are not an attack
+surface worth this machinery.
+
+### R3. What retirement buys back
+
+**It removes a privilege surface instead of adding one.** The observer requires
+the broker to hold file descriptors into another process's memory. Dropping it
+means the broker never maps a producer's shared memory at all — and that
+includes retiring the existing by-name `collect_shm_info` read, which is
+independently the shape a privilege audit looks for.
+
+It also resolves a half-shipped state. The observer credential is minted at
+every hub start, published on every `PRODUCER_REG_ACK`, and stashed by every
+producer — with nothing dialling, because C.2.d never landed. That is cost with
+no benefit today. Retirement turns "finish it or remove it" into "remove it."
+
+### R4. What is PRESERVED — and why it needs a proper home
+
+The ephemeral keypair mechanism is **kept**. It is the genuinely reusable idea
+in this HEP and it outlives the observer:
+
+> A process mints a keypair at startup, publishes the public half over a
+> channel that is *already* authenticated, and a peer stores it as the trust
+> anchor for one specific, narrowly-scoped operation. The key never enters the
+> vault and dies with the process, so a captured grant cannot outlive a
+> restart.
+
+**It must not be modelled as an identity.** `PubkeyOrigin::Kind` is
+`{LocalRole, FederationPeer}` and its docstring is explicit that the
+distinction is *"load-bearing, not descriptive"* — it governs **which
+identities a key may speak for**. `LocalRole` may act only as itself;
+`FederationPeer` may relay for others. The ephemeral grant speaks for **no
+identity at all**; it answers a different question — *what may the holder do?*
+Adding a third `Kind` would conflate identity with capability and quietly
+weaken a structure whose whole value is that the distinction is sharp.
+
+The correct shape is a **sibling** to `PubkeyOrigin` in the security module: an
+ephemeral capability grant that names the operation it authorises, carries its
+own lifetime rule (process-scoped, never persisted), and is verified by asking
+*"is this the key I was told grants operation X"* rather than *"who is this."*
+
+One concrete symptom of the missing abstraction, worth fixing with it: the
+observer key is minted by
+`secure().keys().generate_and_add_identity("broker.observer")`. That is an
+**identity** API being used to mint a **capability**, with the scope carried
+entirely by a name string. The API name encodes the wrong concept, which is how
+the abstraction blurred in the first place.
+
+### R5. Order of work
+
+1. Land the metrics plumbing (7 fields into `PYLABHUB_QUEUE_METRICS_FIELDS`).
+2. Then remove the shipped observer pieces: `broker_observer_pubkey_z85` on
+   `PRODUCER_REG_ACK` (wire change — `broker_proto` bump), the `RoleAPIBase`
+   accessor pair and its member, the `ObserverPubkeyAccessor` parameter on
+   `AttachProtocolAcceptor`, and the startup keygen. Nothing else reads them.
+3. Give the ephemeral-grant mechanism its home before the removal deletes the
+   only worked example of it.
+
+Everything below this section is the original design, kept for the reasoning it
+records. **It is not a plan.**
+
 
 ## 0. Status + scope
 
