@@ -6,6 +6,66 @@
 
 ## Archive batches
 
+### 2026-08-07 (pass 2 — drafts + reviews, retired against code evidence)
+
+The first pass covered the TODO files only.  This one covers what it skipped:
+`docs/tech_draft/` and `docs/code_review/`.  Every retirement below was
+checked by locating the thing in today's source, not by reading a status
+line.
+
+**Tech drafts archived** → `transient-2026-08-07/tech_drafts/`:
+
+| Draft | Evidence it is done |
+|---|---|
+| `DRAFT_owner_first_establishment_S1_S3_2026-07-26.md` | `AWAITING_OWNER` in `role_api_base.hpp:1114`, `AwaitOwner` in `hub_state.hpp:228` (task #76) |
+| `DRAFT_topology_singular_side_2026-07.md` (1736 L) | self-marked RETIRED 2026-07-25, superseded by the establishment contract |
+| `PLAN_inbox_sender_from_proven_key.md` | slice 4 shipped `f507b334`/`e73f9340`; `InboxAuthority` live in `hub_inbox_queue.hpp` |
+| `DRAFT_verified_peer_identity_2026-07-27.md` | task #83 closed; `PubkeyOrigin` `pubkey_origin.hpp:68`, `PeerAuthority` `:193` |
+| `DRAFT_HEP-0041-test-completeness_2026-06.md` | claimed tests exist: `test_attach_protocol.cpp` (15 TESTs, claim said 9), `test_shm_attach_orchestrator.cpp` (8, claim said 8) |
+
+**Reviews archived** → `transient-2026-08-07/code_review/`:
+
+- `REVIEW_CatchBlocks_2026-05-01.md` — **an empty shell for three months.**
+  Sections 2–4 were never populated beyond `(populated below, file-by-file)`.
+  Its single commit `4a724619` says the sweep was actually performed ("read
+  all 51 source files with catches (226 total) and fixed the silent-failure
+  cases I found"); two cited fixes verified live today —
+  `broker_service.cpp:7125` warns on a malformed stored `inbox_schema_json`
+  instead of returning an empty array, and `python_engine.cpp:1056` logs the
+  `ctypes_sizeof` failure instead of returning 0.  The work happened; only
+  the write-up was skipped.  **Carried forward:** `src/` now holds **385**
+  catch blocks against the 226 swept in May, so ~159 have never been read.
+  Folded into #87 (privilege & concealment audit) rather than left as a
+  dead review file.
+- `REVIEW_CURVE_Integration_2026-07-19.md` — self-marked complete, 0 open.
+  Spot-checked two: `dev_mode` appears nowhere in `src/` (the claimed
+  tombstone holds), and `with_seckey` is the use-not-export callback form in
+  `curve_keypair.hpp:39`.
+
+**Verified still open, kept:** `REVIEW_Connection_Inbox_Band_2026-05-17`
+(16 items).  Sampled three: **X2 `query_shm_info` is genuinely dead** —
+declared `broker_request_comm.hpp:447`, defined `:1506`, zero callers in
+`src/` or `tests/` (independently matches `REVIEW_VALIDATION`'s O1b).  **X6
+is already fixed** — `ChecksumRepairPolicy::Repair` is now a comment, not an
+enumerator (`broker_service.hpp:48`).  **X3's forwarders are gone**; only
+doc comments mention `resolve_bc_for_*`, which is finding X4.
+
+**Count reconciliation.** `TODO_MASTER` carried "29 OPEN by cluster" for the
+FullSystem review while the file header said "4 open".  The 29 predates the
+#72 reconciliation (hep-gap + dead-residue clusters, 15 findings) and #57
+(typed-envelope bypass, 4) — stale, not a competing measurement.  Of the
+header's 4, three test-coverage items were verified present today and the
+fourth is the federation bypass that #69 names verbatim.
+
+**Sampling the unverified ✅ notes.** `REVIEW_VALIDATION` records that ~50
+FullSystem resolutions are self-reported and never independently checked.
+Six were sampled across this pass and **all six held** — including the one
+that looked wrong at first glance: the `hub_cli` finding (help text cited a
+`plh_role --print-pubkey` flag that does not exist) was resolved by pointing
+at `--keygen` instead, and `plh_role_main.cpp:291` does print
+`public_key : <pubkey>` to stdout.  Six of fifty is enough to trust the
+record, not enough to call it verified — so the review was **not** archived.
+
 ### 2026-08-07 (TODO quality check per DOC_STRUCTURE §2.1.1 — 6136 → 5066 lines)
 
 The subtopic TODOs had drifted from "what to do" into "what has been done":

@@ -336,7 +336,7 @@ scenarios.  Inventory: `TESTING_TODO.md` § "Test infrastructure inventory".
 
 ---
 
-## Active code reviews (6 — updated 2026-08-03)
+## Active code reviews (3 — updated 2026-08-07)
 
 > **Review output is not the plan.** These records are candidate findings,
 > not decided work. Nothing here is scheduled until it has been validated
@@ -351,32 +351,23 @@ scenarios.  Inventory: `TESTING_TODO.md` § "Test infrastructure inventory".
   forwarders — recorded, not recommended). Also records the 50 self-reported
   ✅ resolution notes in the FullSystem review that have **not** been
   independently verified.
-- `code_review/REVIEW_FullSystem_2026-07-20.md` — full-system HEP-vs-code audit
-  (56 findings). Two incompatible counts were carried here for weeks — "4 OPEN"
-  and "29 OPEN" in the same bullet. The cluster breakdown below is the one with
-  per-finding file references behind it; the "4 OPEN" figure had nothing
-  supporting it and is dropped. **29 OPEN, by cluster** (files in review doc):
-  - **Federation ingress bypass** (1, high) — peer-DEALER skips the admission
-    gate chain; consolidated under the #69 design-first federation task.
-  - **Systemic HEP↔code drift** (7, high) — governing HEPs describe superseded
-    models (HEP-0032/0026/0033/0027/0020/0019 + synthesis).
-  - **Dead-residue, post-CURVE/vault cutover** (8, med) — broker/inbox/vault/
-    keystore residue + authoritative-storage doc contradictions.
-  - **Typed-envelope BRC bypass** (4, med) — raw-JSON scatter off the typed path;
-    folds into **#57** (HEP-0046 Phase B).
-  - **Test-coverage / design gaps** (5) — harness + pattern4 + inbox-worker +
-    vault + logger.
-  - **Misc hep-gap** (4) — hub_cli, hub_state, consumer_api, script_engine_factory.
+- `code_review/REVIEW_FullSystem_2026-07-20.md` — **reconciled 2026-08-07.**
+  Three counts were in circulation: the file header's "4 open (verified
+  2026-07-27)", this file's "29 OPEN by cluster", and zero ❌ markers in the
+  document.  The 29 figure predates the #72 reconciliation (which closed the
+  hep-gap + dead-residue clusters, 15 findings) and #57 (typed-envelope BRC
+  bypass, 4) — it is stale, not a competing measurement.  Of the header's 4:
+  three test-coverage items were verified present in code today
+  (`recv_gap_count` L3 worker pin, `HubVault` `known_roles` L2 round-trip,
+  logger `StressLog`), and the fourth is the federation-ingress bypass, which
+  #69 already names verbatim.  **Effectively 0 open outside the parked
+  federation task.**  NOT archived: `REVIEW_VALIDATION` records that ~50 of
+  its ✅ notes are self-reported and never independently checked.  A 6-item
+  sample all held (see DOC_ARCHIVE_LOG 2026-08-07) — enough to trust the
+  record, not enough to call it verified.  Archive decision is the owner's.
 - `code_review/REVIEW_Connection_Inbox_Band_2026-05-17.md` — D2+D3 follow-ups
   (X6 `ChecksumRepairPolicy::Repair` no-op `broker_service.cpp:6219`; X2 dead
   `query_shm_info`); tracked in API_TODO.
-- `code_review/REVIEW_CatchBlocks_2026-05-01.md` — full-codebase silent-failure
-  sweep; finding sections never populated (unstarted).
-- `code_review/REVIEW_CURVE_Integration_2026-07-19.md` — code findings all
-  closed; what remains is an 11-item doc backlog. **One entry is actively
-  wrong** — it asks to reconcile `known_roles` back to a plaintext JSON file,
-  the opposite of the shipped encrypted-vault design (task #63). Fix or delete
-  that entry before working the rest.
 - `code_review/LINT_FIXES_PLAN.md` — §2 lint dispositions undecided (partly
   moot); needs a NOLINT-or-defer pass, then archive.
 
