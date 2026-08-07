@@ -135,6 +135,12 @@ in commit `21b8696f`.
 
 ### Clang-tidy quality pass
 
+> **This section holds the PROCEDURE; `docs/code_review/LINT_FIXES_PLAN.md`
+> holds the RESULTS — and those results are stale (April 2026 log, partially
+> pointing at deleted files).  The two halves lived apart with no
+> cross-reference until 2026-08-07.  Run the recipe below to regenerate, then
+> diff against that plan before actioning any of it.  Tracked as a task.**
+
 - [ ] Reconfigure with `CC=clang CXX=clang++` and
   `-DPYLABHUB_ENABLE_CLANG_TIDY=ON` for a complete static-analysis
   sweep.  GCC build is clean; clang-tidy adds cppcoreguidelines,

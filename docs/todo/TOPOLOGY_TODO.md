@@ -301,8 +301,24 @@ nothing here remains open:
 
 ### Phase E — Retirements
 
-Delete code paths superseded by the migration.  Only starts AFTER
-Phase D has migrated all callers off the retiring surfaces.
+> **⚠️ UNBLOCKED 2026-08-07 — this phase was gated on a phase that no longer
+> exists.**  The gate below said Phase E "only starts AFTER Phase D has
+> migrated all callers", and the Blocking line at the end of this section said
+> "Phase D R6 symmetrization live + verified".  **Phase D was RETIRED
+> 2026-07-25** (see the struck section above — the pend-REG mechanism was
+> superseded wholesale by the owner-first contract, HEP-0017 §4.7.0.1 /
+> §4.7.0.3).  As written, Phase E could never start: it waited on work that
+> will never happen.  Read cold, that makes these retirements look permanently
+> blocked, which is why they have sat untouched.
+>
+> **The real precondition** is not "Phase D done" but "no caller depends on
+> the retiring surface".  Check that directly per item.  `CONSUMER_ATTACH_REQ_ZMQ`
+> still has **16 references in `src/`** as of 2026-08-07, so that one is
+> genuinely not ready — but it is blocked by its own callers, not by a retired
+> phase.
+
+Delete code paths superseded by the migration.  Start each item when its own
+callers are gone — verify per surface, not against a phase gate.
 
 **Files:**
 - [ ] `src/utils/ipc/broker_service.cpp` — Delete
@@ -326,7 +342,10 @@ Phase D has migrated all callers off the retiring surfaces.
 - [ ] Legacy factories in `hub_zmq_queue.hpp` — retire
   `pull_from(endpoint, key, ...)` and `push_to(...)`.
 
-**Blocking:** Phase D R6 symmetrization live + verified.
+**Blocking:** ~~Phase D R6 symmetrization live + verified~~ — void; Phase D was
+retired 2026-07-25.  Per-surface: `CONSUMER_ATTACH_REQ_ZMQ` has 16 live `src/`
+references (checked 2026-08-07); the legacy `hub_zmq_queue.hpp` factories need
+their own caller check before deletion.
 
 **Success:** Full ctest passes.  No dead code left from HEP-0042
 §7.1.
@@ -388,7 +407,7 @@ scope.  Each requires infrastructure from the phase noted.
 | ✅ **#15 `CHANNEL_AUTH_CHANGED_NOTIFY` missing `phase` field** | D phase field | Shipped `8655f2fe..ed0456d5` — phase-field emission + first-heartbeat detection + live_peers cache + `consumer_count`/`producer_count`/`consumers`/`producers` accessors + engine bindings. |
 | **#16 Duplicate `channel_version` / `confirmed_version` state** — new scalar coexists with old `[K][P]` map (`ChannelAccessEntry.channel_version` + `confirmed_version_per_producer` map). | E | Retirement phase — needs all callers migrated first. |
 | **#17 `ProducerEntry.zmq_node_endpoint` retirement** — HEP-0033 §8 says retires; code keeps field + accessor. | E | Retirement phase — all callers migrate first. |
-| **#18 Dead accessors** — `set_channel_data_endpoint`, `bump_channel_version`, `set_confirmed_version` have no callers. | C/D | Become live when Phase D wires ENDPOINT_UPDATE_REQ + CHANNEL_AUTH_APPLIED_REQ handlers. |
+| ~~**#18 Dead accessors**~~ — ✅ **ALL THREE RESOLVED (verified 2026-08-07), but not the way this row predicted.** The row said they would "become live when Phase D wires ENDPOINT_UPDATE_REQ + CHANNEL_AUTH_APPLIED_REQ" — Phase D was retired, so that never happened. What actually happened: `_set_channel_data_endpoint` **became live by another route** — real caller at `broker_service.cpp:5871` on the §16.4 endpoint-update path (the same handler that returns `ENDPOINT_CHANGE_FORBIDDEN` at `:5847`). `bump_channel_version` and `set_confirmed_version` were **retired outright 2026-07-13** — they no longer exist; only the tombstone comment at `hub_state.hpp:1025-1026` remains. Nothing left to do. | C/D | — |
 
 **Trigger note:** Phase B rev 1's Layer 1 accessor rename (finding
 #19) applies to `set_channel_data_endpoint` etc. even though they're

@@ -100,6 +100,45 @@ guidance.
   recorded as the one deliberate untracked exception (reference material, no
   open items).
 
+**Third sweep — the three TODO files the earlier passes never opened.**
+`TOPOLOGY_TODO`, `QUERY_LAYER_TODO` and `PLATFORM_TODO` had not been re-read
+this cycle. All three held items that would have misdirected planning:
+
+- **`TOPOLOGY_TODO` Phase E was gated on a retired phase.** The section said
+  it "only starts AFTER Phase D has migrated all callers", and its Blocking
+  line named "Phase D R6 symmetrization live + verified". **Phase D was retired
+  2026-07-25** — superseded wholesale by the owner-first contract. Phase E
+  therefore waited on work that will never happen and read as permanently
+  blocked, which is why its retirements (deleting `handle_consumer_attach_req_zmq`
+  ~400 LOC and the legacy `hub_zmq_queue.hpp` factories) have sat untouched.
+  Re-gated per-surface: the real precondition is "no caller depends on this",
+  and `CONSUMER_ATTACH_REQ_ZMQ` genuinely still has 16 `src/` references.
+- **`TOPOLOGY_TODO` finding #18 resolved, by a route it did not predict.**
+  It expected three dead accessors to "become live when Phase D wires
+  ENDPOINT_UPDATE_REQ" — Phase D died, but `_set_channel_data_endpoint` became
+  live anyway via the §16.4 endpoint-update handler (`broker_service.cpp:5871`),
+  and `bump_channel_version` / `set_confirmed_version` were retired outright
+  2026-07-13 (tombstone at `hub_state.hpp:1025-1026`).
+- **`QUERY_LAYER_TODO` named replacements that were never built.** Its
+  retirement row for `query_shm_info` / `collect_shm_info_json` said they are
+  "subsumed by `list_shm_blocks(snap)` / `get_shm_block(snap, channel)`" —
+  **neither function exists anywhere in `src/`**, so nothing subsumes anything
+  and "after call sites migrate" describes a migration with no destination.
+  This is the same failure class as the stale ✅ evidence above: a plan naming
+  a successor that does not exist. Folded into #112 with an explicit warning,
+  including that band 2 (SHM observer, #78) may want exactly this surface, so
+  deleting it is a decision and not a cleanup. The row also joins two records
+  that were each tracking one end of the same dead wire.
+- **`QUERY_LAYER_TODO` had ready work reading as blocked.**
+  `ChannelSnapshotEntry` / `ChannelSnapshot` were gated on "after L3 worker
+  tests migrate"; **zero test files reference them today**. The gate was
+  satisfied and the row never closed. Filed as **#115**.
+- **`PLATFORM_TODO` and `LINT_FIXES_PLAN` are two halves of one job** — the
+  former holds the clang-tidy invocation and says "run periodically", the
+  latter holds the stale results, and neither referenced the other. Cross-linked
+  both ways and folded the recipe into #114 so the regeneration does not
+  reinvent it.
+
 **One self-correction.** Mid-pass I flagged the checksum-codec note for citing
 `zmq_wire_helpers.hpp` as a nonexistent file and edited the review accordingly.
 The file exists at `src/utils/hub/zmq_wire_helpers.hpp` (`fixarray[5]` line 6,

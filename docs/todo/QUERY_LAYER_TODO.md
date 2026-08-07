@@ -169,12 +169,16 @@ what "correct usage" looks like.
 These are listed here so future cleanup is tracked; retirement itself
 is HEP-0039 Phase E (open-ended cleanup).
 
+> **Re-checked against code 2026-08-07.**  Two rows were wrong in ways that
+> would misdirect the cleanup — one is ready *now* and reads as blocked, and
+> one names replacement functions **that were never built**.  Corrected below.
+
 | Type | Where | Reason | Retire when |
 |---|---|---|---|
-| `ChannelSnapshotEntry`, `ChannelSnapshot` | `src/include/utils/broker_service.hpp:58, 72` | Only used by L3 worker tests; Layer 2b `nlohmann::json` covers the case | After L3 worker tests migrate (each one its own task) |
-| `RoleStateMetrics` | `src/include/utils/broker_service.hpp:91` | Strict subset of `BrokerCounters`; exists for test-stable shape only | Same |
-| `BrokerService::query_channel_snapshot()` | `broker_service.cpp:3754` | Wraps `HubState::snapshot()` + `channel_to_json` | After call sites migrate |
-| `BrokerService::query_shm_info` / `collect_shm_info_json` | `broker_service.cpp:481` | Subsumed by `list_shm_blocks(snap)` / `get_shm_block(snap, channel)` | After call sites migrate |
+| `ChannelSnapshotEntry`, `ChannelSnapshot` | `src/include/utils/broker_service.hpp:58, 72` | Only used by L3 worker tests; Layer 2b `nlohmann::json` covers the case | ✅ **CONDITION ALREADY MET — retirable now.**  The stated gate was "after L3 worker tests migrate"; as of 2026-08-07 **zero files under `tests/` reference either type** (2 sites in `src/`, both the definition side).  The migration happened and nobody came back to close this row. |
+| `RoleStateMetrics` | `src/include/utils/broker_service.hpp:91` | Strict subset of `BrokerCounters`; exists for test-stable shape only | ⏳ Not yet — still 2 test files.  Migrate those, then retire. |
+| `BrokerService::query_channel_snapshot()` | `broker_service.cpp:3754` | Wraps `HubState::snapshot()` + `channel_to_json` | ⏳ Not yet — 7 test files still call it.  The heaviest of the four; do it last. |
+| `BrokerRequestComm::query_shm_info` (client) + `BrokerService::collect_shm_info_json` (broker) | `broker_request_comm.hpp:447` / `.cpp:1506`; `broker_service.hpp:523` / `.cpp:7623` | Both ends of one dead wire | ⚠️ **This row named a replacement that does not exist.**  It said "subsumed by `list_shm_blocks(snap)` / `get_shm_block(snap, channel)`" — **neither function is anywhere in `src/`** (checked 2026-08-07), so nothing subsumes anything and "after call sites migrate" describes a migration with no destination.  The old `broker_service.cpp:481` anchor is also stale.  What IS true: the client method has **zero callers** — independently found as X2 (Connection/Inbox/Band) and O1b (REVIEW_VALIDATION).  Decide deliberately: delete both ends outright, or build the replacement first.  Tracked as task **#112**. |
 
 ---
 
