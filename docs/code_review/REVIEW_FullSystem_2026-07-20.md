@@ -1,10 +1,28 @@
 # REVIEW — Full-System HEP-vs-Code Audit (2026-07-20)
 
-**Status:** 🚧 IN PROGRESS — **52 of 56 resolved, 4 open** (last verified against
-code 2026-07-27). Open: the federation-ingress bypass (⏳ deferred into task #69,
-design-first) and three test-coverage items (inbox frame-magic / `recv_gap_count` /
-seq-reset pins; `HubVault` `known_roles` L2 round-trip; logger StressLog
-diagnostic). Everything else carries a per-finding ✅ resolution note below.
+**Status:** ✅ VERIFICATION COMPLETE — **52 of 56 resolved, 4 open.**  Every ✅
+resolution note was independently re-checked against today's source on
+**2026-08-07** (owner-directed pass): the named symbol, test, or HEP § was
+located in the tree, and where a note claimed a deletion, the tree was grepped
+to confirm the absence.  **Every resolution held on substance.**  Open: the
+federation-ingress bypass (⏳ deferred into task #69, design-first) and three
+test-coverage items (inbox frame-magic / `recv_gap_count` / seq-reset pins;
+`HubVault` `known_roles` L2 round-trip; logger StressLog diagnostic).
+
+**What the pass found that the ✅ markers hid.**  A resolution can be true and
+its evidence still stale — the fix lands, later work moves the code, and the
+note keeps describing the intermediate state.  Two notes below were corrected
+in place, and three residual drifts were filed as new work.  The method that
+caught them: *don't stop at "the finding's site is fixed" — look up the
+replacement the note names and confirm THAT exists too.*
+
+- **Corrected in place (evidence stale, finding still resolved):** the
+  `known_roles.cpp:359` note described `as_peer_allowlist()`, retired since
+  under #83 in favour of `PubkeyOriginIndex::zap_allowlist()`.
+- **Filed as new work (the ✅ closed the named site, siblings survived):**
+  `HEP-0021:608` still cites the retired `zmq_node_endpoint_resolved` member;
+  `HEP-0018:422,470` still route `msgs` "via Messenger", removed 2026-04-11;
+  three comment sites still name `KnownRolesStore::as_peer_allowlist`.
 **Scope:** all of `src/` (114k LOC, 282 files) + `tests/` (~319 files) against the
 42-HEP corpus and `docs/README/README_testing.md`. `third_party/` excluded.
 **Method:** multi-agent workflow — 14 subsystem reviewers (each: governing HEP →
@@ -95,7 +113,7 @@ verification — the codebase is not over-abstracted; the drift is doc-vs-code).
 - Fix: Prune the window against a broker-local monotonic/steady clock (or a server-stamped receive time), keeping the client wall_ts only for the freshness/skew bound. Fix once in ReplayGuard; all three planes inherit it. Add a replay-after-skew regression test at the ReplayGuard L1 level so every plane is covered by one pin.
 
 ### [high/hep-gap] Integrity checksum is a shared None/Manual/Enforced toggle on ONE codec, but three HEP/header contracts describe it inconsistently (and two allow silently skipping it)  ✅ RESOLVED 2026-07-21 (doc-only)
-- **Resolution:** No security hole — the "silent skip" concern doesn't apply because production hard-refuses a no-CURVE (unencrypted) inbox (`role_api_base.cpp`), so every inbox message is CURVE-authenticated on the wire; the app-level BLAKE2b checksum is defence-in-depth on the *decrypted content* and legitimately an owner-chosen policy (None/Manual/Enforced), catching accidental corruption after decrypt, not attackers (CURVE does that). Fixes: rewrote HEP-0027 §3 to the real owner-dictated policy (consistent with §4.2) with the CURVE-baseline rationale; documented the 5-tuple + ChecksumPolicy once at the shared codec (`zmq_wire_helpers.hpp`) as the single source of truth; fixed the "4-element" drift in `hub_inbox_queue.hpp` and HEP-0021 §13. Also relabelled the transport "plaintext (no-CURVE)" comments to "unencrypted / no-CURVE" so the word stops colliding with the decrypted-content sense. No code behavior change (the toggle over a mandatory CURVE floor is a sound design).
+- **Resolution:** No security hole — the "silent skip" concern doesn't apply because production hard-refuses a no-CURVE (unencrypted) inbox (`role_api_base.cpp`), so every inbox message is CURVE-authenticated on the wire; the app-level BLAKE2b checksum is defence-in-depth on the *decrypted content* and legitimately an owner-chosen policy (None/Manual/Enforced), catching accidental corruption after decrypt, not attackers (CURVE does that). Fixes: rewrote HEP-0027 §3 to the real owner-dictated policy (consistent with §4.2) with the CURVE-baseline rationale; documented the 5-tuple + ChecksumPolicy once at the shared codec (`zmq_wire_helpers.hpp`) as the single source of truth (**re-verified 2026-08-07:** `src/utils/hub/zmq_wire_helpers.hpp` — `fixarray[5]` at line 6, `ChecksumPolicy` at 15, `pack_frame` at 227, `decode_frame` at 326); fixed the "4-element" drift in `hub_inbox_queue.hpp` and HEP-0021 §13. Also relabelled the transport "plaintext (no-CURVE)" comments to "unencrypted / no-CURVE" so the word stops colliding with the decrypted-content sense. No code behavior change (the toggle over a mandatory CURVE floor is a sound design).
 - Subsystems: inbox-band-messaging, network-brc-topology, datahub-slot-policy-pipeline
 - InboxQueue and ZmqQueue serialize through the SAME codec (zmq_wire_helpers.hpp pack_frame/unpack_envelope, a 5-tuple magic|tag|seq|payload|checksum) and share the SAME enum (ChecksumPolicy in data_block_policy.hpp) whose None mode sends zeros / skips verification (hub_zmq_queue.cpp:357, hub_inbox_queue.cpp:532). Yet the contracts diverge three ways: HEP-0027 §3 declares inbox checksum 'mandatory and always-on, no policy toggle' (contradicted by the shared None mode); HEP-0021 §13 documents the zmq frame as 4 elements with checksum 'deferred' (hub_zmq_queue.hpp:14 actually enforces a 5th); and both queue headers (hub_inbox_queue.hpp:11, plus the zmq header) describe a 4-element array omitting the checksum. One primitive, one integrity toggle, three wrong docs — and a security-relevant None path that HEP-0027 says should not exist.
 - Fix: Document the 5-tuple + ChecksumPolicy once at the shared codec (zmq_wire_helpers.hpp / data_block_policy.hpp) and have both queue headers and HEP-0021 §13 / HEP-0027 §3 reference that single description. Then make a policy decision: if inbox integrity is truly mandatory, forbid ChecksumPolicy::None for the inbox plane at construction rather than documenting a toggle away.
@@ -498,7 +516,7 @@ verification — the codebase is not over-abstracted; the drift is doc-vs-code).
 - Verdict: CONFIRMED (high)
 
 ### `src/utils/security/known_roles.cpp:359` — dead-residue [security-curve-vault]  ✅ FIXED 2026-07-20 (#68 item 3, verified 2026-07-24)
-- **Resolution:** The empty-pubkey filter is gone — `as_peer_allowlist()` iterates all entries with a comment stating `validate_entry` (mandatory on both insertion paths) makes empty-pubkey entries impossible; the header's legacy-RoleIdentityPolicy narrative was removed with the #68 sweep and the storage block rewritten under #72.
+- **Resolution:** The empty-pubkey filter is gone; the header's legacy-RoleIdentityPolicy narrative was removed with the #68 sweep and the storage block rewritten under #72.  **Evidence corrected 2026-08-07:** this note used to say the filter's host, `as_peer_allowlist()`, "iterates all entries" — that method no longer exists.  The whole projection was retired under #83 in favour of `PubkeyOriginIndex::zap_allowlist()` (`pubkey_origin.hpp:325`), which owns the allowlist projection and additionally covers federation peers (HEP-0035 §4.2).  `known_roles.cpp` is now 326 lines and keeps only operator-roster duties.  The handoff is a clean one: `test_known_roles.cpp:190-198` records it and names the two replacement pins (`AllowlistProjectsEveryKeyOfBothKinds`, `EmptyIndexResolvesNothingAndDeniesAll` in `test_pubkey_origin.cpp`).  So the finding is *more* than resolved — the dead filter went away with the method that held it.
 - **The empty-pubkey filter in as_peer_allowlist() and the surrounding 'legacy entries with empty pubkey are handled by RoleIdentityPolicy' narrative are dead: validate_entry() now rejects every empty/short pubkey at the only two insertion points.**
 - HEP: HEP-CORE-0035 §5 (known_roles[].pubkey REQUIRED, empty not allowed)  · drift: code-wrong
 - Evidence: validate_entry (known_roles.cpp:76-91) throws on empty pubkey_z85 and on any length != 40, and it is the mandatory gate on BOTH paths that can push into roles_ (from_json at :234 and add() at :278). No KnownRole with an empty pubkey can therefore exist in the store. That makes the guard `if (!e.pubkey_z85.empty())` at :359 permanently true and the header contract stale: known_roles.hpp:44-52 and :188-197 describe 'Legacy entries (pre-Phase-B vault contents with empty pubkey) are EXCLUDED ... still handled at the application layer by the legacy RoleIdentityPolicy string check until HEP-0035 §8 Phase 6 retires it', a case the validation now makes unreachable. This is migration residue that misleads a reader into thinking empty-pubkey entries are a live, handled case.

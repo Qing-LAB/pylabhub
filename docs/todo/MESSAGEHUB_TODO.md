@@ -760,6 +760,23 @@ should be verified-fixed-or-still-open before next sprint.
   archive candidates (open items verified resolved during the
   2026-05-19 review-triage pass).
 
+- **Two HEPs still describe mechanisms their own later sections retire**
+  (found 2026-08-07 while re-verifying the FullSystem review; the #72
+  reconciliation fixed the section each finding named and left these
+  siblings).  Both are doc-only, and both are the failure mode where a
+  reader trusts the stale sentence because it sits in a governing HEP:
+  - `HEP-CORE-0021 §16` line 608 cites
+    `ProducerEntry.zmq_node_endpoint_resolved` as the member whose state
+    machine handles producer restart — but §16.4 (line 888) states that
+    member was **retired from the design** (resolvedness is derived from
+    the stored endpoint), and it exists nowhere in `src/` or `tests/`.
+    Rewrite line 608 to the derived predicate.
+  - `HEP-CORE-0018` lines 422 and 470 document the `on_produce` /
+    `on_consume` `msgs` parameter as "received via **Messenger** since
+    last call", while §15 (line 508) records that the P2C/Messenger
+    relay was **removed 2026-04-11** and §6.3 was rewritten to the
+    inbox surface.  Rewrite both docstrings to the inbox mechanism.
+
 ---
 
 ## Notes

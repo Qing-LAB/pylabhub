@@ -56,9 +56,10 @@ post-reconcile shipped-sprint detail).
   CHANNEL_ERROR_NOTIFY, CHANNEL_BROADCAST_DELIVER_NOTIFY,
   BAND_BROADCAST_DELIVER_NOTIFY — each needs a wire_bodies class + a
   BRC shape-table arm).  Federation ingress is parked with #69.
-- **Full-system audit (`REVIEW_FullSystem_2026-07-20`):** 🚧 56 findings, **52
+- **Full-system audit (`REVIEW_FullSystem_2026-07-20`):** ✅ 56 findings, **52
   resolved / 4 open** after the #72 reconciliation pass (2026-07-24) closed the
-  hep-gap + dead-residue clusters.  The three test-coverage items (inbox-worker
+  hep-gap + dead-residue clusters.  Every ✅ note independently verified against
+  source 2026-08-07 — all held; three residual doc drifts filed as #110.  The three test-coverage items (inbox-worker
   magic/gap pins, hub_vault known_roles L2 round-trip, logger StressLog
   diagnostic) were validated and closed 2026-08-02 — see band 1.  The fourth —
   federation ingress bypass — is parked with #69 and is not counted as open
@@ -347,27 +348,31 @@ scenarios.  Inventory: `TESTING_TODO.md` § "Test infrastructure inventory".
   other records. Of ~26 items that were carried as open, 12 were already fixed
   and never marked, 2 were stale, 2 were misreads, 5 were advisory, and 5 were
   genuinely valid. **Three carried forward, all LOW:** B-1 (loop helpers, now in
-  `API_TODO.md`), O1b (`query_shm_info`, settle inside band 2), O3 (three
-  forwarders — recorded, not recommended). Also records the 50 self-reported
-  ✅ resolution notes in the FullSystem review that have **not** been
-  independently verified.
-- `code_review/REVIEW_FullSystem_2026-07-20.md` — **reconciled 2026-08-07.**
-  Three counts were in circulation: the file header's "4 open (verified
-  2026-07-27)", this file's "29 OPEN by cluster", and zero ❌ markers in the
-  document.  The 29 figure predates the #72 reconciliation (which closed the
-  hep-gap + dead-residue clusters, 15 findings) and #57 (typed-envelope BRC
-  bypass, 4) — it is stale, not a competing measurement.  Of the header's 4:
-  three test-coverage items were verified present in code today
-  (`recv_gap_count` L3 worker pin, `HubVault` `known_roles` L2 round-trip,
-  logger `StressLog`), and the fourth is the federation-ingress bypass, which
-  #69 already names verbatim.  **Effectively 0 open outside the parked
-  federation task.**  NOT archived: `REVIEW_VALIDATION` records that ~50 of
-  its ✅ notes are self-reported and never independently checked.  A 6-item
-  sample all held (see DOC_ARCHIVE_LOG 2026-08-07) — enough to trust the
-  record, not enough to call it verified.  Archive decision is the owner's.
-- `code_review/REVIEW_Connection_Inbox_Band_2026-05-17.md` — D2+D3 follow-ups
-  (X6 `ChecksumRepairPolicy::Repair` no-op `broker_service.cpp:6219`; X2 dead
-  `query_shm_info`); tracked in API_TODO.
+  `API_TODO.md`), O1b (`query_shm_info`, settle inside band 2 — now also
+  tracked as #112), O3 (three forwarders — recorded, not recommended).  Its
+  standing caveat about the FullSystem review's 50 unverified ✅ notes is
+  **discharged**: that verification ran 2026-08-07 and every note held.
+- `code_review/REVIEW_FullSystem_2026-07-20.md` — ✅ **VERIFICATION COMPLETE
+  2026-08-07; ARCHIVABLE.**  The count reconciliation stands (the "29 OPEN by
+  cluster" figure predated #72's 15 and #57's 4 — stale, not a competing
+  measurement; the header's 4 are three verified-present test-coverage items
+  plus the federation-ingress bypass #69 already names).  What was missing is
+  now done: **all ~50 self-reported ✅ notes were independently re-checked
+  against source, and every one held on substance.**  The pass corrected two
+  notes whose *evidence* had gone stale (they named
+  `KnownRolesStore::as_peer_allowlist`, retired under #83, and
+  `zmq_wire_helpers.hpp`, a file that does not exist) and filed three residual
+  doc drifts as **#110** — cases where the ✅ closed the site the finding named
+  and a sibling survived.  Effectively 0 open outside the parked federation
+  task.
+- `code_review/REVIEW_Connection_Inbox_Band_2026-05-17.md` — ✅ **VERIFICATION
+  COMPLETE 2026-08-07; ARCHIVABLE.**  All 16 findings re-checked against
+  source: 8 resolved, 2 closed as accepted design, 6 open.  The 6 are carried
+  in `API_TODO.md` and as tasks **#111** (C5/B4/X5/S4 — the multi-presence
+  model is half-built: structures carry the topology, operations still assume
+  presence 0) and **#112** (X2 dead `query_shm_info`, X4 phase-label
+  comments).  X6 is resolved — `ChecksumRepairPolicy::Repair` is a comment,
+  not an enumerator (`broker_service.hpp:48`).
 - `code_review/LINT_FIXES_PLAN.md` — §2 lint dispositions undecided (partly
   moot); needs a NOLINT-or-defer pass, then archive.
 

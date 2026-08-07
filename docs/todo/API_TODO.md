@@ -24,6 +24,73 @@ removals from D2 / D3 drift batches).
 > `docs/archive/transient-2026-07-18/todo-completions/`.  #235 residual: L3 parity
 > regression tests → fold into **#232**.
 
+### Carried out of the Connection/Inbox/Band review (verified open 2026-08-07)
+
+`REVIEW_Connection_Inbox_Band_2026-05-17.md` finished its verification pass:
+16 of 16 findings re-checked against source, 8 resolved, 2 closed as accepted
+design, and these 6 confirmed still open.  The review is closed and archivable;
+these live here now so they survive it.
+
+Four are one theme — **the multi-presence (dual-hub) model is half-built.  The
+data structures carry the topology; the operations still assume presence 0.**
+Harmless while every shipped role is single-presence, and a correctness bug the
+day a dual-hub processor lands, so they are best done as one unit with that
+milestone rather than piecemeal:
+
+- **C5 — `Presence` has no `inbox_meta`.**  `role_presence.hpp:222-267` carries
+  hub / channel / role_kind / slot_spec / fz_spec / connection /
+  registration_state; inbox metadata reaches the wire via
+  `append_inbox_to_reg(reg, inbox_cfg_)` from each role host
+  (`consumer_role_host.cpp:343`, `processor_role_host.cpp:404,432`,
+  `producer_role_host.cpp:387`) — a per-host side-field, so a dual-hub role
+  cannot advertise a different inbox per presence.  **Do now regardless of the
+  deferral:** the file's own header (`role_presence.hpp:6`) describes the tuple
+  as `(hub, channel, role_kind, schemas, inbox)`, promising a field that does
+  not exist.  Fix the comment or add the member; do not leave the doc lying.
+- **B4 — every band join binds `presences.front()`.**  `role_api_base.cpp:5007`.
+  Neither remedy landed: the `api.in_hub.band_join` / `api.out_hub.band_join`
+  accessors do not exist (no `in_hub`/`out_hub` in `role_api_base.hpp`), and the
+  deferral is recorded only in a code comment (`:4977`, `:4996-5001`), not in
+  HEP-0033 §18.3.  Pick one — build the selector, or state the deferral in the
+  HEP so the next reader of §18.3 is not misled.
+- **X5 — `Presence::connection` pointer stability is enforced by comment only.**
+  `role_handler.cpp:47-56` reserves `connections_` and declares the vector
+  frozen; `role_handler.hpp:34-36` repeats it.  Nothing enforces it.  Hub
+  failover or dynamic rebinding would dangle `role_presence.hpp:253` silently.
+  A debug-build mutation guard is the cheap version; stable storage is the real
+  fix.
+- **S4 — band membership has no local state.**  `on_band_joined`
+  (`role_handler.cpp:263-275`) is a bare `band_index_[name] = presence`;
+  `band_index_` is `unordered_map<string, Presence *>` (`role_handler.hpp:349`).
+  A dropped BAND_JOIN leaves the role unable to answer "did I join?" without
+  re-querying the broker, and a dropped BAND_LEAVE leaves stale routing.
+
+Two are independent dead-residue items:
+
+- **X2 — `BrokerRequestComm::query_shm_info` is dead.**  Declared
+  `broker_request_comm.hpp:447`, defined `:1506`, **zero callers** in `src/` or
+  `tests/`.  Independently confirmed as O1b in
+  `REVIEW_VALIDATION_2026-08-02.md`.  Delete method + declaration, and check
+  whether its broker handler is then also unreachable.
+- **X4 — phase-label comments survive.**  `engine_host.hpp:425`,
+  `role_api_base.hpp:948,955` carry `M4f`/`M4c` labels.  The project rule allows
+  task IDs and forbids phase labels precisely because the wave numbers mean
+  nothing to a later reader.
+
+### Comment sites naming retired symbols (found 2026-08-07)
+
+Small, but this is the class of drift that makes a reader chase a symbol that
+is not there:
+
+- Three sites name `KnownRolesStore::as_peer_allowlist`, retired under #83 in
+  favour of `PubkeyOriginIndex::zap_allowlist()` (`pubkey_origin.hpp:325`):
+  `role_identity_policy.hpp:16`, `role_identity_policy.hpp:45`, and —
+  ironically — `pubkey_origin.hpp:29`, the header of the type that replaced it.
+- `role_identity_policy.hpp:25` holds the only `TODO(followup)` in `src/`: the
+  file now defines only `KnownRole` and should be renamed (`known_role.hpp`)
+  with its ~5 includers updated.  Recorded here so it is not a comment-only
+  item.  Fold the comment fixes into the rename.
+
 ### Band 4 — `should_continue_loop()` / `should_exit_inner()`: adopt or delete
 
 `role_host_core.hpp:516,525`. Both are defined, both have **zero** production
