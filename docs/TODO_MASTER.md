@@ -311,8 +311,11 @@ should be re-scoped against code before anyone starts them.
 - **Phase 2b** — Template RAII Phases 2/4/5 (`TypedInboxClient<MsgT>`,
   `TypedBand<EventT>`, `SimpleRoleHost<SlotT>` — verified absent from `src/`;
   Phase 3 MaxRate pacing already shipped in `slot_iterator.hpp`).
-- **Phase 3 (#155, in flight)** — CLI `--init` one-shot bundling + 24+ L4
-  test-site migration (`--init` mode flag parses; bundling incomplete).
+- **Phase 3 — now #127** — CLI `--init` one-shot bundling (`--init` mode flag
+  parses; bundling incomplete).  Pulls in **#123** (role vault publishes no
+  sibling `.pub`, so `--init` has nothing to wire into `known_roles`) and
+  **#124** (27 demo configs — recounted 2026-08-07, the old figure was 24 —
+  which should become tool output rather than hand-maintained fixtures).
 
 ---
 
@@ -386,7 +389,9 @@ Deferred follow-ups (tracked, non-blocking): topology **P6** version-tagged
 membership (replace full-set allowlist copy); **D-3** clang-query build-fail
 rule for §I9.1 layer regressions; native-*sender* inbox L4 delivery test
 (needs native-L4-role harness; transport already proven via L3 CURVE + L4
-Python); AUTH-6 File 10 Suite 2 delete (#152 housekeeping).
+Python).  *(AUTH-6 File 10 Suite 2 delete was listed here as housekeeping —
+it closed on 2026-07-20 in `c7f4f608`, which deleted the whole
+`RoleIdentityPolicy` file and Suite 2 with it.)*
 
 **Doc-debt:** **HEP-0011 D1** — HEP-CORE-0011 is fundamentally stale (documents
 the pre-composition inheritance hierarchy + wrong threading model / class
