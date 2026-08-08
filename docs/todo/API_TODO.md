@@ -114,15 +114,30 @@ Carried here 2026-08-03 from `REVIEW_FullModule_2026-04-06.md` (finding B-1),
 which was the only place it lived. That review is now archived; this is the
 surviving record.
 
-### #92 — review READ COMPLETE 2026-07-31
+### Closed task sections removed 2026-08-07
 
-Every file in scope read.  `hub_shm_queue.cpp` (869 lines): **no findings**.
-Worth carrying forward — it has no `running_` flag at all; `is_running()` is
-derived from whether a DataBlock is attached, which makes the S-8 failure
-*unrepresentable* rather than merely fixed.  The three ZMQ-side queue classes
-each carry `std::atomic<bool> running_` guarded by scope guards; `ShmQueue`
-shows the shape that removes the question.  Candidate convergence target if the
-activation-state work in band 4 goes ahead.
+Three sections here were titled `#92`, `#88` and `#94` and described work the
+live task list records as **completed**.  Verified against code before
+removal:
+
+- **`#92` security review** — a completion note, not an open item.  Its one
+  carry-forward is kept: `ShmQueue` has no `running_` flag at all;
+  `is_running()` is derived from whether a DataBlock is attached, which makes
+  the S-8 failure *unrepresentable* rather than merely fixed.  The three
+  ZMQ-side queue classes each carry an `std::atomic<bool> running_` guarded
+  by scope guards.  `ShmQueue` shows the shape that removes the question —
+  a convergence target if the band-4 activation-state work goes ahead.
+- **`#88` thread-spawn resource failure** — fixed.  `thread_manager.cpp:528`
+  now documents and handles the one genuine OS resource failure
+  (`pthread_create` returning `EAGAIN`, surfacing as `std::system_error`)
+  through the non-throwing channel, distinguishing it from every other
+  refusal in the function.
+- **`#94` HEP-0021 §16.5 ephemeral binding** — a production
+  `send_endpoint_update` caller exists at `role_api_base.cpp:2129`
+  (binding-side/fan-in endpoint publish).  The section already carried a
+  "STATUS CORRECTED" note saying so and was never closed.
+
+Detail in git (`git show c91248dd:docs/todo/API_TODO.md`).
 
 ### #89 — SMS expansion + vault design (retained key, script vault, config reload)
 
@@ -152,107 +167,6 @@ contradict:
 - **Not in the HEP's own open-questions list:** KeyStore name sandboxing.  A
   retained vault key would share the store with `hub_identity`; namespacing is
   what stops a script asking for the key that opens everything.
-
-### #88 — Thread-spawn resource failure escapes the non-throwing failure channel
-
-**Found 2026-07-28** while auditing allocation on the shutdown, panic, and
-validation paths.  Governing design: `HEP-CORE-0031` (ThreadManager),
-`HEP-CORE-0001` (lifecycle finalize).
-
-Both places the framework creates a thread have a deliberate non-throwing
-failure channel, and both bypass it for the one failure that is genuinely an
-OS resource failure — `pthread_create` returning `EAGAIN`/`ENOMEM`, which
-surfaces as `std::system_error` from the `std::thread` constructor.
-
-| Site | Failure channel it already has | What bypasses it |
-|---|---|---|
-| `thread_manager.cpp:527` | `spawn()` returns `bool` | `std::thread` ctor throws out of a `bool`-returning API |
-| `lifecycle_helpers.cpp:218` | `ShutdownOutcome{success, timed_out, exception_msg}` | same, into a `noexcept` destructor |
-
-**Why this is a design gap and not a missing `try`.**  `ThreadManager::spawn`
-routes *both* policy refusals through the bool — the `closing` flag at `:492`
-(set under the same lock `drain()` uses to move slots, so a spawn racing
-teardown cannot orphan a joinable thread) and the single-master invariant at
-`:504` (§4.2).  Only the resource acquisition itself is unguarded.  The
-facility built to make thread failure survivable does not cover the one
-failure that is not the caller's fault.
-
-**Escape path for the lifecycle half**, traced through real frames:
-
-```
-~LifecycleGuard() noexcept          lifecycle.hpp:604
-  -> FinalizeApp -> finalize()      lifecycle.cpp:429
-    -> dispatch_shutdown            lifecycle.cpp:578          no try/catch
-      -> shutdownModuleWithTimeout  lifecycle_dynamic.cpp:382  no try/catch
-        -> timedShutdown -> std::thread ctor   THROWS
-```
-
-An escaping exception from a `noexcept` destructor is `std::terminate`: no
-trace dump, no teardown of the remaining modules — and the triggering
-condition is resource exhaustion, i.e. the shutdown that most needs to
-complete and report.  The async unload path has the same shape
-(`dynShutdownThreadMain` → `processOneUnloadInThread`,
-`lifecycle_dynamic.cpp:544` → `timedShutdown` at `:659`), where a throw
-terminates from a thread function.
-
-The asymmetry showing this was never considered: the *synchronous* sibling
-path `run_inline` (`lifecycle.cpp:525-553`) is fully wrapped in
-`catch (const std::exception &)` / `catch (...)`.  Direct-call is
-exception-safe; thread-spawn is not.
-
-**Fix — finish the existing channel, do not add machinery.**
-
-1. `thread_manager.cpp:527` — `try`/`catch` around the construction,
-   `LOGGER_ERROR` + `return false`.  No API change; the four call sites that
-   already test the bool handle it correctly as-is (`hub_host.cpp:318`,
-   `:401`, `role_api_base.cpp:4124`, `role_host_frame.cpp:593`).  Ensure no
-   half-built slot lands in `pImpl->slots`.
-2. `lifecycle_helpers.cpp:218` — catch, run the callback inline on this
-   thread, report through `ShutdownOutcome`.  That module loses its deadline;
-   teardown continues and the trace records why.  `timedShutdown` **cannot**
-   delegate to `ThreadManager` — ThreadManager registers as a lifecycle
-   module whose own teardown runs *through* `timedShutdown`, so the
-   dependency would be circular.  It mirrors the discipline instead.
-3. Three `spawn()` call sites discard the bool and continue as if the thread
-   exists — `engine_host.cpp:136`, `hub_zmq_queue.cpp:2118`, `:2125`.  Live
-   today independent of the throw, and precisely the scenario the `closing`
-   flag was added to catch.
-
-**Status: all three implemented 2026-07-29.**  Full unfiltered sweeps green in
-both configurations — Debug 2714/2714, Release 2711/2711 (the count differs by
-pre-existing per-config skips, not by coverage lost here).  Release was not
-optional: this is a library change on the teardown path, where
-`PYLABHUB_ENABLE_DEBUG_MESSAGES` is off and `NDEBUG` is on.
-`timedShutdown` was restructured rather than patched — the worker body is
-hoisted into a named `reported_run` lambda so the threaded path and the
-inline fallback emit byte-identical reports and capture exceptions
-identically (a reader should not have to know which path ran), and the
-exception-to-outcome tail is hoisted into `outcome_from_state` so it is not
-duplicated across both.  The fallback reports
-`event=ShutdownWorkerSpawnFailed action=ran_inline_without_deadline` through
-`format_to_n` into a stack buffer and marks the report dirty.
-`engine_host.cpp` turned out to be worse than a silent degradation: a refused
-spawn is a *permanent block* on `ready_future.get()`, since `ready_promise_`
-is fulfilled by `worker_main_` and nothing is left alive to fulfil it.
-
-**Testing — no new test, deliberately.**  The *policy* half of the channel is
-already pinned (`thread_manager_active_loop_workers.cpp:544`,
-`request_shutdown_all_flips_closing_and_rejects_new_spawn`).  The *resource*
-half is not reachable without a production fault-injection hook, which is
-forbidden.  `ZmqQueue::start()`'s new `false` return is likewise unreachable:
-its `ThreadManager` is constructed fresh inside `start()`, so `closing` is
-false, and re-entry is already refused by the `running_.exchange(true)`
-guard.  If a fault-injection facility ever lands **in the test framework**,
-the three assertions to write are: spawn failure → `spawn()` returns false
-with no slot registered; `timedShutdown` runs the callback inline and reports
-through `ShutdownOutcome`; `ZmqQueue::start()` returns false rather than true.
-
-Siblings from the same audit: **#86** — SHIPPED 2026-07-29; the last-resort
-buffer now lives in the debug module with a set-only dirty latch, `panic()` no
-longer allocates before emitting, and `PLH_DEBUG_TRACE_BYTES` (default 16384)
-replaced the invented 64 KiB constant — and **#83** items A–E (borrowed
-`resolve()` return, two latent range-for use-after-free landmines,
-`Z85PublicKey` storing a `std::string` for a fixed 40-char value).
 
 ### #85 — `plh_hub` CLI hangs at exit; shutdown diagnostics are mute in Release
 
@@ -313,39 +227,18 @@ provisioning step can wedge indefinitely — worth fixing regardless of rate.
 Evidence preserved at `build-release/Testing/logs/ctest-20260727-143417-*.log`
 (sweep) and `ctest-20260727-143953-*.log` (standalone).
 
-### #94 — Implement HEP-CORE-0021 §16.5 ephemeral-binding production path
-
-HEP-0021 §16.5 step 8 describes `messenger.update_endpoint()` inside
-`establish_channel` for the port-0 ephemeral-binding case: ZmqQueue
-binds with `tcp://*:0`, OS assigns a real port, then
-`establish_channel` calls the now-sync `send_endpoint_update` to
-inform the broker.  **STATUS CORRECTED 2026-07-18:** a production
-`send_endpoint_update` caller DOES exist now — `role_api_base.cpp:1537`
-(`apply_consumer_reg_ack`, binding-side/fan-in endpoint publish, shipped
-with the fan-in binding arc 2026-07-11).  The remaining #94 gap is
-narrower: the *producer* `establish_channel` `tcp://*:0` ephemeral-bind
-variant HEP-0021 §16.5 literally describes.  (The old "no production
-caller" premise, verified 2026-05-21, is stale.)
-
-The HEP-vs-code drift was surfaced by the ENDPOINT_UPDATE sync
-REQ/REP work this session (commit `8228f1ac`).  Now that the API
-is sync, the missing production path can be safely wired.
-
-Scope sketch:
-- Find the existing producer create / `establish_channel` site.
-- Add ephemeral-binding option (likely already supported by
-  `ZmqQueue`).
-- After `ZmqQueue::start()`, call
-  `messenger.update_endpoint(channel, actual_endpoint())` and
-  branch per HEP-0021 §16.3 (success → proceed; error/nullopt →
-  return nullopt from `establish_channel` per §16.6).
-- Add an L4 demo (`share/py-demo-zmq-ephemeral/` or extend an
-  existing ZMQ demo) using `tcp://*:0` — exercises the production
-  flow.
-
-Effort: M.
-
 ### Demo-harness audit follow-ups (2026-05-21)
+
+> **⚠ The `#10x` IDs in this section are from a retired numbering scheme and
+> collide with live task IDs.** Legacy `#102`/`#103`/`#104`/`#105`/`#106` here
+> mean runtime key handling / HEP-0017 §3.3 / sibling-HEP sync / federation
+> design / script-vault — the live tasks with those numbers are entirely
+> different items. Read the description, not the number.
+>
+> Only the first entry was verified on 2026-08-07 (and turned out to be
+> superseded, see below). **The rest of this section is unverified** — treat
+> each as a claim until someone reads the code. Known live successors:
+> legacy `#105` federation → **#69**; legacy `#106` script vault → **#89**.
 
 Open items left over from the multi-engine demo session that found
 13 bugs (B1–B13).  B1, B2, B5, B9, B11, B12, B13 closed inline (git
@@ -353,17 +246,25 @@ log).  B3 closed via Task #78 (see archive).  Remaining items below
 are filed but not yet fixed; each is a tightly-scoped single-area
 change.
 
-- **#102** — **HEP-CORE-0035 §4.7 runtime key handling** —
-  shared `src/utils/security/runtime_key_handling.{hpp,cpp}` with
-  `disable_core_dumps()` (POSIX `setrlimit(RLIMIT_CORE,0)` + Linux
-  `prctl(PR_SET_DUMPABLE,0)` + Windows `SetErrorMode` /
-  `WerAddExcludedApplication`) and `SecureKeyBuffer` RAII wrapper
-  around `sodium_malloc` / `sodium_memzero`.  Called from
-  `plh_hub` and `plh_role` `main()` BEFORE the §4.6 ACL check,
-  and used by all key-loading code paths.  Cross-platform via
-  libsodium primitives; only the core-dump-disable helper is
-  platform-conditional.  Mechanically independent of #101 and
-  #74; can ship at any time.  Spec: HEP-CORE-0035 §4.7.  M.
+- **~~Runtime key handling (HEP-CORE-0035 §4.7)~~ — SUPERSEDED, DO NOT BUILD.**
+  This item proposed a shared `src/utils/security/runtime_key_handling.{hpp,cpp}`
+  with `disable_core_dumps()` and a `SecureKeyBuffer` RAII wrapper around
+  `sodium_malloc`/`sodium_memzero`.  **It was superseded on 2026-06-05 by the
+  HEP-CORE-0040 chain, which all shipped — but the supersession was recorded in
+  `AUTH_TODO.md` and never here, so it sat at the head of this list as buildable
+  work for two months.**
+
+  Verified 2026-08-07: the functionality exists inside the security module, not
+  as a separate file.  `secure_subsystem.hpp:127-128` documents the hardening
+  (`setrlimit(RLIMIT_CORE, 0)` + Linux `prctl(PR_SET_DUMPABLE, 0)`),
+  implemented in `secure_subsystem.cpp`; `key_store.cpp:70` relies on the
+  process-wide `PR_SET_DUMPABLE=0` it sets.  `SecureBuffer` covers the RAII
+  wrapper.
+
+  **Building the proposed file today would add a second security surface beside
+  `SecureMemorySubsystem`** — exactly what the "one module owns libsodium"
+  direction (#121) is consolidating away from.  If a §4.7 gap is found, it is
+  closed *inside* SMS, never in a sibling file.
 
 - **#103** — **HEP-CORE-0017 §3.3 + HEP-CORE-0036 implementation:
   `RxQueueOptions::producer_peers` + `ZmqQueue` dynamic peer API.**
