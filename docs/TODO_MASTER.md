@@ -82,7 +82,7 @@ post-reconcile shipped-sprint detail).
 >
 > | # | Band | What it covers |
 > |---|---|---|
-> | **1** | **Security items** | **Open:** #89 SMS/vault script surface; #87 privilege audit (now also carries the catch-block re-sweep and, post-observer-retirement, the by-name `collect_shm_info` read); **#121 SEC-Fold** (one module owns libsodium, one HEP owns security).  **#103 admin anti-hijack pin ✅ closed 2026-08-07** — mutation-verified, no production surface added.  **#123 role vault `.pub` ✅ closed 2026-08-07 as INVERTED** — the HEP rules against a `.pub` sidecar; the L4 test now reads `--keygen` stdout instead of decrypting the vault.  Vault hot reload is **CLOSED — decided against 2026-08-07** (#104): restart is the revocation boundary.  The impersonation arc (#83/#95/#96 + inbox sender) is CLOSED on every plane.  **Federation is NOT in this band.** |
+> | **1** | **Security items** | **Open:** #87 privilege audit (now also carries the catch-block re-sweep and, post-observer-retirement, the by-name `collect_shm_info` read); #89 SMS retained-key + config reload; **#136 script secret store — DESIGN FIRST** (`RoleVault` is write-once, so this is not a payload change).  **#121 SEC-Fold ✅ closed 2026-08-08** — the C++ half was already done and is now guarded; the HEP fold is **withdrawn**, and the HEP-0043 tail that kept generating it is repaired.  **#103 admin anti-hijack pin ✅ closed 2026-08-07** — mutation-verified, no production surface added.  **#123 role vault `.pub` ✅ closed 2026-08-07 as INVERTED** — the HEP rules against a `.pub` sidecar; the L4 test now reads `--keygen` stdout instead of decrypting the vault.  Vault hot reload is **CLOSED — decided against 2026-08-07** (#104): restart is the revocation boundary.  The impersonation arc (#83/#95/#96 + inbox sender) is CLOSED on every plane.  **Federation is NOT in this band.** |
 > | **2** | ~~**Shared-memory observer feature**~~ — **RETIRED 2026-08-07** | HEP-CORE-0045 is ⛔ retired, not deferred.  The role already holds the SHM counters and already ships `QueueMetrics` to the hub on every heartbeat; joining them is **#117** (seven fields, one X-macro).  Retirement also removes a privilege surface — the broker stops mapping other processes' memory.  Residual work is **#117** → **#119** (abstract the ephemeral grant) → removal of the shipped observer pieces.  **This band is otherwise empty; the ordering below should be re-read with that in mind.** |
 > | **3** | **Backlog of smaller polish items** | The P0/P1 batches below (startup log lines, config defaults, per-area subtopic items) — small, independently shippable. |
 > | **4** | **Role-program unification (C++ RAII framework)** | #292 collapse of the three role-host files, taken together with the Template-RAII layer (Phase 2b: `TypedInboxClient`, `SimpleRoleHost`) since both reshape the same surface; #55 test re-homing rides along. |
@@ -143,7 +143,7 @@ security items, so this pass did add to band 1** — unlike the docs pass above.
 
 | Task | Band | Why there |
 |---|---|---|
-| **#121** SEC-Fold — **C++ half already done**; HEP consolidation + a guardrail remain | **1** | Re-measured 2026-08-07: **6** files include `<sodium.h>`, **all six inside `src/*/security/`**.  The alleged outlier `vault_crypto` doesn't include it — it goes through `secure()`.  `KeyStore` is already a gated member (`secure().keys()`), not a peer.  "One module owns every libsodium API" **holds today**, so there is no refactor left.  What remains: the HEP fold (design authority — owner's call), and **a guardrail**, since the property is true but unenforced and one stray include undoes it silently.  Absorbs the old script-crypto item. |
+| ~~**#121** SEC-Fold~~ **✅ CLOSED 2026-08-08** | — | **C++ half was already done** (6 sodium includes, all inside `src/*/security/`; `vault_crypto` goes through `secure()`; `KeyStore` already a gated member) and is **now guarded** by `SecurityGuardrail_SodiumConfinedToModule`, mutation-verified.  **The HEP fold is WITHDRAWN — do not re-file.**  Its trigger (the `sodium_init` triangle) was fixed by HEP-0043 existing.  Three proposed structures each died on evidence: ~12,000 lines in one file; the vault already has *finalized* owners in HEP-0024 §3.4 / HEP-0033 §7.1 that a merge would strip; and the citation matrix puts the densest coupling in the wire protocols (0036↔0041 = 46), not anywhere proposed.  What was repaired instead: the HEP-0043 tail — §8 cited four non-existent sections, §9.1 marked a live HEP superseded, §9.3 planned a retired feature, §11 claimed a script vault that exists nowhere. |
 | ~~**#122** CTRL ZAP allow-path pin~~ **❌ WITHDRAWN 2026-08-07** | — | **No gap; do not re-file.**  The premise ("a deny-only pin would pass if the broker denied everyone") is false: every passing L3 CURVE test registers a role through that same door, so a deny-all broker fails the whole datahub suite.  Unknown-key refusal is pinned by `CtrlZapDenyPath`; known-key admission is proven by every role that registers.  **Filed off a grep for a test NAME, reported as absent coverage** — see #122 for the rule that follows from it. |
 | ~~**#123** role vault publishes no `.pub`~~ **✅ DONE 2026-08-07, INVERTED** | — | The premise was a superseded HEP draft: §4.8.3 takes a Z85 **string**, and §4.8.4 explicitly rules that roles publish no `.pub`.  **Do not build `RoleVault::publish_public_key`.**  The real defect was the L4 test decrypting the vault instead of reading `--keygen` stdout — so the only workflow an operator can follow had zero coverage.  Fixed and mutation-verified. |
 | **#127** CLI `--init` bundling | **3** | What makes the shipped auth usable by someone who is not the author.  Natural home for #124.  **No longer waits on #123** — `--init` can capture the pubkey the same way an operator does, from `plh_role --keygen` stdout.  If that proves brittle in practice, §4.8.4 already names a role-side `.pub` as the sanctioned escape hatch — decide it there, with evidence, not as a prerequisite. |
@@ -161,13 +161,22 @@ security items, so this pass did add to band 1** — unlike the docs pass above.
 | **#132** `with_active_loop` tested and uncalled | **4** | See the theme above; band 4 touches the thread owners. |
 | **#133** dynamic peer API tested and uncalled | **4** | Same theme.  Also unblocks a split in topology Phase E, which had it in one deletion row with the load-bearing multi-endpoint PULL loop. |
 
-**And one gate that turned out to be already open:** **#89** (script vault,
-band 1) recorded "depends on #104 shipping first". That chain
-(`#101 + #102 → #74 → #94 + #103 → #104 → #106`) is fully closed, so #89 has
-been sitting behind a satisfied dependency. Still genuinely unbuilt —
-`api.vault_save` / `api.vault_load` appear nowhere in `src/`, HEP-0038 is
-still 🚧 DRAFT. Sequence it against **#121**: doing the security-module fold
-first means the script surface lands on the consolidated shape.
+**And one gate that turned out to be already open:** **#89** recorded
+"depends on #104 shipping first". That chain
+(`#101 + #102 → #74 → #94 + #103 → #104 → #106`) is fully closed, so it had
+been sitting behind a satisfied dependency.
+
+**Rescoped 2026-08-08.** The script-store half is now **#136**, design-first,
+because the original framing was wrong in a way that mattered: it called the
+work "extend the `RoleVault` payload with a `scripts` map." `RoleVault` is
+**write-once** — `create`, `open`, and three read accessors, no `save`, no
+setters (contrast `HubVault`, which has `set_known_roles` + `save`). So it
+needs a write path that does not exist, on the file holding the role's
+identity key, which raises re-encryption-without-the-password, atomic
+replace, crash-mid-save, and whether user script code may compel rewrites of
+its own identity file. A separate file is the strong prior. #89 keeps the
+SMS retained-key and config-reload work. The old "sequence it against #121"
+note is void — #121 is closed and the fold withdrawn.
 
 #### A theme worth acting on as one decision: abstractions landing ahead of their adopters
 

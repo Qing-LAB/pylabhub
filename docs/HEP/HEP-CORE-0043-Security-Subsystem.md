@@ -49,13 +49,18 @@ historical R1-R8 reasoning trace.
   is the SEC-Fold-2 refactor spec.
 - **§3-§7 Cryptographic primitives** — random, hash, KDF,
   symmetric AEAD, asymmetric box, and the `KeyStore` submodule.
-- **§8 Vault at rest** — file format, salt, path discipline.
-- **§9 Wire authentication protocols** — ZMQ CURVE + ZAP, SHM
-  channel handshake, broker SHM observer.
-- **§10 Script-facing crypto API** — the language binding
-  translation layer.
+- **§8 Vault at rest** — an INDEX naming the owners (the directory
+  HEPs and HEP-0035); the vault is not specified here.
+- **§9 Wire authentication protocols** — an INDEX to HEP-0036,
+  HEP-0041, HEP-0044, HEP-0042; the protocols are not specified
+  here.  §9.3 is a tombstone for the retired broker observer.
+- **§10 Script-facing crypto API** — the binding-layer sandboxing
+  rule (settled), plus the open questions for a script secret
+  store (not designed, not built).
 - **§11 Cross-platform status** — per-OS backend matrix.
-- **§13 Superseded HEPs** — mapping table.
+- **§13 Ownership map** — what is owned here and what is not.
+  **Nothing is superseded by this HEP and nothing is scheduled to
+  migrate into it.**
 
 ### 0.3 What this HEP does NOT cover
 
@@ -93,14 +98,16 @@ historical R1-R8 reasoning trace.
 - **§7 (KeyStore API surface) — SHIPPED 2026-07-06** — carries the
   full API surface preserved from HEP-CORE-0040 §5.2.  Now the
   primary reference.
-- **§8–§10** — SECTION STUBS with pointers to authoritative HEPs.
-  §9.1 → HEP-CORE-0036 (ZMQ CURVE + ZAP).  §9.2 → **HEP-CORE-0044**
-  (AttachProtocol primitive) + HEP-CORE-0041 (SHM capability
-  transport) + HEP-CORE-0042 (attach coordination).  §9.3 →
-  **HEP-CORE-0045** (Broker SHM Observer, promoted 2026-07-08).
-  §8 vault → HEP-CORE-0038.  §10 script API → HEP-CORE-0038 +
-  task #247.
-- **§11-§13** — supporting.
+- **§8–§10** — INDEX sections, not stubs awaiting content.  §8 vault
+  → HEP-CORE-0024 §3.4 + HEP-CORE-0033 §7.1 (placement, finalized)
+  and HEP-CORE-0035 §4.6/§4.8 (format, payload, CLI).  §9.1 →
+  HEP-CORE-0036 (current and authoritative — *not* superseded).
+  §9.2 → HEP-CORE-0044 (AttachProtocol) + HEP-CORE-0041 (SHM
+  capability transport) + HEP-CORE-0042 (attach coordination).
+  §9.3 → ⛔ retired with HEP-CORE-0045; tombstone only.  §10 →
+  binding-layer sandboxing rule, plus open questions for a script
+  secret store that is neither designed nor built.
+- **§11-§13** — supporting.  §13 is the ownership map.
 
 **Retired frameworks (deleted from the codebase):**
 - `pylabhub::crypto` namespace + its `"CryptoUtils"` lifecycle module
@@ -248,9 +255,9 @@ sodium_init call sites (`uuid_utils.cpp`, `crypto_utils.cpp`,
 `vault_crypto.cpp`, `attach_protocol.cpp`, `SecureSubsystem`)
 plus two in tests.  None was authoritative.  A test worker that
 skipped all five paths hit an uninitialized libsodium and aborted
-with a guard-page pointer-arithmetic assertion.  Commit `9d0a7eb4`
-ripped every self-init out and centralized on the SMS constructor;
-this HEP formalizes that as the permanent contract.
+with a guard-page pointer-arithmetic assertion.  Every self-init was
+then ripped out and centralized on the SMS constructor; this HEP
+formalizes that as the permanent contract.
 
 ### 1.3 Singularity — exactly one instance per process
 
@@ -348,8 +355,11 @@ naming convention).  The module doesn't distinguish at the storage
 level; the distinction is who OWNS the naming: framework
 (identity) vs runtime code (ephemeral).
 
-Broker observer keypair is the exemplar ephemeral key: HEP-0041
-§D1(d), shipped in task #317 D1 slice A (commit `d6f5d621`).
+The broker observer keypair was the original ephemeral key, per
+HEP-0041 §D1(d).  **Its consumer has since been retired (§9.3), but
+the mechanism was kept** — so the ephemeral-key path currently has
+no live caller and no owning abstraction.  Treat it as a capability
+looking for a home, not as a worked example to copy.
 
 ### 1.6 Cross-platform layering
 
@@ -530,9 +540,9 @@ surface.  Its declaration stays in `key_store.cpp` (anonymous
 namespace).
 
 **R8 (Z85PublicKey) resolution.**  Future `box_*` methods on SMS
-accept `Z85PublicKey` directly, matching the existing strong-type
-discipline from task #231.  The Z85 → raw decode happens once
-inside the module.
+accept `Z85PublicKey` directly, matching the strong-type discipline
+already used for CURVE keys elsewhere.  The Z85 → raw decode happens
+once inside the module.
 
 ### 2.2 `KeyStore` submodule (SHIPPED 2026-07-06)
 
@@ -564,8 +574,7 @@ now on `KeyStore` accessed via `secure().keys()`):
 - `add_identity_from_z85(name, pub_z85, sec_z85)` — Z85 pair.
 - `add_raw(name, plaintext)` — HEP-0038 script-vault-shaped raw
   secret.
-- `generate_and_add_identity(name)` — on-the-fly keypair
-  (shipped `d6f5d621`).
+- `generate_and_add_identity(name)` — on-the-fly keypair.
 - `remove(name)` — idempotent.
 - `pubkey(name)` — Z85, non-secret.
 - `with_seckey(name, callback)` — raw 32 bytes, use-not-export.
@@ -903,20 +912,35 @@ crypto_2026-07.md`):
 - Script binding layer TRANSLATES script-provided names into
   sandboxed storage names before calling `add_*` (see §10).
 
-Full content migration: SEC-Fold-1b follow-up.
+## 8. Vault at rest — owned elsewhere, by design
 
-## 8. Vault at rest
+**This section is an index, not a stub.  Do not migrate vault
+content into this HEP.**  The vault is a file on disk; its
+placement is a directory-layout concern and its format is an
+authentication concern.  Both have settled owners, and moving
+either here would strip a finalized contract out of the document
+that reasoned about it.
 
-**Section stub.**  Full detail: HEP-CORE-0038 §5-§9 (file format,
-salt derivation, path discipline) and HEP-CORE-0035 §4.6 (file
-ACL floor).
+| Aspect | Owner |
+|---|---|
+| Where the vault lives, filename convention, placement security — role side | **HEP-CORE-0024 §3.4, §3.4.1** |
+| Where the vault lives, keygen, path resolution, placement security — hub side | **HEP-CORE-0033 §6.5, §7.1, §7.2** |
+| Encrypted file format — KDF, AEAD, file-ACL floor | **HEP-CORE-0035 §4.6** |
+| Payload contents (the `known_roles` allowlist) + the operator CLI that edits them | **HEP-CORE-0035 §4.8** |
+| The keys once loaded OUT of the vault and into memory | **§7 of this HEP** |
 
-Not folded into §2.1's public API — vault is a FILE format on
-disk, not a crypto primitive.  `vault_crypto.cpp` continues to
-exist as the vault-file layer; it USES `secure().pwhash`,
-`secure().secretbox_seal/open` for its crypto steps.
+What this HEP owns is only the last row: the moment a secret stops
+being a file and becomes bytes in a process.  `vault_crypto` is the
+file layer and calls into §4 (`pwhash_argon2id`) and §5
+(`secretbox_encrypt`/`_decrypt`) for its crypto steps — a consumer
+of this module, not part of it.
 
-Full content migration: SEC-Fold-1b follow-up.
+**Write-back asymmetry, recorded here because it constrains any
+future design.**  `HubVault` can be mutated and re-saved
+(`set_known_roles` + `save`).  `RoleVault` cannot: it exposes
+`create`, `open`, and read accessors only.  A role vault is
+write-once.  Anything proposing to store additional material in a
+role's vault must first answer how write-back works — see §10.
 
 ## 9. Wire authentication protocols
 
@@ -924,15 +948,21 @@ Three wire protocols, each with its own security posture.
 
 ### 9.1 ZMQ CURVE + ZAP
 
-**Full detail: HEP-CORE-0036** (5203 lines).  Marked
-SUPERSEDED-STATUS-ONLY — content authoritative until migrated.
+**Owner: HEP-CORE-0036, which is current and authoritative.**  It is
+not superseded by this HEP and must not be marked so.  An earlier
+revision of this section carried a "SUPERSEDED-STATUS-ONLY — content
+authoritative until migrated" banner, which is a contradiction: it
+told the reader to distrust the only document that specifies the
+protocol.  HEP-0036 has since grown by roughly a thousand lines,
+which is what an active contract does and a retired one does not.
 
-Migration touchpoints under this HEP:
-- `ZapRouter` + `ZmqQueue` continue to exist as protocol
-  implementations.
-- Their crypto calls (currently `crypto_box_easy` for handshake
-  proofs) move through `secure().box_*_using(name, ...)`.
-- `KnownRolesStore` (allowlist) stays as-is; unchanged surface.
+Interaction with this module:
+- `ZapRouter` and `ZmqQueue` are protocol implementations owned by
+  HEP-0036; they are consumers of this module, not part of it.
+- Their crypto goes through `secure().box_*_using(name, ...)` (§6),
+  citing the key by KeyStore name so the use-not-export contract
+  (§1.4) holds across the call.
+- `KnownRolesStore` (the allowlist) is HEP-0035's; unchanged here.
 
 ### 9.2 SHM channel handshake
 
@@ -950,43 +980,29 @@ Layer-2b handshake.
 Attach Coordination — `CONSUMER_ATTACH_REQ_SHM` and per-transport
 version tracking).
 
-### 9.3 Broker SHM observer
+### 9.3 Broker SHM observer — RETIRED
 
-**Full detail: `HEP-CORE-0045` (Broker SHM Channel Observer).**
-Promoted 2026-07-08 from
-`docs/tech_draft/DRAFT_broker_shm_observer_2026-07.md`.  Coverage:
-motivation, D1-D5 design decisions, trust chain, observer
-capability, broker dial + fd cache, cross-platform teardown,
-opt-out, metrics wiring, test plan, and the task #317 slice map.
+The broker SHM observer is **⛔ retired, not deferred** — see
+HEP-CORE-0045, which records the retirement and the reason: the role
+already holds the SHM counters and already ships them to the hub on
+every heartbeat, so the observer bought nothing and cost a privilege
+surface (the broker mapping another process's memory).
 
-Shipped: D1 slice A (`d6f5d621`), D2 slice (`f7d3a51e`), C.2.a
-(`029bbe31`), C.2.b (`ce956972`).  Remaining: C.2.c
-(PeerDeathWatcher), C.2.d (broker dial + fd cache), D5 (opt-out),
-C.3 (`metrics_source`), C.4 (L4 tests), C.5 (HEP status sync).
-
-The observer keypair is generated via
-`secure().keys().generate_and_add_identity("broker.observer")` and
-travels on `PRODUCER_REG_ACK.broker_observer_pubkey_z85`.  Observer
-verify path uses the `role_type="observer"` extension of
-AttachProtocol (HEP-0044 §9) against the broker-observer trust
-anchor stashed on the producer.
+This subsection previously carried a live build plan for it —
+remaining slices, an observer keypair mechanism, and a wire field —
+which is why it is left here as an explicit tombstone rather than
+deleted outright.  **Do not reintroduce it.**  Nothing in this HEP
+depends on the observer, and no crypto surface exists solely to
+serve it.
 
 ## 10. Script-facing crypto API
 
-**Section stub.**  Full detail: HEP-CORE-0038 script layer +
-`DRAFT_keystore_ephemeral_and_script_crypto_2026-07.md` + task
-#247 (script crypto API bindings).
-
-**R6 (script sandboxing) resolution.**  Script sandboxing lives
-in the LANGUAGE BINDING LAYER (Python, Lua, Native), NOT in
-`SecureSubsystem`.  The bindings translate script-provided names
-(`"mykey"`) into sandboxed storage names
-(`"script.<role_uid>.mykey"`) before calling `secure().keys().*`.
-`SecureSubsystem` sees fully-qualified names only.  This must be
-documented explicitly to prevent future impls from baking
-sandboxing into the module.
-
-Sketch:
+**Sandboxing lives in the language binding layer, not in this
+module.**  This is the load-bearing rule of the section and the only
+part of it that is settled.  The bindings (Python, Lua, Native)
+translate a script-supplied name into a namespaced storage name
+before calling into the module; `SecureSubsystem` only ever sees a
+fully-qualified name and applies no per-script policy of its own:
 
 ```
 Script:   api.crypto.new_keypair("mykey")
@@ -994,7 +1010,30 @@ Binding:  secure().keys().generate_and_add_identity(
             "script." + role_uid + "." + "mykey")
 ```
 
-Full detail: SEC-Fold-1b or task #247, whichever ships first.
+Stated explicitly because the tempting shortcut — teaching the
+module about roles so it can sandbox centrally — would put policy
+inside a mechanism module and give it a reason to know who is
+calling it.  It must not learn that.
+
+**Persistent script secrets are NOT designed and NOT built.**  No
+`vault_save` / `vault_load` surface exists anywhere in the tree.
+Two things must be settled before any of it is:
+
+1. *Naming.*  A script-facing secret store is not the vault.  The
+   word "vault" denotes the file on disk and the directory holding
+   it, and that meaning is load-bearing across the codebase, the
+   configs and the operator CLI.  A script store needs its own name.
+2. *Write-back.*  `RoleVault` is write-once — `create`, `open`, and
+   read accessors, with no `save` (contrast `HubVault`, which has
+   `set_known_roles` + `save`).  Storing script material in a role's
+   vault therefore is not a payload change; it requires a write path
+   that does not exist, on the same file that holds the role's
+   identity key.  Re-encryption without retaining the password,
+   atomic replace, crash-mid-save, and whether a script can compel
+   rewrites of its own identity file are all open.
+
+Tracked as its own design item; do not treat either question as
+settled by this section.
 
 ## 11. Cross-platform status
 
@@ -1003,69 +1042,67 @@ Full detail: SEC-Fold-1b or task #247, whichever ships first.
 | `SecureSubsystem` ctor | ✅ | ✅ | ✅ | ⏸ SeLockMemoryPrivilege probe |
 | `KeyStore` | ✅ | ✅ | ✅ | ✅ (with privilege) |
 | ZMQ CURVE (§9.1) | ✅ | ✅ | ✅ | ✅ |
-| SHM channel (§9.2) | ✅ | 🚧 #259 | 🚧 #260 | 🚧 #261 |
-| Broker SHM observer (§9.3) | 🚧 #317 | ⏸ | ⏸ | ⏸ |
-| Script vault (§10) | ✅ | ✅ | ✅ | ✅ |
+| Vault at rest (§8) | ✅ | ✅ | ✅ | ✅ |
+| SHM channel (§9.2) | ✅ | 🚧 planned | 🚧 planned | 🚧 planned |
+| Script secret store (§10) | ⛔ not designed | ⛔ | ⛔ | ⛔ |
+
+The script-store row read `✅ ✅ ✅ ✅` until 2026-08-08.  That was
+false on every platform — there is no such feature in the tree, on
+any OS.  A support matrix is the table a reader checks before
+promising a capability to a user, so a wrong ✅ here is worse than a
+missing row.  The broker-observer row was dropped with the feature
+(§9.3).
 
 ## 12. Change log
 
-- **2026-07-04 initial** — SEC-Fold-1 landing.  §0-§2 authoritative;
-  §3-§10 stubs.  Old four HEPs (0036, 0038, 0040, 0041) marked
-  SUPERSEDED-STATUS-ONLY.  Design self-review R1-R8 addressed
-  (see §1-§2 for R1/R2/R3/R6/R7/R8; §7-§8 for R4 concept
-  separation; §0.3 + R5 for HEP-0035 + HEP-0042 exclusion).
+- **Initial landing** — §0-§2 authoritative, §3-§10 stubs, with a
+  plan to migrate four other HEPs' content into those stubs.
+- **Correction.**  §3-§7 filled and are authoritative.  §8-§10 are
+  now INDEX sections and the migration plan is withdrawn — see §13.
 
-## 13. Superseded HEPs
+## 13. What this HEP owns, and what it does not
 
-Four HEPs' design contracts fold into this HEP.  Their content
-remains **AUTHORITATIVE** until §3-§10 migration completes (SEC-
-Fold-1b, follow-up).  Their **status** is superseded — this HEP
-owns the architectural design; they own the detail.
+**No HEP is superseded by this one.  Nothing is scheduled to be
+migrated into it.**  An earlier revision listed four HEPs as folding
+in and instructed that each be banner-marked
+"SUPERSEDED-STATUS-ONLY — content authoritative until migration."
+That instruction was withdrawn, for three reasons worth keeping:
 
-| Old HEP | Fold target section | Status banner change |
+1. **The status was self-contradicting.**  "Superseded but
+   authoritative" tells a reader to distrust the only document that
+   specifies the thing they are reading about.
+2. **The premise did not hold.**  The bug that motivated the fold —
+   `sodium_init` ordering, where each HEP assumed another established
+   the discipline — was fixed by this HEP *existing* and giving that
+   one decision one owner (§1.2).  That is the whole benefit, and it
+   was already banked.  The rest of the fold was grouping documents
+   by topic word, which is not what a HEP boundary is for.
+3. **The stubs never behaved as promised.**  Of the three, none was
+   ever filled by migration; two instead fissioned outward into new
+   HEPs.  A stub reads as "this document intends to own this," which
+   invites exactly the migration that should not happen.
+
+| Concern | Owner | Relationship to this HEP |
 |---|---|---|
-| HEP-CORE-0036 (Authenticated Connection Establishment) | §9.1 (ZMQ CURVE + ZAP) | Add "SUPERSEDED-STATUS-ONLY by HEP-CORE-0043 §9.1; content authoritative until §9.1 detail migration" |
-| HEP-CORE-0038 (Script-Accessible Vault Keystore) | §5 (AEAD), §8 (vault at rest), §10 (script API) | Same banner, pointing at those three sections |
-| HEP-CORE-0040 (Locked Key Memory) | §2 (module), §7 (KeyStore submodule) | Same banner, pointing at §2 + §7 |
-| HEP-CORE-0041 (SHM Channel Auth) | §9.2 (SHM channel handshake) | Same banner, pointing at §9.2 |
+| libsodium access, init gate, singularity, key memory | **this HEP §1-§7** | owned here |
+| Vault on disk — placement, format, payload, CLI | **0024 §3.4 · 0033 §7.1 · 0035 §4.6/§4.8** | indexed by §8 |
+| ZMQ CURVE + ZAP | **HEP-CORE-0036** | indexed by §9.1; current, not superseded |
+| SHM capability transport | **HEP-CORE-0041** | indexed by §9.2 |
+| Peer auth for non-CURVE transports | **HEP-CORE-0044** | indexed by §9.2 |
+| Attach choreography | **HEP-CORE-0042** | indexed by §9.2 |
+| Hub-role admission + federation trust | **HEP-CORE-0035** | policy, not crypto |
+| Script secret store | **not designed** | §10 states the open questions |
 
-**Not folded** (stay independent):
-- HEP-CORE-0035 (Hub-Role Auth + Federation Trust) — federation
-  concern, not crypto.
-- HEP-CORE-0042 (Channel Attach Coordination) — wire ordering,
-  not crypto.
-
-Both cross-referenced from §9.1 / §9.2 for the interaction
-points, but their design contracts stay in place.
-
----
-
-## SEC-Fold-1b — remaining work
-
-**§3-§10 content migration** from the four superseded HEPs into
-this HEP's sections.  Estimated ~2000-3000 additional lines
-across the 8 sections.  Ships as a follow-up commit set:
-
-1. §7 KeyStore detail (from HEP-0040 §5, §6, §8).  Largest.
-2. §9.1 ZMQ CURVE detail (from HEP-0036).  Largest of §9.
-3. §9.2 SHM channel detail (from HEP-0041 §5-§10).
-4. §8 vault at rest (from HEP-0038 §5-§9).
-5. §3-§6 primitives (short).
-6. §10 script crypto API (short; awaits task #247 impl).
-7. Delete old HEPs' authoritative content once mirrored; leave
-   banner + pointer only.
-8. Archive per `DOC_STRUCTURE.md §2.2`.
-
-**SEC-Fold-2 (C++ refactor)** proceeds in parallel or after — the
-`SecureSubsystem` class shape (§2.1) is the authoritative build
-target regardless of §3-§10 migration state.
+The right intervention when one of those documents is wrong is to
+fix the statement where it lives — not to move the subject here.
 
 ## Related documents
 
-- `docs/tech_draft/DRAFT_security_module_and_hep_consolidation_2026-07.md`
-  — full triage narrative + design self-review R1-R8.
+- `docs/archive/transient-2026-07-06/DRAFT_security_module_and_hep_consolidation_2026-07.md`
+  — the original consolidation triage (archived).  Its Part 2
+  structure proposal is the plan withdrawn in §13; read it as
+  history, not as a backlog.
 - `docs/tech_draft/DRAFT_keystore_ephemeral_and_script_crypto_2026-07.md`
-  — ephemeral key + script crypto API design (folds into §7 + §10).
-- `docs/tech_draft/DRAFT_broker_shm_observer_2026-07.md` —
-  broker observer path (folds into §9.3).
-- `docs/todo/AUTH_TODO.md` — SEC-Fold-1 / SEC-Fold-2 task tracking.
+  — ephemeral-key + script crypto sketch; input to §10's open
+  questions, not a design.
+- `docs/todo/AUTH_TODO.md` — security work tracking.

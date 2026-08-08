@@ -104,7 +104,21 @@ almost certainly re-deriving one of them.
 
 ## Open — security posture
 
-- **SEC-Fold — the C++ half is DONE; the HEP consolidation is what's left.**
+- **✅ CLOSED 2026-08-08 — SEC-Fold. The C++ half was already done; the HEP
+  consolidation is WITHDRAWN, not deferred.** Three structures were proposed
+  and each died on evidence: one document would be ~12,000 lines; the vault
+  already has finalized owners (HEP-0024 §3.4, HEP-0033 §7.1) that a merge
+  would have stripped; and the citation matrix puts the densest coupling in
+  the wire protocols (0036↔0041 = 46 mutual cites), the opposite of every
+  grouping proposed. Decisive: the `sodium_init` triangle that justified the
+  fold was fixed by HEP-0043 *existing*. The trigger is spent.
+  What was actually repaired is the HEP-0043 tail — §8 cited four sections
+  of HEP-0038 that do not exist, §9.1 marked a live HEP superseded, §9.3
+  was a build plan for a retired feature, and §11 claimed the script vault
+  shipped on four platforms when it exists nowhere. Details in **#121**.
+  Script store split to **#136** (design first — `RoleVault` is write-once).
+
+- ~~**SEC-Fold — the C++ half is DONE; the HEP consolidation is what's left.**~~
   Re-measured 2026-08-07: **6** files include `<sodium.h>` and **all six are
   inside `src/*/security/`**. The claimed outlier `vault_crypto` doesn't
   include it at all — it routes through `secure()` (`pwhash_argon2id`,

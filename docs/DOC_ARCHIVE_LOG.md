@@ -2221,3 +2221,61 @@ CONSUMER_REG_REQ field catalog: OPTIONAL, required when a named citation opens
 a fan-in channel, openers restricted to `""` or `"hub"`, joiners matched
 exactly, owner-without-id rejected. The omission is what made the field look
 orphaned and produced the withdrawn proposal to delete it.
+
+### 2026-08-08 — SEC-Fold withdrawn; HEP-CORE-0043's tail repaired
+
+**No documents were archived or merged. That is the outcome.**
+
+SEC-Fold-1 proposed folding six security HEPs into one. It is **withdrawn,
+not deferred.** Three structures were proposed in sequence and each died on
+evidence:
+
+1. *Fold six into one* — ~12,000 lines, 45% of it HEP-0036. An archive with
+   a table of contents, not a design contract.
+2. *Merge the vault documents* — the vault already has **finalized** owners:
+   HEP-CORE-0024 §3.4/§3.4.1 (role side) and HEP-CORE-0033 §6.5/§7.1/§7.2
+   (hub side). Merging would have stripped a finalized contract out of the
+   documents that reasoned about it.
+3. *Merge by measured coupling* — the citation matrix puts the densest
+   cluster at 0036/0041/0042/0044 (0036↔0041 = 46 mutual citations), the
+   wire protocols, which is the opposite of every grouping proposed. And
+   citation counts cannot distinguish healthy layering from tangled
+   ownership, so they license investigation, not a restructure.
+
+**Decisive:** the concrete defect that justified the fold — the `sodium_init`
+triangle, where each HEP assumed another established the discipline — was
+fixed by HEP-CORE-0043 *existing* and giving that decision one owner. The
+trigger was already spent.
+
+**What was repaired instead** — the HEP-0043 tail, which was the live hazard:
+
+| Defect | Reality |
+|---|---|
+| §8 cited "HEP-0038 §5-§9" for vault format | HEP-0038 is 200 lines and **ends at §5**; its own header disclaims the content |
+| §9.1 marked HEP-0036 "SUPERSEDED-STATUS-ONLY — content authoritative" | Self-contradictory; 0036 says DESIGN FINAL and has **grown ~1,000 lines** since being marked superseded |
+| §9.3 carried a live build plan for the broker observer | Retired 2026-08-07 |
+| §11 support matrix: "Script vault ✅ ✅ ✅ ✅" | **No script vault exists on any platform** |
+| §13 instructed banner-marking four HEPs superseded | Withdrawn; replaced by an ownership map |
+| "SEC-Fold-1b — remaining work" section | ~2,000–3,000 lines of prescribed migration, including "delete old HEPs' authoritative content" — deleted |
+
+§8/§9/§10 are now **index sections that name owners and forbid migration**,
+not stubs. That distinction is the durable fix: a stub reads as *"this
+document intends to own this,"* which invites the migration that must not
+happen. Empirically the stubs never produced migration — of three, none was
+filled and two **fissioned outward** into HEP-0044 and HEP-0045. In this
+session alone they generated three wrong restructure proposals before the
+pattern was recognised.
+
+Also stripped from the document per DOC_STRUCTURE §0: four commit hashes and
+three task IDs. Two `Related documents` paths pointed at `tech_draft/` for
+files that live in `archive/`.
+
+**Split out:** script access to on-disk secret storage is now its own
+design-first item. `RoleVault` is write-once, so the long-standing framing
+("extend the payload with a `scripts` map") hid a missing write path on the
+file that holds the role's identity key.
+
+**Naming ruled by the owner:** the on-disk container keeps the word *vault*
+— 1,891 references across `src/`, `tests/`, configs and docs, and the
+meaning is load-bearing. The unbuilt script-facing store gets a different
+name; renaming it is free now and expensive later.
