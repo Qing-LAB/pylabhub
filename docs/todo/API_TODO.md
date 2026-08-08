@@ -308,13 +308,19 @@ the hub refuses to start while a plaintext `known_roles.json` exists.)*
 
 ### Pre-existing renovation follow-ups
 
-- **Wave-MD1 sweep (open audit sites)** — ThreadManager Thread
-  Shutdown Contract (`SlotContext::with_active_loop`,
-  `request_shutdown_all`, `wait_for_quiescence`) was introduced in
-  MD1 (HEP-CORE-0031 §4.1).  Owners that haven't adopted yet:
-  `BrokerService` ctrl/admin threads (still on monotonic-mark
-  family), `AdminService` worker (review for `with_active_loop`),
-  `HubHost` admin thread (review for `join_named` simplification).
+- **Wave-MD1 sweep — now task #132, and it is worse than "not adopted yet".**
+  Verified 2026-08-07: `with_active_loop` (`thread_manager.hpp:92`,
+  HEP-CORE-0031 §4.1) has **zero production callers** — every hit in `src/`
+  is its own definition or docstring — while carrying a full L2 test binary
+  (`test_thread_manager_active_loop.cpp`). None of the three named owners
+  (`BrokerService` ctrl/admin threads, the `AdminService` worker, the
+  `HubHost` admin thread) mentions it.
+
+  **Same shape as the band-4 `should_continue_loop()` item above: defined,
+  tested, uncalled.** The coverage makes it read as live, so a reviewer
+  skimming for dead code finds tests and moves on. Two independent instances
+  is a pattern, not a coincidence — this codebase lands abstractions ahead of
+  their adopters. Adopt or delete, and move the tests with the decision.
   Trigger: any new spawn site under ThreadManager.  Track per-module
   decisions inline.
 
