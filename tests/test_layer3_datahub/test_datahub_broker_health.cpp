@@ -88,7 +88,7 @@ TEST_F(DatahubBrokerHealthTest, ChannelTornDown_ConsumerPass2Skipped)
 
 TEST_F(DatahubBrokerHealthTest, CtrlZapDenyPath)
 {
-    // HEP-CORE-0035 §4.2 + PeerAdmission Phase D step D2 — the broker's
+    // HEP-CORE-0035 §4.1 Layer 1 + PeerAdmission Phase D step D2 — the broker's
     // CTRL ROUTER ZAP gate is the production deny-by-default security
     // boundary.  Without this test, every other CURVE-using L3 worker
     // either bypasses the gate (`enforce_ctrl_admission = false`) or

@@ -71,7 +71,7 @@
 #include "utils/json_config.hpp"
 #include "utils/security/key_store.hpp"
 #include "utils/security/secure_subsystem.hpp"
-#include "utils/security/zap_router.hpp" // HEP-CORE-0035 §4.2 deny-path observability
+#include "utils/security/zap_router.hpp" // HEP-CORE-0035 §4.1 Layer 1 deny-path observability
 #include "plh_datahub.hpp"
 
 #include <zmq.h> // zmq_curve_keypair for the deny-path test
@@ -524,8 +524,8 @@ int channel_torn_down_consumer_pass2_skipped(int /*argc*/, char ** /*argv*/)
 // ctrl_zap_deny_path — D2 default-deny security gate
 // ============================================================================
 //
-// Pin that the broker's CTRL ROUTER ZAP gate (HEP-CORE-0035 §4.2 + §4.8
-// + PeerAdmission Phase D step D2) actually fires DENY when a CURVE
+// Pin that the broker's CTRL ROUTER ZAP gate (HEP-CORE-0035 §4.1 Layer 1
+// + §4.8 + PeerAdmission Phase D step D2) actually fires DENY when a CURVE
 // peer's pubkey is NOT in `known_roles`.  Without this, the
 // deny-by-default contract has zero path-level coverage (audit B2).
 //

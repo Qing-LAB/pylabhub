@@ -109,8 +109,18 @@ almost certainly re-deriving one of them.
   7 files include `<sodium.h>` and 5 already live under `security/`.
   **Task #121.**
 
-- **[TEST] CTRL ZAP has a deny pin and no allow pin.** A deny-only test
-  passes just as well if the broker denies everyone. **Task #122.**
+- **❌ WITHDRAWN 2026-08-07 — "CTRL ZAP has a deny pin and no allow pin."**
+  There is no gap; do not re-file this. The claim was that a deny-only
+  test would pass even if the broker denied everyone. It would not:
+  every passing L3 CURVE test has a role registering through that same
+  door, so a deny-all broker fails the whole datahub suite. Unknown-key
+  refusal is pinned by `CtrlZapDenyPath`; known-key admission is proven
+  by every role that registers. Together those are the discrimination
+  proof. (Allow-branch counter pins also already exist —
+  `zap_router::handshake_allow_increments_allowed_counter` and the
+  deny→allow swap in `zmq_queue_auth`.) **The item was filed off a grep
+  for a test NAME that did not exist, reported as absent COVERAGE.**
+  Was task #122.
 
 - **Federation peer admission has no active end-to-end pin.** The three
   `BrokerFederationTest` cases are `GTEST_SKIP`-ed, so removing peer keys
