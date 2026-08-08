@@ -104,10 +104,20 @@ almost certainly re-deriving one of them.
 
 ## Open — security posture
 
-- **SEC-Fold — one module owns libsodium, one HEP owns security.**
-  Docs first, then the refactor. Scope has shrunk a lot since filing:
-  7 files include `<sodium.h>` and 5 already live under `security/`.
-  **Task #121.**
+- **SEC-Fold — the C++ half is DONE; the HEP consolidation is what's left.**
+  Re-measured 2026-08-07: **6** files include `<sodium.h>` and **all six are
+  inside `src/*/security/`**. The claimed outlier `vault_crypto` doesn't
+  include it at all — it routes through `secure()` (`pwhash_argon2id`,
+  `secretbox_encrypt`, `random_bytes`, `memzero`). `KeyStore` is already a
+  gated member reached via `secure().keys()`, not a peer. So "one module
+  owns every libsodium API" **holds today**.
+  Remaining: (a) fold HEP-0035/0036/0038/0040/0041/0042 + the
+  keystore-ephemeral draft into one security HEP — design authority, owner's
+  call; sketch is in `archive/transient-2026-07-06/DRAFT_security_module_and_hep_consolidation_2026-07.md`
+  (archived, not `tech_draft/`); (b) **a guardrail**, because the property is
+  true and unenforced — one new `#include <sodium.h>` outside the module
+  undoes it silently, and the repo already has the grep-guardrail idiom for
+  exactly this. **Task #121.**
 
 - **❌ WITHDRAWN 2026-08-07 — "CTRL ZAP has a deny pin and no allow pin."**
   There is no gap; do not re-file this. The claim was that a deny-only
