@@ -266,159 +266,45 @@ change.
   direction (#121) is consolidating away from.  If a §4.7 gap is found, it is
   closed *inside* SMS, never in a sibling file.
 
-- **#103** — **HEP-CORE-0017 §3.3 + HEP-CORE-0036 implementation:
-  `RxQueueOptions::producer_peers` + `ZmqQueue` dynamic peer API.**
-  Per HEP-0017 §3.3 (Dynamic peer membership) + HEP-0036 §4.1 / I9:
-  replace `RxQueueOptions::zmq_node_endpoint` (singular) with
-  `std::vector<ProducerPeer> producer_peers`; add
-  `ZmqQueue::add_producer_peer(peer)` / `remove_producer_peer(uid)`.
-  Framework drives these in response to HEP-0033 §12 channel-event
-  broadcasts (producer joined/left).  Bind/connect direction is
-  internal to ZmqQueue.  This unlocks fan-in pipelines (N producers
-  → 1 consumer) and lets HEP-0036's `CONSUMER_REG_ACK.producers[]`
-  array land coherently with §94 (DISC_REQ_ACK array migration —
-  the two wire-format changes must land together per HEP-0036
-  §14.1).  Spec: HEP-CORE-0017 §3.3 + HEP-CORE-0036 §6.4 + §4.1.
-  M-L.  Depends-on: #94 wire-shape coordination.  *(Used to read "Blocks
-  AUTH_TODO D4 + D5" — that numbering was retired 2026-06-09 and its
-  successors AUTH-1..7 have all shipped, so this blocks nothing in the
-  auth chain.)*
+**Verified 2026-08-07 — the rest of this chain has closed.** Every remaining
+`#10x` item below was checked against the tree; the dependency chain they
+formed (`#101 + #102 → #74 → #94 + #103 → #104 → #106 → done`) is spent.
 
-- **#104** — **Sibling-HEP code updates per HEP-CORE-0036 §14.**
-  HEP-0036 design lock-in (2026-05-28) requires synchronized code
-  changes across eight sibling HEPs' implementation surfaces:
-  - **§14.1 HEP-0021**: `wants_shm_secret` REG_REQ field;
-    `producers[]` array on CONSUMER_REG_ACK + DISC_REQ_ACK (the
-    second is task #94).
-  - **§14.2 HEP-0035**: Layer-3 ZAP enforcement + PubkeyOrigin
-    index consumption.  Mostly tracked under #74; this task
-    captures the §4.1 / §4.2 Layer-3 wiring specifically.
-  - **§14.3 HEP-0023**: `Authorized` state on role-side
-    `RegistrationState` FSM (`role_presence.hpp`).
-  - **§14.4 HEP-0017**: tracked under #103 above.
-  - **§14.5 HEP-0027**: inbox CURVE wiring using identity keypair
-    (no per-channel key); inherits data-channel allowlist.
-  - **§14.6 HEP-0030**: band CURVE wiring using identity keypair;
-    inherits hub-wide `known_roles[]`.
-  - **§14.7 HEP-0007**: documentation only (no code; ACK schema
-    already implemented via §6.4 producers[]).
-  - **§14.8 HEP-0033**: `ChannelAccessEntry` row in HubState entry
-    types; no new code beyond §4.1 implementation.
-  Effort: L (multi-area).  Depends-on: #74 + #103 + #94.
+- **Legacy `#103` — dynamic peer membership — ✅ SHIPPED.**
+  `ZmqQueue::set_producer_peers` / `add_producer_peer` / `remove_producer_peer`
+  all exist (`hub_zmq_queue.hpp:461`, `:466`, `:472`), and fan-in is proven
+  end-to-end at L4 (`ZmqE2E_MultiProducer_TwoAuthorized`). The singular
+  `RxQueueOptions::zmq_node_endpoint` survives on purpose — it is the queue's
+  *own* bind endpoint (may be `tcp://host:0` for ephemeral bind, resolved and
+  published via `ENDPOINT_UPDATE_REQ`), a different thing from the peer set.
+  The "replace singular with vector" framing made them sound like one field.
 
-- **#105** — **Federation protocol design + cross-hub reg/comm
-  verification.**  HEP-0036 §13.1 explicitly defers full federation
-  protocol to a separate design effort.  MVP inherits HEP-0022
-  `HUB_RELAY_MSG` + HEP-0035 §4.3 `federation_trust_mode` + §4.4
-  `HUB_PEER_HELLO.roles[]`, but the full cross-hub registration
-  path (channel-name → owning-hub resolution, reverse snapshot
-  push on consumer death — broker mutates the channel's
-  authorized set and emits a new `CHANNEL_AUTH_UPDATE` snapshot
-  per HEP-0036 §6.5 amended 2026-06-02 —
-  `CONSUMER_DIED_NOTIFY` relay, multi-peer consistency model,
-  retry/backoff) is NOT end-to-end verified.  Existing L4 dual-hub processor test
-  (#44) covers broadcast relay + local-channel dual attachment
-  only.  Output: new HEP (HEP-CORE-0037 "Federation Protocol" or
-  amendment to HEP-CORE-0022) + L4 E2E test for cross-hub
-  CONSUMER_REG_REQ → remote producer.  L+ (separate effort; not
-  blocking single-hub auth shipment).
+- **Legacy `#104` — HEP-0036 §14 sibling-HEP code updates — ✅ CLOSED**, part
+  shipped and part superseded:
+  §14.1's `wants_shm_secret` REG_REQ field **does not exist and must not be
+  built** — it belonged to the AUTH-4 `shm_secret` design that HEP-0041 retired;
+  §14.2 PubkeyOrigin index consumption shipped (#83); §14.3 `Authorized` on the
+  role-side FSM is in `role_presence.hpp:120`; §14.4 is legacy `#103` above;
+  §14.5 inbox CURVE on the identity keypair shipped (#61); §14.6 band CURVE is
+  covered — bands ride the broker CTRL ROUTER, which arms
+  `arm_curve_server` at `broker_service.cpp:1134`; §14.7 was documentation
+  only; §14.8 `ChannelAccessEntry` shipped.
 
-- **#106** — **HEP-CORE-0038 + impl: script-accessible vault
-  keystore (`api.vault_save` / `api.vault_load`).**  Per-role
-  isolated encrypted KV store for script-managed secrets (external
-  API tokens, OAuth refresh tokens, MQTT broker passwords, license
-  keys).  Filed 2026-05-29.  HEP-CORE-0038 stub at
-  `docs/HEP/HEP-CORE-0038-Script-Accessible-Vault-Keystore.md`
-  records design intent + open questions; detailed design happens
-  when picked up.
+- **Legacy `#105` federation** → **#69** (parked, design-first).
 
-  Scope: extend `RoleVault` payload with a `scripts` map encrypted
-  alongside the CURVE keypair; add two new script-callable methods
-  wired through Python + Lua + Native engines (HEP-CORE-0011
-  surface); per-role isolation (a role can only read/write its own
-  store).  Out of MVP scope: cross-role access, audit logging,
-  quotas.
+- **Legacy `#106` script-accessible vault** → **#89**, and **its gate is now
+  open.** The item recorded "Depends-on: #104 shipping first"; #104 is closed,
+  so nothing blocks it. Still genuinely unbuilt: `api.vault_save` /
+  `api.vault_load` appear nowhere in `src/`, `key_store.hpp:297` records the
+  binding as deferred, and HEP-CORE-0038 is still 🚧 DRAFT. Both of those
+  sites cite the dead ID `#106` — re-anchor them to **#89** when it is picked
+  up.
 
-  Tests: L2 RoleVault extended payload + schema migration; L3
-  cross-engine API parity; L4 demo of a producer persisting a fake
-  external-API token across restarts.
-
-  Depends-on: #104 (HEP-0036 sibling-HEP code updates) shipping
-  first.  Independent of #105 (federation).  L.
-
-  Position in chain (per
-  `docs/tech_draft/DRAFT_HEP-0036-implementation-guideline_2026-05.md`
-  §4): #101 + #102 → #74 → #94 + #103 → #104 → #106 → done.
-
-> **Note on #74 (HEP-0035 auth implementation) expansion 2026-05-29.**
-> #74 now subsumes HEP-CORE-0035 §4.8 (known-roles allowlist stored
-> inside the hub vault) and the operator-facing CLI commands
-> `plh_hub --add-known-role <role.pub>` /
-> `--revoke-known-role <role_uid>` / `--list-known-roles`.  Rationale:
-> file-permission discipline alone does not protect the allowlist
-> against file-write attacks; storing the allowlist inside the
-> encrypted vault adds password-gated integrity.  CLI commands
-> compose with the existing master-password unlock flow and emit
-> OpenSSH-style errors on ACL violations.
-
-- **B4 (#79)** — `plh_role --init` template emits
-  `out_shm_secret/in_shm_secret = 0` (sentinel "no SHM");
-  `build_tx_queue` silently skips SHM and falls through to ZMQ.
-  Fix: generate a random non-zero default in
-  `src/utils/config/role_config_init.cpp`.  S.
-
-- **B6+B7 (#80)** — Consumer `rx.fz` claimed in `README_Deployment.md`
-  §8.4 but `consumer_api.cpp:191` only binds `.slot`; processor needs
-  `api.flexzone(api.Tx)` side arg (§8.4 example omits this).  Fix:
-  EITHER bind `.fz` on RxChannel OR rewrite §8.4 to use
-  `api.flexzone()`.  Pick one canonical surface.  S.
-
-- **B10 (#82)** — `api.band_join` from `on_init` silently returns
-  `None` because handler isn't up until Step 6 of `worker_main_`.
-  Doc workaround already shipped in HEP-CORE-0011 §"API availability
-  per callback".  Code-fix candidates: (a) defer the call (queue +
-  replay after handler ready) or (b) raise `runtime_error`.  (b) is
-  smaller; surface in `RoleAPIBase::band_join`.  S.
-
-- **N2 (#84)** — `NativeEngine::build_api_(HubAPI&)` MVP shipped (B13)
-  but exposes only log + uid + name + request_stop.  Missing: HubAPI
-  read accessors (list_channels, get_channel, list_roles, list_bands,
-  list_peers, query_metrics), control delegates (close_channel,
-  broadcast_channel, post_event, augment_*), event-shape callbacks
-  (on_event, on_consumer_added, on_role_registered per HEP-0033 §12).
-  Each needs a `ctx_X_hub` adapter wrapping HubAPI method as a C
-  function pointer returning JSON-as-C-string where applicable.  L.
-
-- **N3+N4 (#85)** — Canonical native plugin examples
-  (`good_producer_plugin.cpp:96`, `native_multifield_module.cpp:72`,
-  this session's demos) declare `on_init(const char *args_json)` but
-  documented ABI is `void name(void)`.  Framework's `FnVoidNoArgs`
-  calls them no-args; extra parameter works by accident
-  (UB-but-works).  Fix all examples + new demos to match the
-  documented ABI.  N4: `NativeEngine` registers a lifecycle module
-  with no-op shutdown (`native_engine.cpp:566-584`) while
-  finalization is in `finalize_engine_()`; document or remove the
-  misleading registration.  S.
-
-- **N5 (#86)** — `docs/README/README_NativePlugins.md` operator-facing
-  guide.  Native is currently the worst-documented engine.  Discoveries
-  from this session that need to be in there: required exported
-  symbols, filename convention (`plugin.so`), `PLH_DECLARE_SCHEMA`
-  + schema string format (`name:type:count:dim_flag`, pipe-separated,
-  trailing `0` is dim-marker NOT byte offset), on_init/on_stop
-  signatures (per N3 fix), `request_stop()` vs `set_critical_error(msg)`
-  distinction, on_band_message signature
-  (`const plh_band_message_args_t *args`), build command (g++).
-  Reference the N6 CMake helper.  M.
-
-- **N7+N10 (#87)** — Three-engine doc parity:
-  `docs/README/README_Scripting_{Python,Lua,Native}.md` with identical
-  8-section structure (when-to-use → lifecycle → data structure → API
-  → example → build/setup → pitfalls → cross-refs).  N10 (HEP-0011 §
-  "Lua" expansion) absorbed: Lua-specific notes (`api.X(...)` not
-  `api:X(...)`, FFI access patterns, no-numpy gotcha) added there.
-  `README_Deployment.md` §5-8 retains deployment scope only +
-  cross-references.  L (~2-3 sessions).
+*(The note that used to sit here about `#74` subsuming HEP-0035 §4.8 — the
+known-roles allowlist inside the hub vault, plus the `--add-known-role` /
+`--revoke-known-role` / `--list-known-roles` CLI — is closed: the vault
+allowlist shipped 2026-07-19 as CURVE-review item (a), a hard cutover where
+the hub refuses to start while a plaintext `known_roles.json` exists.)*
 
 ### Pre-existing renovation follow-ups
 
