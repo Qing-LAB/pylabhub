@@ -46,8 +46,8 @@ would have no way to know it was overturned.
 
 ## Open — wire shape
 
-- **`expected_schema_owner` — HEP-0036 §5b.6's catalog is missing a row.
-  ⚠ DO NOT DELETE THE FIELD.** An earlier version of this entry said
+- **✅ CLOSED 2026-08-07 — `expected_schema_owner` catalog row added to
+  HEP-0036 §5b.6.  ⚠ DO NOT DELETE THE FIELD.** An earlier version of this entry said
   production never sends it and offered "delete the accessor and the read"
   as an option. **That was wrong.** The field is required and enforced:
   `broker_service.cpp:3633` rejects an owner claim without a schema id
@@ -56,9 +56,8 @@ would have no way to know it was overturned.
   documents that code operator-facing, and HEP-0034 §Owner axis names the
   field with this exact spelling. The behaviour was ruled 2026-07-26 to
   close a stale-silent-fallback; deleting it would re-open it.
-  What actually remains: HEP-0036 §5b.6 lists `expected_schema_id` /
-  `_hash` / `_blds` / `_packing` and omits `_owner`. Add the row.
-  Doc-only. **Task #130.**
+  The catalog omission is now fixed — §5b.6 carries the row, with the
+  opener/joiner rule and the two rejection codes. Was task #130.
 
 - **Five inbound-notify bodies are still untyped** — `CHANNEL_COUNT_NOTIFY`,
   `CHANNEL_EVENT_NOTIFY`, `CHANNEL_ERROR_NOTIFY`,

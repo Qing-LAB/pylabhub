@@ -4,7 +4,7 @@
 |-----------------|----------------------------------------------------------------------------------------------------|
 | **HEP**         | `HEP-CORE-0035`                                                                                    |
 | **Title**       | Hub-Role Authentication and Federation Trust                                                       |
-| **Status**      | 🚧 **PARTIAL — implementation in flight.** Authoritative design; supersedes the legacy `RoleIdentityPolicy` placeholder documented in HEP-CORE-0009 §2.7.  Subsection state (updated 2026-06-04): §4.6 (file-ACL discipline) ✅; §4.6.5 (test-only bypass discipline — production has no CURVE/admission knob) ⏳ landing phase; §4.7 (runtime key handling) ⏳ task #102; §4.8 (vault + CLI + bootstrap) ✅; §4.1 Layer-1 ZAP on CTRL ROUTER ✅ (PeerAdmission Phase D step D2; broker-side gate against `known_roles[]` ∪ `peers[].pubkey_z85`); §4.2 Layer-2 federation-trust gate ⏳; legacy placeholder retirement ✅ (2026-07-20 — `RoleIdentityPolicy` enum + `check_role_identity` + `channel_policy_overrides` + L2/L3 tests deleted; `broker::KnownRole` retained as the ZAP pubkey carrier).  Step-by-step in `docs/todo/AUTH_TODO.md`. |
+| **Status**      | 🚧 **PARTIAL — implementation in flight.** Authoritative design; supersedes the legacy `RoleIdentityPolicy` placeholder documented in HEP-CORE-0009 §2.7.  Subsection state (updated 2026-08-07): §4.1 Layer 1 — ZAP on the CTRL ROUTER ✅ (broker-side gate against `known_roles[]` ∪ `peers[].pubkey_z85`); §4.2 pubkey index — single source of truth ✅ (`PeerAuthority` / `PubkeyOrigin` in `src/include/utils/security/pubkey_origin.hpp`; the broker arms its ZAP allowlist from `zap_allowlist()` at startup); §4.3 federation-trust policy modes ⏳ — the Layer-2 gate is designed, not built, and lands with the federation design, not before it; §4.6 (file-ACL discipline) ✅; §4.6.5 (test-only bypass discipline — production has no CURVE/admission knob) ⏳ landing phase; §4.7 (runtime key handling) ⚠ **mechanisms ship elsewhere — do not build §4.7.4's module; see the note below this table**; §4.8 (vault + CLI + bootstrap) ✅; legacy placeholder retirement ✅ (`RoleIdentityPolicy` enum + `check_role_identity` + `channel_policy_overrides` + their L2/L3 tests deleted; `broker::KnownRole` retained as the ZAP pubkey carrier).  Step-by-step in `docs/todo/AUTH_TODO.md`. |
 | **Created**     | 2026-04-29                                                                                         |
 | **Area**        | Framework Architecture (`BrokerService` socket layer, `HubConfig`, `BrokerService::Config`, federation) |
 | **Depends on**  | HEP-CORE-0022 (Federation), HEP-CORE-0024 (Role Directory), HEP-CORE-0033 (Hub Character)          |
@@ -13,6 +13,21 @@
 | **Blocks**      | HEP-CORE-0033 §15 Phase 1 re-introduction of `broker.{known_roles, role_identity_policy, channel_policy_overrides}` in `HubBrokerConfig` |
 
 ---
+
+> **§4.7 runtime key handling — the mechanisms exist, the module in §4.7.4
+> must not be built.** §4.7.2 requires three measures. All three ship today,
+> in facilities that postdate this section and own the subject properly:
+> page-locking is `LockedKey` (`sodium_malloc` — mlock, guard pages, canary)
+> inside the **KeyStore**, HEP-CORE-0040 §5; core-dump suppression
+> (`setrlimit(RLIMIT_CORE, 0)`, `prctl(PR_SET_DUMPABLE, 0)`) and
+> compiler-proof zeroing (`memzero`) are the **secure memory subsystem**,
+> HEP-CORE-0043. The separate `src/utils/security/runtime_key_handling.{hpp,cpp}`
+> utility that §4.7.4 prescribes does **not** exist and building it would add a
+> second security surface beside the one that already carries the contract —
+> read §4.7.4 as superseded, not as pending work.
+> *What is genuinely unverified is coverage, not mechanism:* whether every
+> in-memory copy of a secret named in §4.7.2 actually routes through those
+> facilities has not been traced end to end.
 
 > **REG-family wire authority (2026-07-12):** REG_REQ / CONSUMER_REG_REQ / DEREG_REQ / ENDPOINT_UPDATE_REQ / GET_CHANNEL_AUTH_REQ / CHANNEL_AUTH_APPLIED_REQ / CHANNEL_AUTH_CHANGED_NOTIFY / CHECK_PEER_READY_REQ wire format, admission-gate ordering, and retirement policy are owned by **HEP-CORE-0046 (REG Protocol Redesign)**.  This HEP references these wires only where behavior specific to its own subsystem is described; the wire authority always resolves to HEP-CORE-0046, and any new REG-family field / message / gate MUST be added there first.  See `docs/IMPLEMENTATION_GUIDANCE.md § "REG Protocol Wire Discipline (HEP-CORE-0046)"` for the rule that binds this to code.
 

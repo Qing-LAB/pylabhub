@@ -2191,3 +2191,33 @@ their absence: read what the comment is attached to before quoting it as proof.
 **Cost of not doing that:** #130 would have deleted live validation. It was
 ranked the most expensive failure mode on the sweep's own list, and the sweep
 committed it.
+
+### 2026-08-07 (pass 6, addendum) — two HEP status corrections
+
+Both are factual syncs to shipped code; neither changes a design decision.
+
+**HEP-CORE-0035 status table.** `§4.2` was labelled *"Layer-2 federation-trust
+gate ⏳"*. Two errors in one cell: §4.2 is *"Pubkey index — single source of
+truth"* (the federation-trust policy modes are §4.3), and it is **built** —
+`PeerAuthority` / `PubkeyOrigin` ship in
+`src/include/utils/security/pubkey_origin.hpp`, and the broker arms its ZAP
+allowlist from `zap_allowlist()` at startup. Corrected to §4.2 ✅ with its own
+subject, §4.3 ⏳ carrying the federation-trust gate. Also removed a dead task-ID
+citation whose number now resolves to an unrelated live task.
+
+**HEP-CORE-0035 §4.7 note added.** While correcting the table: §4.7.4 prescribes
+a `src/utils/security/runtime_key_handling.{hpp,cpp}` utility that does not
+exist — and must not be built. All three measures §4.7.2 mandates already ship
+in facilities that own the subject properly: page-locking is `LockedKey`
+(`sodium_malloc` — mlock, guard pages, canary) in the KeyStore; core-dump
+suppression and compiler-proof zeroing are the secure memory subsystem.
+Building the prescribed module would add a second security surface beside the
+one already carrying the contract. Marked superseded, not pending. Recorded
+honestly: the *mechanisms* are verified present, the *coverage* — whether every
+in-memory secret routes through them — is not traced and is not claimed.
+
+**HEP-CORE-0036 §5b.6.** Added the missing `expected_schema_owner` row to the
+CONSUMER_REG_REQ field catalog: OPTIONAL, required when a named citation opens
+a fan-in channel, openers restricted to `""` or `"hub"`, joiners matched
+exactly, owner-without-id rejected. The omission is what made the field look
+orphaned and produced the withdrawn proposal to delete it.
