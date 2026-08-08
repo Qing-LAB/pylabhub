@@ -151,6 +151,47 @@ security items, so this pass did add to band 1** — unlike the docs pass above.
 | **#125** CURVE-review doc backlog, 11 items | **3** | Doc-only.  One (`known_roles` storage) is known to describe the pre-vault model that was hard-cut-over; do that one first. |
 | **#126** HEP-0041 macOS + Windows backends | **5** | SHM channel auth is Linux-only.  Gated on Windows CI existing at all. |
 
+#### Where the MESSAGEHUB / API / TOPOLOGY sweep findings land (2026-08-07)
+
+| Task | Band | Why there |
+|---|---|---|
+| **#130** `expected_schema_owner` — a wire field no canonical schema declares | **3** | Live in three places (`wire_bodies.hpp:402`, `wire_bodies.cpp:293`, `broker_service.cpp:3632`), absent from HEP-0036 §5b.6, and production never sends it — only test helpers do.  Canonicalize under one name or delete the accessor + read.  A field reachable on the wire that no schema owns is what the typed envelope exists to prevent. |
+| **#131** five untyped inbound-notify bodies | **3** | Mechanical and uniform once the first is done; the nine REG-family conversions set the pattern.  Do with **#82**'s typed Schema/Metrics bodies — one mechanism. |
+| **#132** `with_active_loop` tested and uncalled | **4** | See the theme above; band 4 touches the thread owners. |
+| **#133** dynamic peer API tested and uncalled | **4** | Same theme.  Also unblocks a split in topology Phase E, which had it in one deletion row with the load-bearing multi-endpoint PULL loop. |
+
+**And one gate that turned out to be already open:** **#89** (script vault,
+band 1) recorded "depends on #104 shipping first". That chain
+(`#101 + #102 → #74 → #94 + #103 → #104 → #106`) is fully closed, so #89 has
+been sitting behind a satisfied dependency. Still genuinely unbuilt —
+`api.vault_save` / `api.vault_load` appear nowhere in `src/`, HEP-0038 is
+still 🚧 DRAFT. Sequence it against **#121**: doing the security-module fold
+first means the script surface lands on the consolidated shape.
+
+#### A theme worth acting on as one decision: abstractions landing ahead of their adopters
+
+The tracker sweep turned up **three independent abstractions that are defined,
+have real test coverage, and have zero production callers.** Not one-offs —
+a pattern in how work lands here, and one that normal review misses, because
+**the tests are what hide them**: a reviewer skimming for dead code finds
+coverage and moves on.
+
+| Symbol | Where | Tests | Live task |
+|---|---|---|---|
+| `should_continue_loop()` / `should_exit_inner()` | `role_host_core.hpp:516,525` | `test_role_host_core.cpp` | band-4 item in `API_TODO` |
+| `with_active_loop()` — HEP-0031 §4.1 shutdown contract | `thread_manager.hpp:92` | whole L2 binary `test_thread_manager_active_loop.cpp` | **#132** |
+| `set_producer_peers` / `add_producer_peer` / `remove_producer_peer` | `hub_zmq_queue.hpp:461,466,472` | `test_hub_zmq_queue.cpp:498-545` | **#133** |
+
+Each is the same adopt-or-delete judgement, and each has a real consequence
+behind it — an unadopted shutdown contract means shutdown races a critical
+region; an undriven peer API means a producer joining mid-channel never
+reaches a dialing consumer. **Decide them together.** Answering one in
+isolation risks three inconsistent answers to one question, and two of the
+three already sit inside band 4, which collapses the surfaces involved.
+
+The generalisable check, now part of the sweep method: **grep for zero-caller
+symbols, and do not let test coverage stand in for adoption.**
+
 ### Next actions — code-verified 2026-08-07
 
 Each row was checked against source in this pass.  Nothing here rests on a
