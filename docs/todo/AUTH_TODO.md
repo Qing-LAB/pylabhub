@@ -134,10 +134,22 @@ almost certainly re-deriving one of them.
 
 ## Open — operator workflow and deployment
 
-- **`plh_role --keygen` publishes no sibling `.pub`**, so the documented
-  operator workflow (`plh_hub --add-known-role <role.pub>`) cannot be
-  followed, and the L4 roundtrip test opens the role vault programmatically
-  to compensate. **Task #123.**
+- **✅ CLOSED 2026-08-07 — the role `.pub` item was inverted; do not build
+  `RoleVault::publish_public_key`.** This entry claimed the documented
+  workflow is `plh_hub --add-known-role <role.pub>` and therefore needs a
+  `.pub` sidecar. It is not: §4.8.3 takes `<name> <uid> <role> <pubkey_z85>`,
+  a Z85 **string**, and §4.8.3/§4.8.4 explicitly rule that "roles publish NO
+  `.pub` sidecar and there is no `--print-pubkey` flag — stdout capture at
+  keygen time is the shipped path", with a `.pub` named only as a candidate
+  convenience *if that flow proves operationally brittle*. The entry
+  described a superseded draft. `plh_role --keygen` prints the key, and the
+  hub CLI help already points at it.
+  The real defect was the other end: the L4 roundtrip test decrypted the
+  vault instead of reading that stdout, so the **only** workflow an operator
+  can follow had no coverage at all. It now parses `--keygen` stdout.
+  Mutation-verified — a well-formed but wrong pubkey still fails, because
+  the role is then denied by the ZAP gate and never registers.
+  Was task #123.
 - **27 demo role configs still ship `"keyfile": ""`** — broken since strict
   CURVE landed in May 2026. **Task #124.**
 - **CLI `--init` one-shot provisioning** — the thing that makes the shipped

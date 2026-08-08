@@ -35,8 +35,6 @@
 
 #include "plh_hub_fixture.h"
 
-#include "utils/role_vault.hpp" // open() to extract role pubkey for --add-known-role
-
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
@@ -55,6 +53,27 @@ namespace
 // Need access to the L3-style log-reading helpers; redefine the
 // minimum here (the runmode test file's namespace versions are not
 // visible across TUs).  Same shape, same behaviour.
+
+/// Extract the Z85 CURVE public key from `plh_role --keygen` stdout.
+///
+/// This parses a PRODUCT INTERFACE, not test scaffolding.  Per
+/// HEP-CORE-0035 §4.8.3/§4.8.4 this stdout block is the *sole shipped
+/// source* of a role's public key — roles publish no `.pub` sidecar and
+/// there is no `--print-pubkey` flag — so an operator adding a role to
+/// the hub allowlist has to read exactly this line.  Parsing it here is
+/// what makes the test follow the documented bootstrap instead of
+/// reaching past it into the encrypted vault.
+///
+/// Returns empty on no match, so the caller's length assertion reports
+/// the full stdout rather than a confusing substring failure.
+std::string pubkey_from_keygen_stdout(const std::string &out)
+{
+    static const std::regex kPubkeyLine(R"(public_key\s*:\s*([!-~]{40}))");
+    std::smatch m;
+    if (!std::regex_search(out, m, kPubkeyLine))
+        return {};
+    return m[1].str();
+}
 
 std::string read_hub_log(const fs::path &hub_dir)
 {
@@ -247,8 +266,14 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
     //   (a) prod_dir layout + role config files
     //   (b) plh_role --keygen → creates role vault containing the
     //       CURVE keypair
-    //   (c) RoleVault::open programmatically reads the role's pubkey
-    //       (the L4 test has the password from the env var it set)
+    //   (c) the pubkey is read from `plh_role --keygen` STDOUT — the
+    //       operator's actual path, and per HEP-CORE-0035 §4.8.3/§4.8.4
+    //       the sole shipped source: roles publish no `.pub` sidecar and
+    //       there is no `--print-pubkey` flag.  This test used to call
+    //       `RoleVault::open` and decrypt the vault instead, which meant
+    //       the one workflow an operator can actually follow had no
+    //       coverage at all — a format change to that stdout block would
+    //       have broken the documented bootstrap silently.
     //   (d) plh_hub --add-known-role <name> <uid> <role> <pubkey_z85>
     //       writes the canonical entry into known_roles.json
     const fs::path prod_dir = tmp("rtrip_prod");
@@ -259,6 +284,7 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
     ::setenv("PYLABHUB_ROLE_PASSWORD", "rtrip-role-pw", /*overwrite=*/1);
     const std::string role_uid = "prod.l4round.uid12345678";
     const fs::path role_vault_path = prod_dir / "vault" / (role_uid + ".vault");
+    std::string role_pubkey_z85;
     {
         WorkerProcess role_kg(
             plh_role_binary(), "--role",
@@ -267,15 +293,17 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
         ExpectVaultFileSecured(role_vault_path);
         EXPECT_TRUE(fs::is_directory(prod_dir / "vault"))
             << "role vault dir missing: " << (prod_dir / "vault");
-    }
 
-    std::string role_pubkey_z85;
-    {
-        auto role_vault =
-            pylabhub::utils::RoleVault::open(role_vault_path, role_uid, "rtrip-role-pw");
-        role_pubkey_z85 = role_vault.public_key();
+        // CONTRACT PIN (HEP-CORE-0035 §4.8.4): `--keygen` prints the Z85
+        // public key on a `public_key : <z85>` line.  That block IS the
+        // operator interface for obtaining a role pubkey, so its shape is
+        // a contract, not incidental formatting.
+        const std::string kg_out = role_kg.get_stdout();
+        role_pubkey_z85 = pubkey_from_keygen_stdout(kg_out);
         ASSERT_EQ(role_pubkey_z85.size(), 40u)
-            << "RoleVault::open returned an unexpected pubkey length";
+            << "could not read a 40-char Z85 pubkey from `plh_role --keygen` stdout — "
+               "the documented operator bootstrap (§4.8.3) has no other source:\n"
+            << kg_out;
     }
     {
         WorkerProcess add_known(plh_hub_binary(), "--config",
@@ -297,8 +325,8 @@ TEST_F(PlhHubCliTest, RoundTrip_PlhHubKeygenAndRunPlhRoleRegisters)
             << "role uid missing from the vault allowlist:\n"
             << listed;
         EXPECT_NE(listed.find(role_pubkey_z85), std::string::npos)
-            << "vault allowlist pubkey does not match the one we read from "
-               "RoleVault — the operator workflow is broken end-to-end:\n"
+            << "vault allowlist pubkey does not match the one `plh_role --keygen` "
+               "printed — the operator workflow is broken end-to-end:\n"
             << listed;
     }
 
