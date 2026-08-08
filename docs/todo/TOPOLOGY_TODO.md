@@ -39,7 +39,19 @@ admission.
 > retirements (T4, now unblocked) + F demos / L4 producer-first-spawn
 > keystone (T5).
 
-## Status snapshot (2026-07-09) — REORDERED
+## Phase detail table — superseded on status by the true-up above
+
+> **Read the 2026-07-25 true-up first; it overrides this table wherever they
+> disagree.** *(Retitled 2026-08-07. This section was headed "Status snapshot
+> (2026-07-09) — REORDERED" at the same level as the current one, so the file
+> presented two competing status snapshots and a reader had no way to tell
+> which was live — the older one even sat lower on the page, where a reader
+> scrolling for the latest would land on it. The true-up already states that
+> this table "had drifted".)*
+>
+> The per-phase rows below are still worth having as detail — they carry the
+> commit anchors and the reasoning for each phase's shape. Treat their
+> **Status** column as of 2026-07-09 only.
 
 **Priority principle (2026-07-09 correction):** the abstraction layer is
 built FIRST (Phase C completion), then role code migrates to it (was
