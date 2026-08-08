@@ -23,7 +23,7 @@ post-reconcile shipped-sprint detail).
 - **Line E — Admin-plane CURVE:** ✅ shipped 2026-07-19 (was the #1 open security
   surface), including the typed console and the polled output buffer that
   replaced the push reverse-notify path.  Residual: #105 `origin_uid` cascade,
-  #103 anti-hijack pin, three L3 stubs under #52.
+  three L3 stubs under #52.  (#103 anti-hijack pin ✅ closed 2026-08-07.)
 - **Inbox:** ✅ CURVE + cross-engine parity + replay + schema two-zone.
 - **Line 2 — SMS (HEP-0043):** ✅ shipped.  Residual: SEC-Fold-1b §8/§10 vault +
   script-crypto content migration (housekeeping).
@@ -82,7 +82,7 @@ post-reconcile shipped-sprint detail).
 >
 > | # | Band | What it covers |
 > |---|---|---|
-> | **1** | **Security items** | **Open:** #103 admin anti-hijack L2 test; #89 SMS/vault script surface; #87 privilege audit (now also carries the catch-block re-sweep and, post-observer-retirement, the by-name `collect_shm_info` read); **#121 SEC-Fold** (one module owns libsodium, one HEP owns security); **#122 CTRL ZAP allow-path pin** (the deny pin alone would pass if the broker denied everyone); **#123 role vault `.pub`** (missing production surface that an L4 test currently reaches around).  Vault hot reload is **CLOSED — decided against 2026-08-07** (#104): restart is the revocation boundary.  The impersonation arc (#83/#95/#96 + inbox sender) is CLOSED on every plane.  **Federation is NOT in this band.** |
+> | **1** | **Security items** | **Open:** #89 SMS/vault script surface; #87 privilege audit (now also carries the catch-block re-sweep and, post-observer-retirement, the by-name `collect_shm_info` read); **#121 SEC-Fold** (one module owns libsodium, one HEP owns security); **#122 CTRL ZAP allow-path pin** (the deny pin alone would pass if the broker denied everyone); **#123 role vault `.pub`** (missing production surface that an L4 test currently reaches around).  **#103 admin anti-hijack pin ✅ closed 2026-08-07** — mutation-verified, no production surface added.  Vault hot reload is **CLOSED — decided against 2026-08-07** (#104): restart is the revocation boundary.  The impersonation arc (#83/#95/#96 + inbox sender) is CLOSED on every plane.  **Federation is NOT in this band.** |
 > | **2** | ~~**Shared-memory observer feature**~~ — **RETIRED 2026-08-07** | HEP-CORE-0045 is ⛔ retired, not deferred.  The role already holds the SHM counters and already ships `QueueMetrics` to the hub on every heartbeat; joining them is **#117** (seven fields, one X-macro).  Retirement also removes a privilege surface — the broker stops mapping other processes' memory.  Residual work is **#117** → **#119** (abstract the ephemeral grant) → removal of the shipped observer pieces.  **This band is otherwise empty; the ordering below should be re-read with that in mind.** |
 > | **3** | **Backlog of smaller polish items** | The P0/P1 batches below (startup log lines, config defaults, per-area subtopic items) — small, independently shippable. |
 > | **4** | **Role-program unification (C++ RAII framework)** | #292 collapse of the three role-host files, taken together with the Template-RAII layer (Phase 2b: `TypedInboxClient`, `SimpleRoleHost`) since both reshape the same surface; #55 test re-homing rides along. |
@@ -201,7 +201,7 @@ Each row was checked against source in this pass.  Nothing here rests on a
 | Next | Why now | Evidence checked |
 |---|---|---|
 | ~~**Vault hot reload**~~ → **#116 system lifecycle** | **Superseded within the same day.**  This row led the table as "the biggest open security item"; the owner then **decided against hot reload** (#104) — hot-managing auth invites inconsistency and holes, so restart *is* the revocation boundary.  What replaced it: if restart is the revocation boundary, restart has to be something the system can actually perform.  Today `ADMIN_REQUEST_SHUTDOWN_REQ` stops one process and tells no role anything.  **Design-first, per #116.** | The original evidence still stands and is now the argument *for* the replacement: no reload method exists anywhere, and no orderly system-restart path exists either. |
-| **#103 — admin anti-hijack L2 test** | Small, and it is the last thing standing between #83 and closed. | Only `test_admin_session.cpp` exercises the fact-match, at module level.  The L2 fixture already mints consoles with distinct routing ids, so no new harness is needed. |
+| ~~**#103 — admin anti-hijack L2 test**~~ **✅ DONE 2026-08-07** | Was the last thing standing between #83 and closed.  Landed as `Console_SessionIdFromAnotherConnection_Rejected`, mutation-verified against `admin_session.cpp:149`. | Prediction held: the L2 fixture already minted consoles with distinct routing ids, so no new harness was needed and no production surface was added.  Limit recorded in `AUTH_TODO.md` — over loopback the routing id is the only discriminating fact. |
 | **`origin_uid`: build the scoped origin, or amend §11.0.5** | A doc-vs-code split, and the doc currently promises the larger thing.  Owner's call which way it resolves. | `origin_uid` is hand-threaded into two queue records and emitted on two notifies (`broker_service.cpp:1434`, `:1472`).  The scoped "current actuation origin" §11.0.5 describes — inherited automatically by every log line and NOTIFY in a teardown cascade — does not exist anywhere in `src/`. |
 | **#98 — `channel_broadcast` three-engine parity test** | A shipped feature whose per-engine bindings are compile-verified only, against an explicit project rule that each engine is verified directly. | The four L2 dispatcher tests drive a **fake** engine: `test_dispatch_notifications.cpp` defines its own `invoke_on_channel_broadcast` that records calls.  No real Lua/Python/Native binding is exercised anywhere. |
 | **Topology Phase E retirement** (T4) | Unblocked since 2026-07-25; the legacy message is still carried. | `CONSUMER_ATTACH_REQ_ZMQ` live in 4 files / 10 references (`broker_service.cpp` ×7, `wire_dispatch.hpp`, `broker_request_comm.cpp`, `plh_version_registry.hpp`). |
@@ -300,7 +300,7 @@ should be re-scoped against code before anyone starts them.
   HUB_TARGETED_ACK, and the #105/HEP-0037 post-MVP scope + skipped
   federation tests.  Detail: MESSAGEHUB_TODO "Federation — CONSOLIDATED".
   *(Admin-plane CURVE — the former #1 surface — ✅ SHIPPED 2026-07-19.
-  Residual: #105, #103, and three L3 stubs under #52.  The "Line E" section
+  Residual: #105 and three L3 stubs under #52 (#103 ✅ 2026-08-07).  The "Line E" section
   it used to point at was removed in the 2026-08-07 AUTH_TODO rewrite.)*
 - **FullSystem-review remediation (4 open of 56)** — 3 test-coverage items are
   the live remainder; the fourth (federation ingress) is parked with #69.  See

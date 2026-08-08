@@ -68,18 +68,19 @@ almost certainly re-deriving one of them.
   `self_hub_uid`. Either build the scoped origin or amend §11.0.5 to
   describe the two explicit paths that exist. **Task #105.**
 
-- **[TEST] Admin session id replayed from a second connection.** The
-  anti-hijack half is pinned only at module level —
-  `test_admin_session.cpp` calls `verify_session_id` with a mismatched
-  address and routing id. Nothing drives a *second real connection*
-  presenting a valid sealed id. ~15 lines on the existing L2 fixture:
-  alice establishes and succeeds; mallory connects with her own routing id
-  and replays alice's exact id; expect `unauthorized`; alice still works
-  afterwards. Mutation check: drop the fact comparison at
-  `admin_session.cpp:149` and mallory must start succeeding. Honest
-  framing for the comment — the ROUTER refuses a duplicate routing-id
-  claim outright (no `ROUTER_HANDOVER` in the tree), so this pins the
-  second layer of a two-layer defence, not the only barrier. **Task #103.**
+- **✅ CLOSED 2026-08-07 — [TEST] Admin session id replayed from a second
+  connection.** `AdminServiceTest.Console_SessionIdFromAnotherConnection_Rejected`
+  in `tests/test_layer2_service/test_admin_service.cpp` now drives it over the
+  real wire: alice establishes and pings; mallory connects on her own routing
+  id, never authenticates, and presents alice's exact sealed id with a
+  well-formed replay triple; the hub answers `unauthorized`; alice's session
+  still works afterwards. Mutation-verified — removing the fact comparison at
+  `admin_session.cpp:149` makes mallory's command succeed and the test fails on
+  the `is_error()` assertion, while the sibling establish/ping test stays green.
+  **One limit worth keeping:** both consoles connect over loopback, so the
+  observed `Peer-Address` is identical and the routing id is the only
+  discriminator — a regression that dropped *only* the `peer_address`
+  comparison would not fail this test. **Task #103.**
 
 - **Three admin-triggered `HubHostBrokerHandle` tests** still sit on L3
   KEEP-rationale stubs (`broker_admin_workers.cpp:130`, `:163`, plus

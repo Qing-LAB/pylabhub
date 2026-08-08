@@ -342,6 +342,74 @@ TEST_F(AdminServiceTest, Console_ReplayedCommand_Rejected)
     TearDownHub();
 }
 
+TEST_F(AdminServiceTest, Console_SessionIdFromAnotherConnection_Rejected)
+{
+    // Cross-connection anti-hijack (§11.0.5): "a genuine id replayed from a
+    // different connection opens but fails the fact match."  The seal is
+    // intact and mints fine — what must reject it is the hub comparing the
+    // sealed facts against the facts the message actually arrived with.
+    //
+    // Sibling of Console_ReplayedCommand_Rejected above, and a different
+    // property: that one is the in-session nonce guard (same connection,
+    // frame sent twice); this one is a second connection presenting a valid
+    // id it was never issued.
+    //
+    // Until now this was pinned only at module level — test_admin_session.cpp
+    // calls verify_session_id() with a mismatched routing id directly.  This
+    // drives it through the real wire path: two DEALERs, the admin ROUTER, and
+    // the production gate at admin_service.cpp session_skew_gate.
+    //
+    // WHICH FACT DOES THE WORK HERE: both consoles connect over loopback, so
+    // the observed Peer-Address is identical for alice and mallory and the
+    // peer half of the check cannot discriminate.  The routing id is the
+    // discriminator.  That is the fact worth pinning — it is the one a
+    // hijacker would have to forge — but a regression that dropped only the
+    // peer_address comparison would NOT fail this test.
+    //
+    // HONEST SCOPE: mallory cannot claim alice's routing id at all.  The
+    // ROUTER refuses a duplicate routing-id claim and there is no
+    // ROUTER_HANDOVER anywhere in the tree, so cross-connection injection is
+    // already impossible at the wire level.  This pins the second layer of a
+    // two-layer defence, not the only barrier.
+    //
+    // MUTATION CHECK: drop the fact comparison in verify_session_id
+    // (admin_session.cpp:149) and mallory's command starts succeeding.
+    const std::string ep = start_hub("hijack");
+    ASSERT_FALSE(ep.empty());
+
+    // (1) alice establishes and runs a command successfully.  Without this the
+    // case would pass even if the session id were simply malformed.
+    AdminWireClient alice = make_console(ep, "op-console-alice");
+    ASSERT_TRUE(alice.establish(kTestToken, "alice-laptop"));
+    auto ok = alice.command(w::kAdminPingReq);
+    ASSERT_TRUE(ok.has_value());
+    ASSERT_FALSE(ok->is_error()) << "alice's own session must work first";
+
+    // (2) mallory connects on her own routing id, never authenticates, and
+    // presents alice's EXACT sealed session id with a well-formed replay
+    // triple — so the only thing left to reject her is the fact match.
+    AdminWireClient mallory = make_console(ep, "op-console-mallory");
+    auto stolen =
+        mallory.request(w::kAdminPingReq, json{{"session_id", alice.session_id()},
+                                               {"client_nonce", "mallory-nonce-1"},
+                                               {"client_wall_ts", AdminWireClient::now_ms()}});
+
+    // (3) refused.
+    ASSERT_TRUE(stolen.has_value()) << "hub must answer, not drop the frame";
+    EXPECT_TRUE(stolen->is_error());
+    EXPECT_EQ(stolen->body.value("code", std::string{}), "unauthorized");
+
+    // (4) side-effect check: rejecting mallory must not disturb the legitimate
+    // session.  A gate that reset session state on a failed match would pass
+    // step (3) and still be broken.
+    auto after = alice.command(w::kAdminPingReq);
+    ASSERT_TRUE(after.has_value());
+    EXPECT_FALSE(after->is_error()) << "alice's session must survive the rejection";
+    EXPECT_EQ(after->msg_type, std::string(w::kAdminPingAck));
+
+    TearDownHub();
+}
+
 TEST_F(AdminServiceTest, Console_AdminDisabled_NoAdmin)
 {
     const fs::path dir = unique_temp_dir("disabled");
