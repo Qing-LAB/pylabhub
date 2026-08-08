@@ -2142,3 +2142,52 @@ true, the code moves, nobody re-reads. The habit that catches it is to look
 up the *replacement* a note names, not just the site it fixed — several
 notes named successors that were never built, and several named predecessors
 that were already gone.
+
+---
+
+## 2026-08-07 (pass 6) — `REVIEW_VALIDATION` archived; three sweep items withdrawn as false
+
+**Archived:** `docs/code_review/REVIEW_VALIDATION_2026-08-02.md` →
+`docs/archive/transient-2026-08-07/code_review/`.
+
+Its purpose — dispositioning the other review records — is complete. Of ~26
+items it carried as open: 12 were already fixed and never marked, 2 stale, 2
+misreads, 5 advisory, 5 genuinely valid. Its standing caveat about the
+`REVIEW_FullSystem` review's ~50 unverified ✅ notes was discharged when that
+verification ran and every note held.
+
+Per §1.7, nothing was left living only in the archived document. Residue at
+the time of the move: CURVE doc backlog → **#125**; the one unvalidated
+finding, `start_handler_threads` phase 2-4 observability (S3) → **#135**,
+created specifically so the move would not drop it; `query_shm_info` →
+**#112**. The `REVIEW_FullModule` F-1/F-2/F-4 counting items are recorded as
+deliberately unscheduled — re-deriving a count is worth doing only when a
+decision hangs on it.
+
+`code_review/LINT_FIXES_PLAN.md` remains the single active record (task #114,
+input stale, do not action as written).
+
+**The finding this pass actually turned on.** Three items filed during the
+2026-08-07 tracker sweep were re-verified and did not survive:
+
+| Item | Claim | Reality |
+|---|---|---|
+| #122 | CTRL ZAP has no allow-path pin | No gap. Unknown-key refusal is pinned; known-key admission is proven by every role that registers. Allow-branch counter pins already existed elsewhere. |
+| #128 | Four ShmQueue contracts lost coverage | All four exist and pass in `test_hub_shm_queue_contract.cpp`. The "tombstone comment listing what was lost" is the header of the `add_executable` that *builds* them. |
+| #130 | `expected_schema_owner` is an orphan field; delete the accessor | Enforced twice in the broker with a documented operator-facing error code, ruled deliberately 2026-07-26. Deleting it would have re-opened the hole that ruling closed. |
+
+All three were labelled "verified against code". All three were **absence
+claims produced by counting search hits instead of reading them** — a grep for
+an invented test name, a single guessed file path, and a hit-count split by
+directory. The items verified by a different method (grepping *invocations* —
+#132, #133) held, as did the ones asserting presence (#124, #131).
+
+**The rule, now earned four times over:** to show a behaviour is untested or a
+field unused, grep the **behaviour** — the accessor, the config field, the wire
+type — repo-wide, and **read every hit**. Never a hypothetical test name, never
+a single guessed path. And a comment enumerating things is not evidence of
+their absence: read what the comment is attached to before quoting it as proof.
+
+**Cost of not doing that:** #130 would have deleted live validation. It was
+ranked the most expensive failure mode on the sweep's own list, and the sweep
+committed it.

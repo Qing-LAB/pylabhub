@@ -70,8 +70,12 @@ Two are independent dead-residue items:
 - **X2 — `BrokerRequestComm::query_shm_info` is dead.**  Declared
   `broker_request_comm.hpp:447`, defined `:1506`, **zero callers** in `src/` or
   `tests/`.  Independently confirmed as O1b in
-  `REVIEW_VALIDATION_2026-08-02.md`.  Delete method + declaration, and check
-  whether its broker handler is then also unreachable.
+  `archive/transient-2026-08-07/code_review/REVIEW_VALIDATION_2026-08-02.md`
+  (archived 2026-08-07).  Delete method + declaration, and check whether its
+  broker handler is then also unreachable.
+  **Re-verify the "zero callers" claim before deleting** — three absence
+  claims filed in the 2026-08-07 sweep turned out false because search hits
+  were counted, not read.  Grep `query_shm_info` repo-wide and read every hit.
 - **X4 — phase-label comments survive.**  `engine_host.hpp:425`,
   `role_api_base.hpp:948,955` carry `M4f`/`M4c` labels.  The project rule allows
   task IDs and forbids phase labels precisely because the wave numbers mean

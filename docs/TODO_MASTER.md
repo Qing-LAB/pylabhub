@@ -456,6 +456,8 @@ scenarios.  Inventory: `TESTING_TODO.md` § "Test infrastructure inventory".
 ---
 
 ## Active code reviews (1 — updated 2026-08-07)
+<!-- One active record: LINT_FIXES_PLAN. REVIEW_VALIDATION archived same day. -->
+
 
 > **Review output is not the plan.** These records are candidate findings,
 > not decided work. Nothing here is scheduled until it has been validated
@@ -472,14 +474,17 @@ scenarios.  Inventory: `TESTING_TODO.md` § "Test infrastructure inventory".
   quality pass"), diff against the plan, then ask only the questions that still
   have a subject.** Task #114. Do not action as written.
 
-- `code_review/REVIEW_VALIDATION_2026-08-02.md` — kept as the audit trail for
-  how the other records were dispositioned. Of ~26 items carried as open, 12
-  were already fixed and never marked, 2 stale, 2 misreads, 5 advisory, 5
-  genuinely valid. Three carried forward, all LOW: B-1 (loop helpers, in
-  `API_TODO.md`), O1b (`query_shm_info` — now #112), O3 (three forwarders,
-  recorded not recommended). **Its standing caveat about the FullSystem
-  review's ~50 unverified ✅ notes is discharged** — that verification ran
-  2026-08-07 and every note held.
+- ~~`code_review/REVIEW_VALIDATION_2026-08-02.md`~~ — **✅ ARCHIVED 2026-08-07**
+  to `archive/transient-2026-08-07/code_review/`. Its job is finished: of ~26
+  items carried as open, 12 were already fixed and never marked, 2 stale, 2
+  misreads, 5 advisory, 5 genuinely valid; the standing caveat about the
+  FullSystem review's ~50 unverified ✅ notes was discharged when that
+  verification ran and every note held. Everything it left behind is tracked
+  as a task before the move: the CURVE doc backlog is **#125**, the
+  unvalidated `start_handler_threads` S3 finding is **#135**, `query_shm_info`
+  is **#112**, and the `REVIEW_FullModule` F-1/F-2/F-4 counting items are
+  deliberately *not* scheduled — re-deriving a count is only worth doing when
+  a decision hangs on it, and none does.
 
 **Archived 2026-08-07 after full verification** (see `DOC_ARCHIVE_LOG.md`
 pass 3) — both are now under `docs/archive/transient-2026-08-07/code_review/`:
