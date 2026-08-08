@@ -41,7 +41,7 @@
  * - **Raw secrets (`lookup_raw`)** — returned as
  *   `std::span<const std::byte>` into LockedKey-owned bytes.  Live
  *   consumer: the admin-session seal key (HEP-CORE-0043 §7).  Future
- *   script bindings (HEP-0038, deferred #106) must materialize into a
+ *   script bindings (deferred — see task #136) must materialize into a
  *   script-owned buffer before returning to the script layer.
  *
  * # Storage layout
@@ -212,9 +212,11 @@ class PYLABHUB_UTILS_EXPORT KeyStore
 
     /// Insert raw secret bytes.  Live consumer: the per-instance
     /// admin-session seal key (admin_session.cpp, HEP-CORE-0043 §7 /
-    /// HEP-CORE-0033 §11.0.5).  (The HEP-0038 script `api.vault_save`
-    /// binding this was originally sketched for is NOT implemented —
-    /// deferred with task #106.)
+    /// HEP-CORE-0033 §11.0.5).  (The script secret-store binding this
+    /// was originally sketched for is NOT implemented and is not
+    /// designed — task #136.  It will not be named `vault_save`: the
+    /// word `vault` denotes the on-disk container, and `RoleVault` is
+    /// write-once, so a script store is not a vault payload change.)
     /// `plaintext` zeroed before return.  Caller-side name validation
     /// enforces reserved-prefix rules; KeyStore stores opaque bytes.
     /// Throws `std::runtime_error` if `name` already present or if

@@ -623,7 +623,22 @@ Broker's `collect_shm_info` (currently `broker_service.cpp:5866`) is rewritten t
 
 ---
 
-## 10. Impl slice map (task #317)
+## 10. Impl slice map — ⛔ DEAD. Nothing below is scheduled.
+
+> **This table describes work that will not happen.**  The observer was
+> retired 2026-08-07 (see the status banner at the top): the role already
+> holds the SHM counters and already ships them to the hub on every
+> heartbeat, so the observer bought nothing and cost a privilege surface.
+>
+> The rows below still read ⏳ with LOC estimates, which is precisely how a
+> retired feature gets rebuilt by someone who scrolled past the banner.
+> They are kept, rather than deleted, so the retirement decision can be
+> audited against what was actually planned — **not as a backlog.**  The
+> "~640 LOC remaining" figure at the end of this section is dead scope.
+>
+> One row is void for a second reason: **C.5 asks for a "HEP-CORE-0043
+> §9.3 status sync."**  That sync happened on 2026-08-08, in the opposite
+> direction — HEP-0043 §9.3 was replaced by a tombstone pointing here.
 
 Following commits, in order:
 

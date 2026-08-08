@@ -24,14 +24,49 @@
 |-----------------|-----------------------------------------------------------------|
 | **HEP**         | `HEP-CORE-0038`                                                 |
 | **Title**       | Script-accessible Vault Keystore (per-role encrypted KV store)  |
-| **Status**      | 🚧 **DRAFT** — design intent recorded 2026-05-29; detailed design + implementation pending under task #106 |
+| **Status**      | 🚧 **DRAFT — and two of its premises are now known to be wrong; see the banner below §0.  Do not implement from this document.**  Design intent only.  Detailed design is task **#136**, which starts from the write-back model rather than the API. |
 | **Created**     | 2026-05-29                                                      |
 | **Area**        | Role framework / vault facility / script-callback API           |
 | **Depends on**  | HEP-CORE-0035 §4.6 (vault facility), HEP-CORE-0035 §4.7 (runtime key handling), HEP-CORE-0011 (script-callback API surface) |
-| **Tracks**      | task #106                                                       |
+| **Tracks**      | task #136                                                       |
 | **Relationship to HEP-CORE-0035** | HEP-0035 §4.8 stores hub-wide allowlist secrets in the hub vault, managed by operator CLI.  HEP-0038 is the parallel mechanism for ROLE-side secrets, managed by user scripts.  Same underlying vault facility; different scope and access boundary. |
 
 ---
+
+> ## ⚠ Two premises in this document are wrong. Read this first.
+>
+> The motivation below stands — a role's scripts do need somewhere to keep
+> a secret across restarts. **How this document proposes to provide it does
+> not.** Both errors were found by checking the code, 2026-08-08.
+>
+> **1. The name.** This document calls the feature a "vault" and its API
+> `api.vault_save` / `api.vault_load`. That word is taken. It denotes the
+> encrypted container on disk and the directory holding it, across roughly
+> 1,891 references in source, tests, configs and the operator CLI, and the
+> owner has ruled that the on-disk meaning keeps it. A script-facing store
+> is a different thing with a different access boundary and needs its own
+> name. Nothing is built, so renaming costs nothing today.
+>
+> **2. The storage model.** This document assumes script data can be added
+> to the role's existing vault as extra payload. **`RoleVault` is
+> write-once** — it exposes `create`, `open`, and read accessors, with no
+> `save` and no setters (contrast `HubVault`, which has `set_known_roles`
+> + `save`). So this is not a payload change. It needs a write path that
+> does not exist, operating on the same file that holds the role's CURVE
+> identity key, which raises questions this document never asks:
+> re-encryption without retaining the password, atomic replace,
+> crash-mid-save, and whether user script code may compel repeated
+> rewrites of its own identity file. A **separate file** — its own failure
+> domain, own key lifetime, own permissions — is the strong prior and
+> removes three of those outright.
+>
+> §3's "open design questions" therefore start from the wrong place. Treat
+> everything below as recorded intent, not as a specification. Task **#136**
+> carries the real design and settles the storage model before any API.
+>
+> One thing below IS settled and should be preserved: sandboxing belongs in
+> the language binding layer, which namespaces script-supplied names before
+> calling the security module. See HEP-CORE-0043 §10.
 
 ## 1. Motivation
 

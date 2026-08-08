@@ -68,19 +68,8 @@ almost certainly re-deriving one of them.
   `self_hub_uid`. Either build the scoped origin or amend §11.0.5 to
   describe the two explicit paths that exist. **Task #105.**
 
-- **✅ CLOSED 2026-08-07 — [TEST] Admin session id replayed from a second
-  connection.** `AdminServiceTest.Console_SessionIdFromAnotherConnection_Rejected`
-  in `tests/test_layer2_service/test_admin_service.cpp` now drives it over the
-  real wire: alice establishes and pings; mallory connects on her own routing
-  id, never authenticates, and presents alice's exact sealed id with a
-  well-formed replay triple; the hub answers `unauthorized`; alice's session
-  still works afterwards. Mutation-verified — removing the fact comparison at
-  `admin_session.cpp:149` makes mallory's command succeed and the test fails on
-  the `is_error()` assertion, while the sibling establish/ping test stays green.
-  **One limit worth keeping:** both consoles connect over loopback, so the
-  observed `Peer-Address` is identical and the routing id is the only
-  discriminator — a regression that dropped *only* the `peer_address`
-  comparison would not fail this test. **Task #103.**
+- ✅ Admin session-id replay from a second connection — pinned and
+  mutation-verified 2026-08-07 (#103). Detail in `todo-completions/`.
 
 - **Three admin-triggered `HubHostBrokerHandle` tests** still sit on L3
   KEEP-rationale stubs (`broker_admin_workers.cpp:130`, `:163`, plus
@@ -104,47 +93,21 @@ almost certainly re-deriving one of them.
 
 ## Open — security posture
 
-- **✅ CLOSED 2026-08-08 — SEC-Fold. The C++ half was already done; the HEP
-  consolidation is WITHDRAWN, not deferred.** Three structures were proposed
-  and each died on evidence: one document would be ~12,000 lines; the vault
-  already has finalized owners (HEP-0024 §3.4, HEP-0033 §7.1) that a merge
-  would have stripped; and the citation matrix puts the densest coupling in
-  the wire protocols (0036↔0041 = 46 mutual cites), the opposite of every
-  grouping proposed. Decisive: the `sodium_init` triangle that justified the
-  fold was fixed by HEP-0043 *existing*. The trigger is spent.
-  What was actually repaired is the HEP-0043 tail — §8 cited four sections
-  of HEP-0038 that do not exist, §9.1 marked a live HEP superseded, §9.3
-  was a build plan for a retired feature, and §11 claimed the script vault
-  shipped on four platforms when it exists nowhere. Details in **#121**.
-  Script store split to **#136** (design first — `RoleVault` is write-once).
+- ✅ **SEC-Fold closed 2026-08-08 — do not re-open the HEP fold.** The C++
+  half was already done (6 `<sodium.h>` includes, all inside
+  `src/*/security/`; `KeyStore` already a gated member) and is now guarded
+  by `SecurityGuardrail_SodiumConfinedToModule`. The **document fold is
+  withdrawn**: its trigger, the `sodium_init` triangle, was fixed by
+  HEP-0043 existing, and the vault already has *finalized* owners
+  (HEP-0024 §3.4, HEP-0033 §7.1) that a merge would strip. Evidence and
+  the three rejected structures: **#121** and `todo-completions/`.
 
-- ~~**SEC-Fold — the C++ half is DONE; the HEP consolidation is what's left.**~~
-  Re-measured 2026-08-07: **6** files include `<sodium.h>` and **all six are
-  inside `src/*/security/`**. The claimed outlier `vault_crypto` doesn't
-  include it at all — it routes through `secure()` (`pwhash_argon2id`,
-  `secretbox_encrypt`, `random_bytes`, `memzero`). `KeyStore` is already a
-  gated member reached via `secure().keys()`, not a peer. So "one module
-  owns every libsodium API" **holds today**.
-  Remaining: (a) fold HEP-0035/0036/0038/0040/0041/0042 + the
-  keystore-ephemeral draft into one security HEP — design authority, owner's
-  call; sketch is in `archive/transient-2026-07-06/DRAFT_security_module_and_hep_consolidation_2026-07.md`
-  (archived, not `tech_draft/`); (b) **a guardrail**, because the property is
-  true and unenforced — one new `#include <sodium.h>` outside the module
-  undoes it silently, and the repo already has the grep-guardrail idiom for
-  exactly this. **Task #121.**
-
-- **❌ WITHDRAWN 2026-08-07 — "CTRL ZAP has a deny pin and no allow pin."**
-  There is no gap; do not re-file this. The claim was that a deny-only
-  test would pass even if the broker denied everyone. It would not:
-  every passing L3 CURVE test has a role registering through that same
-  door, so a deny-all broker fails the whole datahub suite. Unknown-key
-  refusal is pinned by `CtrlZapDenyPath`; known-key admission is proven
-  by every role that registers. Together those are the discrimination
-  proof. (Allow-branch counter pins also already exist —
-  `zap_router::handshake_allow_increments_allowed_counter` and the
-  deny→allow swap in `zmq_queue_auth`.) **The item was filed off a grep
-  for a test NAME that did not exist, reported as absent COVERAGE.**
-  Was task #122.
+- ❌ **"CTRL ZAP has a deny pin and no allow pin" — WITHDRAWN, no gap. Do
+  not re-file.** Unknown-key refusal is pinned by `CtrlZapDenyPath`;
+  known-key admission is proven by every L3 CURVE test that registers a
+  role. Together those are the discrimination proof, and allow-branch
+  counter pins already exist elsewhere. Was #122; filed off a grep for a
+  test NAME that did not exist, read as absent coverage.
 
 - **Federation peer admission has no active end-to-end pin.** The three
   `BrokerFederationTest` cases are `GTEST_SKIP`-ed, so removing peer keys
@@ -158,22 +121,12 @@ almost certainly re-deriving one of them.
 
 ## Open — operator workflow and deployment
 
-- **✅ CLOSED 2026-08-07 — the role `.pub` item was inverted; do not build
-  `RoleVault::publish_public_key`.** This entry claimed the documented
-  workflow is `plh_hub --add-known-role <role.pub>` and therefore needs a
-  `.pub` sidecar. It is not: §4.8.3 takes `<name> <uid> <role> <pubkey_z85>`,
-  a Z85 **string**, and §4.8.3/§4.8.4 explicitly rule that "roles publish NO
-  `.pub` sidecar and there is no `--print-pubkey` flag — stdout capture at
-  keygen time is the shipped path", with a `.pub` named only as a candidate
-  convenience *if that flow proves operationally brittle*. The entry
-  described a superseded draft. `plh_role --keygen` prints the key, and the
-  hub CLI help already points at it.
-  The real defect was the other end: the L4 roundtrip test decrypted the
-  vault instead of reading that stdout, so the **only** workflow an operator
-  can follow had no coverage at all. It now parses `--keygen` stdout.
-  Mutation-verified — a well-formed but wrong pubkey still fails, because
-  the role is then denied by the ZAP gate and never registers.
-  Was task #123.
+- ❌ **Role `.pub` sidecar — INVERTED. Do not build
+  `RoleVault::publish_public_key`.** HEP-0035 §4.8.3 takes a Z85 *string*,
+  and §4.8.4 rules that roles publish no `.pub`; stdout at keygen is the
+  shipped path. The real defect was the L4 test decrypting the vault
+  instead of reading that stdout — fixed and mutation-verified. Was #123.
+
 - **27 demo role configs still ship `"keyfile": ""`** — broken since strict
   CURVE landed in May 2026. **Task #124.**
 - **CLI `--init` one-shot provisioning** — the thing that makes the shipped

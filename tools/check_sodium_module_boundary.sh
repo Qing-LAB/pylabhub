@@ -37,9 +37,17 @@ set -eu
 
 root="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 
-# Any spelling of the include: <sodium.h> or a sodium/ subheader,
-# with or without whitespace after `#`.
-forbidden_re='^[[:space:]]*#[[:space:]]*include[[:space:]]*<sodium(/[^>]*)?\.h>'
+# Any spelling of the include: angle or quoted form, bare header or a
+# sodium/ subheader, with or without whitespace after `#`.
+#
+# The quoted form is included deliberately.  `#include "sodium.h"` is
+# unconventional for a third-party header but compiles identically once
+# the include path resolves, so leaving it out would have left the rule
+# with a one-character bypass.  Anchoring at line start after optional
+# whitespace is what keeps commented-out includes (`// #include ...`,
+# `/* ... */`, ` *   ...` in doc blocks) from tripping it — verified
+# against all three forms.
+forbidden_re='^[[:space:]]*#[[:space:]]*include[[:space:]]*[<"]sodium(/[^>"]*)?\.h[>"]'
 
 # Exclusion-shaped on purpose (contrast check_auth_guardrail.sh, which
 # greps a fixed path list): scan ALL of src/ and subtract the module,

@@ -99,6 +99,25 @@ update the destination task's description, then delete the test.
 
 ## Current Focus — Open coverage gaps
 
+### ⚠ OPEN (LOW) — `start_handler_threads` phase 2-4 window: observable or not? (#135)
+
+The one finding in `REVIEW_Connection_Inbox_Band` never validated. Pulled
+into a task 2026-08-07 so the review record could be archived without
+dropping it — an item may not live only in a transient doc
+(DOC_STRUCTURE §1.7). The review recorded it as *"needs a read of the
+current phase sequence; deferred rather than guessed."*
+
+**Method warning, because this item is shaped exactly like the ones that
+went wrong.** Three items filed in the 2026-08-07 sweep (#122, #128, #130)
+were withdrawn as false: each asserted an absence based on counting search
+hits instead of reading them. Here that means **do not** conclude the
+window is unobservable because a grep for a marker name returns nothing.
+Read the actual phase sequence in the function and establish what is and
+is not visible from outside it. Original review:
+`docs/archive/transient-2026-08-07/code_review/`.
+
+Low priority — nothing is known to depend on the answer.
+
 ### ⚠ OPEN (LOW) — three two-side branches one hub cannot reach (#101/#102, corrected 2026-08-06)
 
 **The earlier version of this entry was wrong and is worth saying so.**  It

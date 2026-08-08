@@ -25,8 +25,11 @@ post-reconcile shipped-sprint detail).
   replaced the push reverse-notify path.  Residual: #105 `origin_uid` cascade,
   three L3 stubs under #52.  (#103 anti-hijack pin ✅ closed 2026-08-07.)
 - **Inbox:** ✅ CURVE + cross-engine parity + replay + schema two-zone.
-- **Line 2 — SMS (HEP-0043):** ✅ shipped.  Residual: SEC-Fold-1b §8/§10 vault +
-  script-crypto content migration (housekeeping).
+- **Line 2 — SMS (HEP-0043):** ✅ shipped.  ~~Residual: SEC-Fold-1b §8/§10
+  content migration~~ — **withdrawn 2026-08-08.**  §8/§10 are index sections
+  naming their owners; there is nothing to migrate.  The vault's owners
+  (HEP-0024 §3.4, HEP-0033 §7.1) finalized it deliberately, and moving it
+  would strip a settled contract out of the document that reasoned about it.
 - **Line 4 — IAttachChannel (HEP-0044):** ✅ shipped.
 
 **Open lines:**

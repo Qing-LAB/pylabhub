@@ -4,7 +4,7 @@
 |-----------------|-------|
 | **HEP**         | `HEP-CORE-0043` |
 | **Title**       | Security Subsystem — unified module + HEP consolidation |
-| **Status**      | 🚀 **§0-§7 + §11-§13 AUTHORITATIVE (SEC-Fold-2 complete 2026-07-07; HEP-0044/0045 promoted 2026-07-08)** — §0-§2 architecture + two-category facade shipped; §3 random+hash shipped; §4 pwhash shipped; §5 secretbox shipped; §6 asymmetric box shipped (`box_encrypt_using` / `box_decrypt_using` with name-based key citation, primary consumer is HEP-CORE-0044); §7 KeyStore submodule shipped as member of `SecureSubsystem::Impl`.  §8-§10 are pointer sections: §9.1 → HEP-CORE-0036 (ZMQ CURVE + ZAP), §9.2 → HEP-CORE-0044 (AttachProtocol primitive) + HEP-CORE-0041 (SHM binding) + HEP-CORE-0042 (attach coordination), §9.3 → HEP-CORE-0045 (Broker SHM Observer, promoted 2026-07-08).  §8 vault + §10 script-crypto detail still live in HEP-CORE-0038. |
+| **Status**      | 🚀 **§0-§7 + §11-§13 AUTHORITATIVE (SEC-Fold-2 complete 2026-07-07; HEP-0044/0045 promoted 2026-07-08)** — §0-§2 architecture + two-category facade shipped; §3 random+hash shipped; §4 pwhash shipped; §5 secretbox shipped; §6 asymmetric box shipped (`box_encrypt_using` / `box_decrypt_using` with name-based key citation, primary consumer is HEP-CORE-0044); §7 KeyStore submodule shipped as member of `SecureSubsystem::Impl`.  **§8-§10 are INDEX sections that name owners and forbid migration — not stubs awaiting content** (see §13): §8 vault → HEP-CORE-0024 §3.4 + HEP-CORE-0033 §7.1 (placement, finalized) and HEP-CORE-0035 §4.6/§4.8 (format, payload, CLI); §9.1 → HEP-CORE-0036, which is **current and authoritative, not superseded**; §9.2 → HEP-CORE-0044 (AttachProtocol) + HEP-CORE-0041 (SHM binding) + HEP-CORE-0042 (attach coordination); §9.3 → ⛔ retired with HEP-CORE-0045; §10 → the binding-layer sandboxing rule, plus open questions for a script secret store that is neither designed nor built. |
 | **Created**     | 2026-07-04 |
 | **Area**        | Framework Architecture (security module, libsodium ownership, key management, wire auth) |
 | **Depends on**  | HEP-CORE-0001 (Hybrid Lifecycle Model), HEP-CORE-0031 (ThreadManager pattern) |
@@ -925,7 +925,8 @@ that reasoned about it.
 |---|---|
 | Where the vault lives, filename convention, placement security — role side | **HEP-CORE-0024 §3.4, §3.4.1** |
 | Where the vault lives, keygen, path resolution, placement security — hub side | **HEP-CORE-0033 §6.5, §7.1, §7.2** |
-| Encrypted file format — KDF, AEAD, file-ACL floor | **HEP-CORE-0035 §4.6** |
+| On-disk file ACLs protecting the container | **HEP-CORE-0035 §4.6** — and *only* this; §4.6 states that cipher details are out of its scope |
+| Encrypted file format — layout, KDF, AEAD, parameters | **No HEP owns this.**  It is specified in the file-level comment of `src/utils/service/vault_crypto.hpp`: `[nonce 24][MAC 16 ‖ ciphertext]`, key = Argon2id(password, salt=BLAKE2b-16(uid), opslimit, memlimit) |
 | Payload contents (the `known_roles` allowlist) + the operator CLI that edits them | **HEP-CORE-0035 §4.8** |
 | The keys once loaded OUT of the vault and into memory | **§7 of this HEP** |
 
@@ -941,6 +942,23 @@ future design.**  `HubVault` can be mutated and re-saved
 `create`, `open`, and read accessors only.  A role vault is
 write-once.  Anything proposing to store additional material in a
 role's vault must first answer how write-back works — see §10.
+
+**The at-rest format has no design-authority owner.**  Noted rather
+than dramatised: the format is documented *thoroughly*, but only in
+a source-file comment, and the dangerous knob is build-gated.  The
+KDF cost parameters are selected at COMPILE TIME — INTERACTIVE by
+default, SENSITIVE under `-DPYLABHUB_VAULT_HIGH_SECURITY`, MIN under
+`-DPYLABHUB_VAULT_TEST_KDF` (which `tests/CMakeLists.txt` sets only
+when `BUILD_TESTS=ON` *and* CI is detected, so production builds
+cannot reach it).  A vault written under one parameter set **cannot
+be opened under another**, and the file carries no marker recording
+which set wrote it — so a mismatch surfaces as a MAC failure that is
+indistinguishable from a wrong password.  The source header warns
+operators explicitly; the format simply cannot self-diagnose.
+Two things follow, neither urgent: an at-rest compatibility contract
+should have a design owner rather than living only beside the code
+that implements it, and a self-describing header would turn a
+confusing failure into a clear one.
 
 ## 9. Wire authentication protocols
 
@@ -1042,9 +1060,23 @@ settled by this section.
 | `SecureSubsystem` ctor | ✅ | ✅ | ✅ | ⏸ SeLockMemoryPrivilege probe |
 | `KeyStore` | ✅ | ✅ | ✅ | ✅ (with privilege) |
 | ZMQ CURVE (§9.1) | ✅ | ✅ | ✅ | ✅ |
-| Vault at rest (§8) | ✅ | ✅ | ✅ | ✅ |
+| Vault encryption at rest (§8) | ✅ | ✅ | ✅ | ✅ |
+| Vault file-permission enforcement (§8) | ✅ | ✅ | ✅ | ⚠ partial — see below |
 | SHM channel (§9.2) | ✅ | 🚧 planned | 🚧 planned | 🚧 planned |
 | Script secret store (§10) | ⛔ not designed | ⛔ | ⛔ | ⛔ |
+
+**Vault at rest is two capabilities and they do not have the same
+platform story**, so they get separate rows.  The *encryption* —
+argon2id KDF plus secretbox AEAD — is portable and holds everywhere.
+The *permission enforcement* does not: on Windows `set_keyfile_mode`
+is a no-op returning `Applied`, permission verification returns
+`ok = true` with a platform-skip diagnostic rather than checking
+anything, and exclusive-create is an existence check before the write
+rather than an atomic `O_EXCL`, so a racing creator is not detected
+(closing that needs `CreateFileW(CREATE_NEW)`).  All three are
+documented at the call site in `key_file_acl.hpp`; none is hidden.
+The consequence worth stating plainly: on Windows a vault file is
+encrypted but its ACL is not enforced by us.
 
 The script-store row read `✅ ✅ ✅ ✅` until 2026-08-08.  That was
 false on every platform — there is no such feature in the tree, on

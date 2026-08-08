@@ -131,3 +131,80 @@ contract changes. Separate storage design from API design. Refresh against
 persistent docs at the moment work begins. No flake explanations — a
 different test failing each run is a race signature. Read the log before
 the rerun. Seckey representation at the module boundary is normative.
+
+---
+
+# Closed 2026-08-08 — four items, three of which were never real
+
+Moved out of `AUTH_TODO.md` so the open file stops being a changelog.
+One-line pointers remain there under each section.
+
+## ✅ #103 — admin session id replayed from a second connection (REAL, fixed)
+
+`AdminServiceTest.Console_SessionIdFromAnotherConnection_Rejected`. Alice
+establishes and pings; mallory connects on her own routing id, never
+authenticates, presents alice's exact sealed id with a well-formed replay
+triple; hub answers `unauthorized`; alice's session survives.
+
+Mutation-verified: removing the fact comparison at `admin_session.cpp:149`
+makes mallory succeed and the test fails on the `is_error()` assertion,
+while the sibling establish/ping test stays green.
+
+**Recorded limit:** both consoles connect over loopback, so `Peer-Address`
+is identical and the routing id is the only discriminator. A regression
+dropping *only* the `peer_address` comparison would not fail this test.
+
+## ❌ #122 — "CTRL ZAP has a deny pin and no allow pin" (NOT REAL)
+
+Premise was that a deny-only pin would pass even if the broker denied
+everyone. It would not: every passing L3 CURVE test registers a role
+through that same door. Unknown-key refusal is pinned by
+`CtrlZapDenyPath`; known-key admission is proven by every role that
+registers. Allow-branch counter pins already existed
+(`zap_router::handshake_allow_increments_allowed_counter`, plus a full
+deny→allow swap on one keypair in `zmq_queue_auth`).
+
+Filed off `grep CtrlZapAllowPath tests/` — a search for a test NAME,
+reported as absent COVERAGE.
+
+## ❌ #123 — "role vault publishes no `.pub`" (INVERTED)
+
+Claimed HEP-0035 §4.8.3 requires `--add-known-role <role.pub>` and so
+`RoleVault` needs a `publish_public_key`. §4.8.3 takes a Z85 **string**,
+and §4.8.3/§4.8.4 rule explicitly that roles publish **no** `.pub` sidecar
+— stdout capture at keygen is the shipped path, with a `.pub` named only
+as a candidate convenience *if that flow proves brittle*.
+
+Real defect was the opposite end: the L4 roundtrip decrypted the vault to
+get the pubkey, so the only workflow an operator can follow had zero
+coverage. Now parses `--keygen` stdout. Mutation-verified — a well-formed
+but wrong 40-char pubkey satisfies both the length assert and the
+`--list-known-roles` check, yet still fails, because the role is denied at
+the ZAP gate and never registers.
+
+## ✅/❌ #121 — SEC-Fold (half already done, half withdrawn)
+
+C++ half was complete before work started: 6 `<sodium.h>` includes, all
+inside `src/*/security/`; the alleged outlier `vault_crypto` routes through
+`secure()`; `KeyStore` already a gated member. Now guarded by
+`SecurityGuardrail_SodiumConfinedToModule`, mutation-verified.
+
+Doc fold **withdrawn**. Three structures proposed, each killed by evidence:
+~12,000 lines in one file; the vault already has *finalized* owners
+(HEP-0024 §3.4, HEP-0033 §7.1) a merge would strip; and the citation matrix
+puts the densest coupling in the wire protocols (0036↔0041 = 46), nowhere
+near any proposed grouping. Decisive: the `sodium_init` triangle that
+justified the fold was already fixed by HEP-0043 existing.
+
+## The pattern across all four
+
+Three of the four were false, and all three shared one method: **an
+absence asserted from counting search hits rather than reading them** — a
+guessed test name, a guessed file path, a hit-count split by directory.
+Every claim verified by reading the artifact held.
+
+Rule: to show a behaviour is untested or a field unused, grep the
+BEHAVIOUR — the accessor, the config field, the wire type — repo-wide, and
+read every hit. Never a hypothetical name, never a single guessed path.
+And a comment enumerating things is not evidence of their absence: read
+what the comment is attached to before quoting it as proof.

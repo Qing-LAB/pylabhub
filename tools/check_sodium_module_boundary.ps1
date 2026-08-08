@@ -13,9 +13,11 @@ if (-not $Root) {
     $Root = Split-Path (Split-Path $PSCommandPath -Parent) -Parent
 }
 
-# Mirrors the .sh regex: <sodium.h> or a sodium/ subheader, tolerating
-# whitespace after '#'.
-$ForbiddenRe = '^\s*#\s*include\s*<sodium(/[^>]*)?\.h>'
+# Mirrors the .sh regex: angle OR quoted form, bare header or a sodium/
+# subheader, tolerating whitespace after '#'.  The quoted form is covered
+# deliberately — it compiles identically and would otherwise be a
+# one-character bypass.  See the .sh header.
+$ForbiddenRe = '^\s*#\s*include\s*[<"]sodium(/[^>"]*)?\.h[>"]'
 
 $SrcRoot = Join-Path $Root 'src'
 
