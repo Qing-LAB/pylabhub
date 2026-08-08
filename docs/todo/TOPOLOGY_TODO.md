@@ -343,8 +343,20 @@ callers are gone — verify per surface, not against a phase gate.
 - [ ] `src/include/utils/hub_state.hpp` — Retire
   `ProducerEntry.zmq_node_endpoint` field + related accessors.
 - [ ] `src/utils/hub/hub_zmq_queue.cpp` — Delete multi-endpoint
-  PULL loop from commit `2c604280`.  Delete `add_producer_peer`
-  / `remove_producer_peer` / `set_producer_peers` methods.
+  PULL loop from commit `2c604280`.
+  **⚠ Split this row (checked 2026-08-07).** The two halves have opposite
+  risk profiles and must not be deleted in one motion:
+  - The **multi-endpoint PULL loop is LIVE and load-bearing** — it is what
+    makes fan-in work, proven at L4 by `ZmqE2E_MultiProducer_TwoAuthorized`.
+    Deleting it needs the singular-side model to have genuinely replaced it,
+    which is a design question, not a caller count.
+  - `add_producer_peer` / `remove_producer_peer` / `set_producer_peers`
+    have **zero production callers** (only `test_hub_zmq_queue.cpp`), so
+    deleting them is safe on caller grounds — but they are also the
+    specified answer to "how does a dialing consumer learn about a producer
+    that joined later?", and nothing else answers it. Settle that under
+    **#133** as an explicit adopt-or-delete, not as a side effect of this
+    phase.
 - [ ] `src/utils/service/role_api_base.cpp` — Delete consumer's
   §7.1 pre-attach loop.  Delete `attach:begin/success/complete`
   log markers.

@@ -270,14 +270,27 @@ change.
 `#10x` item below was checked against the tree; the dependency chain they
 formed (`#101 + #102 → #74 → #94 + #103 → #104 → #106 → done`) is spent.
 
-- **Legacy `#103` — dynamic peer membership — ✅ SHIPPED.**
-  `ZmqQueue::set_producer_peers` / `add_producer_peer` / `remove_producer_peer`
-  all exist (`hub_zmq_queue.hpp:461`, `:466`, `:472`), and fan-in is proven
-  end-to-end at L4 (`ZmqE2E_MultiProducer_TwoAuthorized`). The singular
-  `RxQueueOptions::zmq_node_endpoint` survives on purpose — it is the queue's
-  *own* bind endpoint (may be `tcp://host:0` for ephemeral bind, resolved and
-  published via `ENDPOINT_UPDATE_REQ`), a different thing from the peer set.
-  The "replace singular with vector" framing made them sound like one field.
+- **Legacy `#103` — dynamic peer membership — ⚠ HALF SHIPPED (corrected
+  2026-08-07, see #133).** An earlier note here called it shipped outright
+  because the methods exist and L4 fan-in passes. Two halves, only one live:
+  - **The multi-peer PULL data path IS live** — `start()`'s PULL branch
+    iterates `producer_peers_` and issues per-peer `connect()` with per-peer
+    `curve_serverkey`; proven at L4 by `ZmqE2E_MultiProducer_TwoAuthorized`.
+  - **The dynamic membership API is not driven by anything.**
+    `set_producer_peers` / `add_producer_peer` / `remove_producer_peer`
+    (`hub_zmq_queue.hpp:461`, `:466`, `:472`) have **zero production
+    callers** — every invocation is in `test_hub_zmq_queue.cpp`. The item
+    specified "framework drives these in response to HEP-0033 §12
+    channel-event broadcasts (producer joined/left)"; no framework code
+    calls them. Peers arrive via `RxQueueOptions::producer_peers` at
+    construction plus `apply_master_approval`'s peer[0] promotion — and
+    `role_api_base.cpp:1414` labels even that route "Test-legacy path".
+
+  The singular `RxQueueOptions::zmq_node_endpoint` survives on purpose — it is
+  the queue's *own* bind endpoint (may be `tcp://host:0` for ephemeral bind,
+  resolved and published via `ENDPOINT_UPDATE_REQ`), a different thing from the
+  peer set. The "replace singular with vector" framing made them sound like one
+  field, which is part of why the two halves got conflated.
 
 - **Legacy `#104` — HEP-0036 §14 sibling-HEP code updates — ✅ CLOSED**, part
   shipped and part superseded:
