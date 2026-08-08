@@ -416,6 +416,27 @@ blindspot".
 
 ### Pattern 4 test ladder — multi-process wire-protocol coverage
 
+> **⚠ Code review 2026-08-07 — the shared wire base violates the
+> sleep-to-order rule (#134).** `pattern4_wire_test_base.h:229-236` sends
+> `HEARTBEAT_NOTIFY` then `sleep_for(100ms)`. The heartbeat is
+> fire-and-forget — no `HEARTBEAT_ACK` exists in `src/` — so nothing is being
+> polled; the sleep exists to hope the broker has driven the producer to
+> kLive, which is the §5.2 R6 gate for consumer registration. That is
+> load-bearing ordering. **The header is included by 9 test files**, and the
+> same helper is duplicated locally at
+> `test_pattern4_attach_coordination.cpp:165-171`.
+>
+> `poll_until` already exists in `test_sync_utils.h`, its own docstring says
+> to use it instead of sleeping, and two tests in this very directory
+> (`test_pattern4_broker_protocol.cpp:2166`, `:2575`) use it correctly. This
+> is not a missing facility — it is a helper written the wrong way and then
+> inherited nine times.
+>
+> **Pattern 4 itself is not the problem.** As an architecture it is the
+> remedy for the in-process co-host antipattern: a real broker subprocess, a
+> real CURVE handshake, the production `wire::adapter` encoder. The defect is
+> one helper inside it.
+
 Pattern 4 = subprocess-per-role + observing parent.  Canonical:
 `docs/README/README_testing.md` § "Pattern 4 — ...".  The ladder
 rungs each pin one HEP contract clause, with focused failure
