@@ -18,7 +18,7 @@ the fix is in production code at `native_engine.cpp:289-305`).
 |---|---|---|
 | **Arc A — `plh_hub` renovation** (HEP-0033 §15 Phase 1..10) | Phases 1-9 shipped; Phase 10 doc-amendment ⏳ partial. | HEP-0033 Phase 10 (task #73) |
 | **Arc B — role-host renovation** (Wave-B M0..M9) | M0..M9 shipped (M9 closed 2026-05-26). | — |
-| **HEP-CORE-0035 auth** | 🚧 partial — Phase B + #101 + D1 + D2 + D3 shipped (per `AUTH_TODO.md`).  D4–D7 open.  Critical-path for production readiness. | task #74; detail in `docs/todo/AUTH_TODO.md` |
+| **HEP-CORE-0035 auth** | 🟢 **Single-hub CURVE production-ready** (REVIEW-E, 2026-07-17).  *Corrected 2026-08-07: this row said "D4–D7 open" — that numbering was retired on 2026-06-09 when the chain was restructured into AUTH-1..7, and all of AUTH-1..7 has since shipped.  It read as four open protocol phases for eight weeks after they stopped existing.*  Open remainder is federation (#69) plus the items listed in `AUTH_TODO.md`. | detail in `docs/todo/AUTH_TODO.md` |
 | **HUB_TARGETED_ACK wire frame** (HEP-0033 §12.3.6) | ⏸ Deferred — folded into the consolidated federation design task #69 (2026-07-24); never lands standalone | #69 (was #75) — federation-only |
 
 Wave-M2 / Wave-M2.5 / Wave-M3 side-arcs all closed.  M1.2 / M1.4 /

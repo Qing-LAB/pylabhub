@@ -229,102 +229,94 @@ When you find a task that's no longer relevant:
 
 **Option 2: Defer if still valid but not priority**
 ```markdown
-- [ ] **Task description** 🔵 Deferred – reason: low priority, revisit Q3
+- [ ] **Task description** 🔵 Deferred – note WHAT would un-defer it
 ```
 
-**Option 3: Archive if completed elsewhere**
+A deferral justified by a fact about the world ("no Windows CI", "waiting
+on the federation design") must name that fact, so a later reader can
+check whether it is still true. A deferral with no stated condition is
+indistinguishable from an abandoned task.
+
+**Option 3: Completed elsewhere → remove it, with evidence in the commit**
 ```markdown
-# Move to Recent Completions with note
-- ✅ **Task description** – Completed as part of PR #XYZ
+# Verify against code first, then delete the item.
+# git commit message: "docs: drop X from AUTH_TODO — shipped in <commit>, verified at <file:line>"
 ```
-
-### Archiving Old Completions
-
-**When**: Completions older than 2 months
-
-**Process**:
-1. Create archive entry in `DOC_ARCHIVE_LOG.md`:
-```markdown
-### TODO Completions: 2026-01 to 2026-02
-
-**Memory Layout**:
-- Single flex zone implementation
-- Alignment fixes (8-byte structured buffer)
-- Layout validation updates
-
-**Testing**:
-- Phase B complete (all tests passing)
-- Fixed Pitfall 10 in 4 test files
-- Added barrier synchronization to FileLock tests
-```
-
-2. Remove from subtopic TODO "Recent Completions"
-3. Commit with clear message
 
 ---
 
 ## Common Pitfalls in TODO Maintenance
 
-### Pitfall 1: TODO Bloat
-**Problem**: TODOs grow to 1000+ lines, become unmanageable
+*Rewritten 2026-08-07.  The previous version of this section prescribed a
+weekly/monthly/quarterly regime and told maintainers to "archive old
+completions monthly" and "keep Recent Completions for context" — the exact
+practice `DOC_STRUCTURE.md` §2.1.1 forbids, and which the top of this same
+file already said was wrong.  The pitfalls below are the ones this project
+has actually hit.*
 
-**Solution**:
-- Split large TODOs into subtopics
-- Archive old completions monthly
-- Keep "Current Focus" to < 10 tasks per TODO
+### Pitfall 1: The tracker misreports
 
-### Pitfall 2: Duplicate Tasks
-**Problem**: Same task appears in multiple TODOs
+**Problem**: The worst failure is not a long file — it is a file that says
+open where the code says shipped, or shipped where the code says open. A
+record is written when true, the code moves, nobody re-reads. Every
+cleanup pass since March 2026 has found instances.
 
-**Solution**:
-- Choose primary location based on main concern
-- Add cross-reference in other TODOs
-- Review for duplicates during monthly maintenance
+**Solution**: Verify by reading the source. Not the commit message, not a
+`✅` marker, not this file's own summary of itself. When a note names a
+*replacement* ("superseded by Y"), look up Y — several notes have named
+successors that were never built.
 
-### Pitfall 3: Orphaned Tasks
-**Problem**: Task created but never updated, no owner
+### Pitfall 2: Duplicate and parallel tasks
 
-**Solution**:
-- During sprint planning, assign owners to tasks
-- Review orphaned tasks monthly
-- Defer or remove tasks with no activity for 2+ months
+**Problem**: The same work appears in two TODOs under two names, and gets
+planned twice or scoped inconsistently.
 
-### Pitfall 4: Out-of-Sync Master TODO
-**Problem**: Master TODO doesn't reflect subtopic reality
+**Solution**: One primary location, chosen by main concern; cross-reference
+from the others. The codebase is an organic whole — extend an existing
+surface rather than opening a parallel one, and the same goes for the
+tracker.
 
-**Solution**:
-- Update master TODO whenever updating subtopics
-- Weekly review of master TODO status
-- Link checks during monthly maintenance
+### Pitfall 3: Task IDs that outlive their numbering
 
-### Pitfall 5: No Context Preservation
-**Problem**: Task marked done but no info on where/how
+**Problem**: `AUTH_TODO.md` accumulated two incompatible ID spaces whose
+ranges overlapped with different meanings — `#103` meant two different
+things inside one file.
 
-**Solution**:
-- Always add reference when marking complete
-- Include PR number, commit hash, or file location
-- Keep "Recent Completions" for context
+**Solution**: Cite live task IDs only. When a numbering scheme is
+abandoned, do not build a mapping table — delete the IDs that point at
+finished work (almost all of them) and re-anchor the survivors.
+
+### Pitfall 4: Out-of-sync master TODO
+
+**Problem**: `TODO_MASTER.md` doesn't reflect subtopic reality.
+
+**Solution**: Update the master in the same commit as the subtopic. If an
+area's status changed, the master's status table changed.
+
+### Pitfall 5: Bloat from keeping finished work
+
+**Problem**: Files grow past the point where anyone reads to the bottom.
+
+**Solution**: Remove completed items — git is the history. Reconsider a
+file's shape past ~500 lines: it is usually either holding closed work, or
+holding permanent guidance that belongs in a `README_*` doc.
 
 ---
 
 ## Quick Reference Commands
 
 ```bash
-# Weekly: Review changes and update TODOs
+# What changed since you last looked
 git log --since="1 week ago" --oneline
-git log --since="1 week ago" --stat -- '*.cpp' '*.hpp'
 
-# Find TODOs that need updating
-grep -r "TODO\|FIXME" cpp/src cpp/tests --include="*.cpp" --include="*.hpp"
+# Inline TODOs that never made it into a tracker
+grep -rn "TODO\|FIXME" src tests --include="*.cpp" --include="*.hpp"
 
-# Check subtopic TODO sizes
+# Which trackers have grown past the point of being read
 wc -l docs/todo/*.md
 
-# Find duplicate tasks (requires careful manual review)
+# Candidate duplicates across trackers (needs manual review)
 grep -h "^- \[ \]" docs/todo/*.md | sort | uniq -c | sort -rn
-
-# Archive old completions
-# Manual: move "Recent Completions" > 2 months to DOC_ARCHIVE_LOG.md
 ```
 
 ---

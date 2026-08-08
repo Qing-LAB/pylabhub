@@ -2063,15 +2063,27 @@ is not a plaintext exception.
 > (`test_admin_service`, 8/8 over a real started hub). The old `REP` +
 > `{method,token,params}` surface is retired.
 >
-> **Not yet implemented** (tracked in `docs/todo/AUTH_TODO.md` Line E):
-> the **console output buffer + `response_query` poll** (§11.0.1 layer 6 /
-> §11.0.4 — the console answers commands and queries today but has no output
-> buffer yet, so late results and hub messages have nowhere to land), the
-> **`admin_console_print` HubAPI** (the script source of output lines), and
-> **`origin_uid` + `request_id` on the broker request records** (§11.0.5 — the
-> session id is minted and used for the session gate, but is not yet threaded
-> into the broker request records, so actuations are not yet stamped and
-> completion results can't yet be tagged for the buffer).
+> **Implementation state — corrected 2026-08-07.** This paragraph listed
+> three pieces as "not yet implemented"; all three had shipped, and the
+> paragraph was never revisited. Verified against source:
+>
+> - **Console output buffer + `response_query` poll** (§11.0.1 layer 6 /
+>   §11.0.4) — shipped. `console_output_buffer.hpp` holds the buffer;
+>   `response_query` is live in `admin_service.cpp`; cap sizes come from
+>   `admin.output_buffer.*` in hub config.
+> - **`admin_console_print` HubAPI** — shipped across all three engines
+>   (Lua, Python, native C ABI).
+> - **`origin_uid` + `request_id` on the broker request records** — shipped
+>   for the two admin actuation paths: an admin close and an admin broadcast
+>   each carry `origin_uid` into their queue record and out on the resulting
+>   notify (`broker_service.cpp:1434`, `:1472`).
+>
+> **What is genuinely open** is narrower than the old text implied: §11.0.5
+> also specifies a *scoped* "current actuation origin" that every log line
+> and NOTIFY in a teardown cascade inherits automatically. No such mechanism
+> exists, so `CHANNEL_CLOSING_NOTIFY` still stamps `self_hub_uid`. Either
+> build the scoped origin or amend §11.0.5 down to the two explicit paths
+> that exist — that decision is the open item, not the plumbing.
 >
 > **Control-command semantics — resolved 2026-07-19** (CURVE-integration
 > review): control commands **validate synchronously** — `close_channel` on

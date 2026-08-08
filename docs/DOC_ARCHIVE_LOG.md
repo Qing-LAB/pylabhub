@@ -2062,3 +2062,83 @@ registrations land on different sides, so no such path exists.
 The arc's headline number belongs here too: **five substantive defects, all
 found by review or owner pushback, none by the suite** — which went 2774/2774
 with the first of them live.
+
+---
+
+## 2026-08-07 (pass 5) — AUTH_TODO reduced to open items
+
+### Transient → `archive/transient-2026-08-07/todo-completions/` (1)
+
+| Document | Why archived | Residual |
+|----------|--------------|----------|
+| `AUTH_TODO_closed_2026-08-07.md` | Extraction record for the `todo/AUTH_TODO.md` rewrite, 850 → ~190 lines. Holds the closure **evidence** (what was read, and where) for six items the file listed as open and that were not, the list of completed phases and chains, the decision log, and the explanation of the task-ID collision. The narrative prose itself is in git at `e5de9a53` and in the 06-05 / 06-09 / 06-27 completions files, so it was not copied again. | Seven live tasks carried out: #121 SEC-Fold, #122 CTRL ZAP allow-path pin, #123 role vault `.pub`, #124 demo auth migration, #125 CURVE doc backlog, #126 macOS/Windows SHM backends, #127 CLI `--init`. Three of them (#121–#123) are security items and were added to band 1 in `TODO_MASTER.md`. |
+
+### What the pass was actually for
+
+Not compression. The file had begun to **misreport in both directions**, and
+a tracker that misreports is worse than a long one — it sends work to places
+that are already finished and leaves real gaps unlisted.
+
+Six items marked open were closed, each verified by reading the tree:
+
+- The **admin reverse-notify channel** was listed as a missing feature. It
+  had been *retired by design* on 2026-07-22 and replaced by the polled
+  output buffer — which shipped. A later section of the same file recorded
+  the retirement. The file contradicted itself.
+- The **7 masked `RoleIdentityPolicy` tests** were listed as awaiting a
+  delete decision. Commit `c7f4f608` deleted the whole file on 2026-07-20.
+  This one is worth singling out: **the same claim had been written into
+  this file's own hazard banner earlier the same day**, as the one item
+  verified still open. It was taken from the audit table, not the tree —
+  the exact failure the banner existed to warn about. A banner warning that
+  markers are unverified is not itself verification.
+- **#275 S2**'s "16 workers still to scan" named a file that does not exist;
+  the surviving matches are tombstone comments.
+- **Native `allowed_peers` / `producers`** were marked "deferred per MVP".
+  Both are in the C ABI at `native_engine_api.h:323` and `:354`.
+- The **§11.0.4 fire-and-forget tension** was recorded as fixed in one row
+  and unresolved in another.
+- **Vault hot reload** was still listed as the top open security item after
+  the owner decided against it.
+
+### Cross-references corrected in the same pass
+
+The stale claims had propagated outward, which is why this was not a
+single-file edit:
+
+- **`HEP-CORE-0033` §11** — the design authority told readers that the
+  console output buffer, `admin_console_print`, and `origin_uid` on broker
+  records were "not yet implemented". All three had shipped. Replaced with
+  the verified state plus the one thing that *is* open (the scoped actuation
+  origin, #105).
+- **`MESSAGEHUB_TODO`** — "HEP-0035 auth: D4–D7 open" survived eight weeks
+  past the 2026-06-09 restructuring that replaced D4–D7 with AUTH-1..7, all
+  of which have shipped. It read as four open protocol phases.
+- **`API_TODO`** — "Blocks AUTH_TODO D4 + D5", same dead numbering.
+- **`TODO_MASTER`** — the next-actions table still led with vault hot reload
+  as "the biggest open security item"; the `#112` row still said to check
+  band 2 first, after band 2 was retired.
+- **`REVIEW_VALIDATION_2026-08-02`** — its "Not yet done" list still carried
+  two items the same document's own body had completed.
+- **`todo/README.md`** — the lower half still taught "move completed tasks
+  to Recent Completions" and "archive old completions monthly", directly
+  contradicting both `DOC_STRUCTURE.md` §2.1.1 and the correction notice at
+  the top of the same file. A first pass had fixed the visible sections and
+  missed the pitfalls, examples, and command crib below them.
+
+### The task-ID collision, and why no mapping table was built
+
+`AUTH_TODO` cited IDs `#52`–`#317` while the live list ended at `#119`, so
+the ranges overlapped with different meanings — `#103` meant two different
+things inside the one file. No mapping was produced, deliberately: nearly
+every legacy ID hung off *finished* work, and an ID pointing at finished
+work does not need a new name, it needs deleting. A blind rename would also
+have been wrong, since many `#NNN` in the text are HEP numbers, PR numbers,
+or line references. Recovered anchors for reading old commits are listed in
+the archived file.
+
+**The generalisation, now three passes deep:** a record is written when
+true, the code moves, nobody re-reads. The habit that catches it is to look
+up the *replacement* a note names, not just the site it fixed — several
+notes named successors that were never built, and several named predecessors
+that were already gone.

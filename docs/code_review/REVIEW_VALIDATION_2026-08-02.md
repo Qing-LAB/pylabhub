@@ -371,8 +371,10 @@ None is scheduled — they go to the owner as candidates, not as plan.
   their tests, or adopt them in the three role hosts. Do not leave them
   tested-but-uncalled. Best done inside band 4, which collapses those
   three loops anyway.
-- **O1b** — `query_shm_info` is uncalled, but see the caution above: settle it
-  inside band 2, not before.
+- **O1b** — `query_shm_info` is uncalled. Now **task #112**, together with
+  the stale phase-label comments. *(This bullet used to say "settle it
+  inside band 2, not before." Band 2 was the SHM observer, retired
+  2026-08-07 — there is no longer a band to wait for.)*
 - **O3** — the three forwarders are real, but inlining 30 call sites to remove
   a one-line seam is a judgement call, not a defect. Recorded, not
   recommended.
@@ -383,14 +385,25 @@ and **T1** (counter rename).
 
 ## Not yet done
 
-- `REVIEW_CURVE_Integration` doc-reconciliation backlog — 11 items needing a
-  HEP-against-HEP pass.  One of them (`known_roles` storage) is known to be
-  inverted relative to the shipped design; the rest are unchecked.
-- `REVIEW_FullModule` F-1, F-2, F-4 — counting exercises against a suite that
-  has roughly doubled; the cited numbers carry no meaning until re-derived.
-- `REVIEW_Connection_Inbox_Band` S3 — the only finding in that review left
-  unvalidated; needs a read of the current `start_handler_threads` phase
-  sequence.
-- Spot-validation of the 52 findings in `REVIEW_FullSystem` already marked
-  ✅ FIXED. Lower risk than the open ones, but the resolution notes are
-  self-reported and none has been independently checked.
+*Trimmed 2026-08-07 — two of the four items listed here had in fact been
+done, by the pass that wrote the section above. Leaving them listed made
+the record misreport itself, which is the failure this whole document
+exists to catch.*
+
+- **`REVIEW_CURVE_Integration` doc-reconciliation backlog** — 11 items
+  needing a HEP-against-HEP pass. One (`known_roles` storage) is known to
+  be inverted relative to the shipped design; the rest are unchecked.
+  Now **task #125**.
+- **`REVIEW_FullModule` F-1, F-2, F-4** — counting exercises against a
+  suite that has roughly doubled since they were written; the cited numbers
+  carry no meaning until re-derived. Not scheduled: re-deriving a count is
+  only worth doing if a decision hangs on it, and none currently does.
+- **`REVIEW_Connection_Inbox_Band` S3** — the one finding in that review
+  left unvalidated (see the `NOT VALIDATED` row above); needs a read of the
+  current `start_handler_threads` phase sequence. Deferred rather than
+  guessed.
+
+**Done since:** spot-validation of the 52 `REVIEW_FullSystem` resolution
+notes (the section above), and validation of all 24 blocks in
+`REVIEW_Connection_Inbox_Band` bar S3. Both reviews were archived to
+`docs/archive/transient-2026-08-07/code_review/` on completion.

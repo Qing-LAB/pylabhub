@@ -378,8 +378,10 @@ change.
   array land coherently with §94 (DISC_REQ_ACK array migration —
   the two wire-format changes must land together per HEP-0036
   §14.1).  Spec: HEP-CORE-0017 §3.3 + HEP-CORE-0036 §6.4 + §4.1.
-  M-L.  Depends-on: #94 wire-shape coordination.  **Blocks
-  AUTH_TODO D4 + D5.**
+  M-L.  Depends-on: #94 wire-shape coordination.  *(Used to read "Blocks
+  AUTH_TODO D4 + D5" — that numbering was retired 2026-06-09 and its
+  successors AUTH-1..7 have all shipped, so this blocks nothing in the
+  auth chain.)*
 
 - **#104** — **Sibling-HEP code updates per HEP-CORE-0036 §14.**
   HEP-0036 design lock-in (2026-05-28) requires synchronized code
