@@ -166,50 +166,40 @@ artifacts (L4 fixtures)` for the current documented mechanism.
 
 ---
 
-### HEP-CORE-0042 Phase 3a.4 — L4 end-to-end scenarios (2026-07-02) ⏳
+### HEP-CORE-0042 attach-coordination L4 scenarios — ✅ RESOLVED BY DESIGN 2026-08-07
 
-Phase 3a shipped the producer-side emission chain for the HEP-CORE-
-0042 ZMQ attach-coordination protocol.  L3 coverage is complete for:
-- Broker-side handler flow (8 scenarios in
-  `test_pattern4_attach_coordination.cpp`).
-- Producer-side initial-REG emission via real producer (Test A:
-  `Pattern4ConsumerLifecycleTest.IdleProducerYieldsTimeoutDrainToConsumer`).
-- Timeout drain via real producer (same Test A).
+*This section listed four L4 scenarios as open scope. The decision that
+settles them was made when the L4 test was written, recorded in a comment at
+the code site, and never brought back here.*
 
-**Gap:** happy-path with active-cycle producer + fast-path admit
-observation.  Belongs at L4 rather than L3 because:
-- The scenario needs a producer that actually iterates `run_data_loop`
-  (so `cycle_ops::invoke_and_commit` runs, which calls
-  `handle_channel_auth_notifies`, which drives the NOTIFY-triggered
-  APPLIED_REQ emission).
-- Every existing Pattern4 worker uses `install_heartbeat` + sleep;
-  none run a real data-loop.  Adding one worker per scenario is
-  linear cost.
-- L4 uses the real `plh_role` binary with a Lua script.  One test
-  infrastructure, many scenarios — happy path + kill-mid-flight +
-  allowlist revoke + multi-consumer + re-registration all belong
-  in the same L4 test bundle.
+The four scenarios were: happy path with fast-path admit observation,
+producer dies mid-flight (`producer_not_live`), producer cycle paused
+(`producer_did_not_confirm_within_budget`), and allowlist revoke mid-attach
+(`consumer_not_in_channel_allowlist`).
 
-**Scope for the L4 follow-up:**
+**Where they actually live, verified 2026-08-07:**
 
-1. Happy path — real producer + real consumer, consumer attach
-   observes broker's `event=AttachReqZmqFastPath` after producer's
-   NOTIFY-triggered APPLIED_REQ.
-2. Real producer dies mid-flight — consumer's attach observes the
-   §5.4 producer-disconnect drain with `producer_not_live`.
-3. Real producer registered but its cycle is paused (e.g. a slow
-   Lua callback) — consumer observes the §5.4 timeout drain with
-   `producer_did_not_confirm_within_budget` (extends Test A's
-   coverage from a subprocess with no cycle to a subprocess with
-   a slow cycle).
-4. Allowlist revoke mid-attach — consumer's attach observes
-   `consumer_not_in_channel_allowlist` even though the consumer
-   had previously registered.
+- **The three denial reasons plus `channel_closing` and the fast-path marker
+  are pinned deterministically at L3** —
+  `tests/test_layer3_pattern4/test_pattern4_attach_coordination.cpp`, 8
+  `TEST_F`s driving `BrokerWireClient` per the HEP-CORE-0042 §9 L3 test plan.
+  All four reason strings appear there, plus `FastPath`.
+- **The happy path is pinned at L4** by
+  `ZmqE2E_MultiProducer_TwoAuthorized`, which requires slots from both
+  producers' offset windows before the consumer emits completion — so
+  all-N data arrival is load-bearing, not incidental.
+- **`MixedAdmitDeny` is deliberately deferred**, with the reason stated at
+  `test_plh_hub_role_zmq_e2e.cpp:1226`: triggering `producer_not_live`
+  between CONSUMER_REG_REQ and ATTACH_REQ dispatch is racy against heartbeat
+  cadence at the subprocess boundary, and the L3 pins cover the wire-level
+  behaviour deterministically. That is the right call — an L4 test that races
+  a heartbeat is a flake generator, and the contract is already pinned where
+  it can be pinned exactly.
 
-Filed as follow-up to Phase 3a rather than a Phase 3a.4 Test B
-because the scope is naturally wider than "one more log-marker
-assertion" — the same real-role infrastructure that enables Test B
-also enables the other three scenarios above.
+The one thing worth keeping from the original scoping: its reasoning that
+these belong at L4 assumed no L3 harness could drive a real producer cycle.
+`BrokerWireClient` removed that constraint. Layer choice follows what the
+test can pin deterministically, not what feels most end-to-end.
 
 ### Broader review-C findings (2026-07-02, scope drift) — ALL FILED AS TASKS
 
