@@ -130,12 +130,35 @@ protocols (§9) — is downstream of these three.
 **`SecureSubsystem` is the one C++ subsystem in the codebase that
 owns and mediates every access to libsodium.**  It is:
 
-- **The libsodium boundary.**  Only file that `#include <sodium.h>`
-  in production code.  Every raw sodium primitive
+- **The libsodium boundary.**  The only place in production code that
+  `#include <sodium.h>`.  The boundary is the **module directory**, not
+  a single file: the include is permitted anywhere under
+  `src/include/utils/security/` or `src/utils/security/`, and nowhere
+  else in `src/`.  Every raw sodium primitive
   (`sodium_malloc`, `sodium_memzero`, `randombytes_buf`,
   `crypto_box_*`, `crypto_secretbox_*`, `crypto_pwhash`,
   `crypto_generichash`, `sodium_memcmp`, ...) is exposed through a
   typed C++ wrapper method on this module.
+
+  *Enforcement.*  This is a checked invariant, not a convention.
+  `SecurityGuardrail_SodiumConfinedToModule` runs under the CTest
+  `guardrail` label and fails the sweep if any file under `src/`
+  outside a `security/` directory includes the header —
+  `tools/check_sodium_module_boundary.sh` (Unix) and
+  `tools/check_sodium_module_boundary.ps1` (Windows), hand-mirrored,
+  sub-second, wired as a `FIXTURES_SETUP Guardrails` test so it runs
+  before anything else.  It is exclusion-shaped — it scans all of
+  `src/` and subtracts the module — so code added in a new directory
+  is covered without anyone remembering to update a list.  Test code
+  is deliberately out of scope: a handful of L2 tests include
+  `<sodium.h>` directly to construct raw inputs the module is designed
+  to reject, and tests are not the production boundary.
+
+  A consumer that needs an operation with no wrapper adds the wrapper
+  to the module rather than including the header at the call site —
+  `vault_crypto` is the worked example, reaching `pwhash_argon2id`,
+  `secretbox_encrypt`, `random_bytes` and `memzero` entirely through
+  `secure()`.
 - **The keystore.**  Owns the `KeyStore` submodule that holds
   every long-term identity keypair and every ephemeral runtime
   key in mlocked memory (via `sodium_malloc`).  Enforces the

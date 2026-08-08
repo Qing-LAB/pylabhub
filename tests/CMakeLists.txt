@@ -151,6 +151,31 @@ if(BUILD_TESTS)
                                   FIXTURES_SETUP Guardrails
                                   TIMEOUT 10)
 
+  # HEP-CORE-0043 security-module boundary — fails if any file under
+  # `src/` outside a `security/` directory includes <sodium.h>.  The
+  # property holds today; this is what keeps it holding.  A stray
+  # include would create a second crypto surface with its own init
+  # assumptions and no LockedKey/memzero discipline, and nothing else
+  # in the suite would notice.  Scope is `src/` on purpose — four test
+  # files include <sodium.h> legitimately, to build raw inputs the
+  # module is designed to reject.  Pure grep; runs in <1s.
+  if(WIN32)
+    add_test(NAME SecurityGuardrail_SodiumConfinedToModule
+             COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+                     -File ${CMAKE_SOURCE_DIR}/tools/check_sodium_module_boundary.ps1
+                     ${CMAKE_SOURCE_DIR}
+             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  else()
+    add_test(NAME SecurityGuardrail_SodiumConfinedToModule
+             COMMAND ${CMAKE_SOURCE_DIR}/tools/check_sodium_module_boundary.sh
+                     ${CMAKE_SOURCE_DIR}
+             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+  endif()
+  set_tests_properties(SecurityGuardrail_SodiumConfinedToModule
+                       PROPERTIES LABELS "layer0;hep0043;guardrail"
+                                  FIXTURES_SETUP Guardrails
+                                  TIMEOUT 10)
+
   # Meta-guardrail: fail the sweep if any gtest_discover_tests block
   # under tests/ lacks `FIXTURES_REQUIRED Guardrails`.  Without this,
   # a future test target could silently bypass the two guardrails

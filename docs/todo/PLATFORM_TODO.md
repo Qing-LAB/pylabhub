@@ -192,3 +192,26 @@ copyable<T>::value`.  Enforced at the schema-validation layer.
 - `docs/HEP/HEP-CORE-0032-ABI-Compatibility.md` — ABI policy for
   cross-toolchain builds.
 - `docs/README/README_CMake_Design.md` — project build structure.
+
+## `check_auth_guardrail.sh` has no Windows mirror and is not platform-gated
+
+Found 2026-08-07 while adding `SecurityGuardrail_SodiumConfinedToModule`.
+
+`AuthGuardrail_NoScriptAllowlistMutator` is registered in
+`tests/CMakeLists.txt` with a bare `add_test(... COMMAND
+${CMAKE_SOURCE_DIR}/tools/check_auth_guardrail.sh ...)` — **no `if(WIN32)`
+branch and no `.ps1` mirror.** The two guardrails added after it
+(`check_layer_invariant`, `check_fixtures_required`) both ship `.sh` +
+`.ps1` behind a `WIN32` conditional, so the convention post-dates it.
+
+On Windows that test cannot run. Worse than a gap in coverage: it carries
+`FIXTURES_SETUP Guardrails`, and every gtest target requires that fixture,
+so a failing setup fixture takes the **whole suite** with it.
+
+Fix: write `tools/check_auth_guardrail.ps1` mirroring the `.sh` (one regex
+over a fixed path list — the smallest of the four) and wrap the `add_test`
+in the same `if(WIN32)/else()` shape the others use.
+
+Not folded into the sodium-guardrail commit that found it: that change was
+scoped to adding a new check, and silently repairing a different test's
+platform wiring inside it would hide the fix from anyone reading the log.
