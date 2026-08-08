@@ -46,13 +46,19 @@ would have no way to know it was overturned.
 
 ## Open — wire shape
 
-- **`expected_schema_owner` is a wire field no canonical schema declares.**
-  Live in `wire_bodies.hpp:402`, validated in `wire_bodies.cpp:293`, read by
-  the broker at `broker_service.cpp:3632` — and absent from HEP-0036 §5b.6's
-  catalog, while HEP-0034 names the equivalent `schema_owner` with no
-  prefix. Production consumers send no citation fields at all; only test
-  helpers exercise it. Canonicalize under one agreed name, or delete the
-  accessor and the read. **Task #130.**
+- **`expected_schema_owner` — HEP-0036 §5b.6's catalog is missing a row.
+  ⚠ DO NOT DELETE THE FIELD.** An earlier version of this entry said
+  production never sends it and offered "delete the accessor and the read"
+  as an option. **That was wrong.** The field is required and enforced:
+  `broker_service.cpp:3633` rejects an owner claim without a schema id
+  (`INVALID_REQUEST`), and `:3760` rejects a named fan-in open with no
+  owner (`SCHEMA_OWNER_REQUIRED`, with a WARN). HEP-0007's error table
+  documents that code operator-facing, and HEP-0034 §Owner axis names the
+  field with this exact spelling. The behaviour was ruled 2026-07-26 to
+  close a stale-silent-fallback; deleting it would re-open it.
+  What actually remains: HEP-0036 §5b.6 lists `expected_schema_id` /
+  `_hash` / `_blds` / `_packing` and omits `_owner`. Add the row.
+  Doc-only. **Task #130.**
 
 - **Five inbound-notify bodies are still untyped** — `CHANNEL_COUNT_NOTIFY`,
   `CHANNEL_EVENT_NOTIFY`, `CHANNEL_ERROR_NOTIFY`,

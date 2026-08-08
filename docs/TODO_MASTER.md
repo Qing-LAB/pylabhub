@@ -156,7 +156,7 @@ security items, so this pass did add to band 1** — unlike the docs pass above.
 
 | Task | Band | Why there |
 |---|---|---|
-| **#130** `expected_schema_owner` — a wire field no canonical schema declares | **3** | Live in three places (`wire_bodies.hpp:402`, `wire_bodies.cpp:293`, `broker_service.cpp:3632`), absent from HEP-0036 §5b.6, and production never sends it — only test helpers do.  Canonicalize under one name or delete the accessor + read.  A field reachable on the wire that no schema owns is what the typed envelope exists to prevent. |
+| **#130** `expected_schema_owner` — HEP-0036 §5b.6 catalog is missing a row | **3** | **Doc-only. ⚠ The earlier "or delete the accessor + read" option was WRONG and is withdrawn.**  The field is enforced twice — `broker_service.cpp:3633` (`INVALID_REQUEST`) and `:3760` (`SCHEMA_OWNER_REQUIRED`, WARN) — documented in HEP-0007's error table, spelled identically in HEP-0034 §Owner axis, and ruled 2026-07-26 to close a stale-silent-fallback.  Deleting it would re-open that hole.  What remains: §5b.6 lists `_id`/`_hash`/`_blds`/`_packing` and omits `_owner`.  Add the row. |
 | **#131** five untyped inbound-notify bodies | **3** | Mechanical and uniform once the first is done; the nine REG-family conversions set the pattern.  Do with **#82**'s typed Schema/Metrics bodies — one mechanism. |
 | **#132** `with_active_loop` tested and uncalled | **4** | See the theme above; band 4 touches the thread owners. |
 | **#133** dynamic peer API tested and uncalled | **4** | Same theme.  Also unblocks a split in topology Phase E, which had it in one deletion row with the load-bearing multi-endpoint PULL loop. |
