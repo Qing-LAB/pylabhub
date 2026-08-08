@@ -11,6 +11,20 @@ under `/home/qqing/.claude/projects/-home-qqing-Work-pylabhub/memory/`
 `feedback_test_layering_and_no_mocks.md`,
 `feedback_tests_replicate_production_scenarios.md`).
 
+> **⚠ Task IDs above `#128` in this file are from a retired numbering
+> scheme and do not resolve.** IDs in the `#2xx`/`#3xx` range predate the
+> current task list and were never mapped. Treat them as *labels on a
+> description*, not as lookups — read what the item says and verify it
+> against code before acting.
+>
+> This is not cosmetic. A table of nine defects sat here under retired IDs;
+> when it was finally re-verified on 2026-08-07, **six had already been
+> fixed** — with those very IDs cited in the fix comments — and one of the
+> two real ones was an unpinned checksum-verification contract. Nobody could
+> look the IDs up, so nobody checked. Surviving open items are being given
+> live IDs as they are verified; an unverified `#3xx` means only that nobody
+> has looked yet.
+
 ---
 
 ## Test design principles → moved to `README_testing.md` §1.3 (2026-08-07)
@@ -207,17 +221,23 @@ The other 9 findings are legitimate defects sitting in HEP-CORE-0041
 or L3-retirement territory.  ALL are now filed as concrete tasks
 (triage complete 2026-07-02):
 
-| Finding | Task | Status |
+**Re-verified against code 2026-08-07 — six of the nine had shipped.** The
+`#3xx` IDs below belong to a numbering scheme that no longer resolves, so
+nobody could look them up to check. Six were fixed with those very IDs cited
+in the fix comments; the table was never updated. Two are genuinely open and
+now carry live task IDs.
+
+| Finding | Verdict 2026-08-07 | Evidence |
 |---|---|---|
-| `role_api_base.cpp:856` SHM consumer dial retry — only catches ECONNREFUSED | **#300** (pre-existing) | Same defect verified |
-| `broker_service.cpp:5866` `datablock_get_metrics` broken for memfd (broker SHM observability dark) | **#317** (new) | Design + mermaid in HEP-CORE-0041 §10.5 |
-| `attach_protocol.cpp:96` `send_all` unbounded | **#319** (new) | Fix pattern: shared deadline (sibling of #318) |
-| `attach_protocol.cpp:344` receive_frame budget doubling — worst-case 2× budget | **#318** (new) | Fix: pass `steady_clock::time_point` deadline through recv_all + receive_frame |
-| `role_api_base.cpp:1055` filter-then-approve empty-endpoint rejection | **#320** (new) | Defensive skip in §7.1 filter loop |
-| `role_api_base.cpp:1381` Non-Linux SHM REG_ACK late-fail | **#306** (pre-existing) | + cross-platform test policy documented in `docs/IMPLEMENTATION_GUIDANCE.md § Cross-Platform Test Coverage Policy` |
-| `shm_capability_channel.cpp:251` TOCTOU on /tmp fallback bind | **#321** (new) | Same-uid DoS; fix via in-directory temp-file-then-rename OR drop /tmp fallback |
-| `shm_capability_channel.cpp:344` `accept4` EINTR gap | **#322** (new) | Sibling of completed #304 (recvmsg/sendmsg EINTR) |
-| `tests/test_layer3_datahub/CMakeLists.txt:79` L3 ShmQueue coverage loss from S3c retirement | **#323** (new) | VERIFIED that neither L4 SHM e2e (2 tests) NOR L2 SHM capability (6 tests) covers `VerifyChecksumMismatch` / `NoFlexzone` / `Bidirectional` / `RemapStubsThrow`.  Scope: new L2 `test_hub_shm_queue_contract.cpp` (per test-pattern discipline; NOT L4 — these are low-level queue contracts). |
+| `attach_protocol.cpp` `send_all` unbounded | ✅ **FIXED** | Shared `handshake_deadline` computed at `:199` and `:328`, threaded through `send_frame`/`recv_frame`; comment cites the old ID. |
+| `attach_protocol.cpp` receive_frame budget doubling (worst case 2× budget) | ✅ **FIXED** | Same shared-deadline change — that was the fix for both. |
+| `shm_capability_channel.cpp` TOCTOU on `/tmp` fallback bind | ✅ **FIXED** | Bind now goes to a temp name (`pid` + `CLOCK_MONOTONIC` nsec) then renames, with `sun_path` overflow handled — `:315-335`. |
+| `shm_capability_channel.cpp` `accept4` EINTR gap | ✅ **FIXED** | Retry loop at `:441-450`; the rationale comment is at `:431`. |
+| `role_api_base.cpp` filter-then-approve empty-endpoint rejection | ✅ **FIXED** | Defensive skip in the §7.1 filter loop, `:1906`. |
+| `role_api_base.cpp` SHM consumer dial retry only catches ECONNREFUSED | ✅ **FIXED** | D3 bounded retry at `:2251`; `:2255` records that the not-yet-visible case returns `nullopt` and is handled on the same path. |
+| `broker_service.cpp` `datablock_get_metrics` broken for memfd | ⏭ **MOOT — folded** | This was the broker's by-name SHM read, i.e. the observer surface. HEP-CORE-0045 was retired 2026-08-07; the read is on its way out under **#87** / **#112**, and the hub gets these numbers from the heartbeat once **#117** lands. Do not fix it — delete it. |
+| `role_api_base.cpp` non-Linux SHM REG_ACK late-fail | ⚠ **OPEN** | No fix marker in the file. Cross-platform; belongs with **#126** (macOS/Windows backends), since the late-fail only matters once a non-Linux backend exists. |
+| L3 ShmQueue coverage loss from the S3c retirement | ⚠ **OPEN — now #128** | Four contracts (`NoFlexzone`, `VerifyChecksumMismatch`, `Bidirectional`, `RemapStubsThrow`) survive only as a tombstone comment at `tests/test_layer2_service/CMakeLists.txt:566-569`. The planned replacement `test_hub_shm_queue_contract.cpp` does not exist. **A checksum-verification contract has been unpinned since the retirement.** |
 
 ### HEP-CORE-0042 Phase 3 review-B follow-ups (2026-07-02) ⏳
 
