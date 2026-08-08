@@ -150,6 +150,7 @@ security items, so this pass did add to band 1** — unlike the docs pass above.
 | **#124** 27 demo configs ship `"keyfile": ""` | **3** | Broken since strict CURVE landed in May 2026.  Blocked by #123 + #127 — do it as one wave, with the configs as tool output rather than hand-maintained fixtures. |
 | **#125** CURVE-review doc backlog, 11 items | **3** | Doc-only.  One (`known_roles` storage) is known to describe the pre-vault model that was hard-cut-over; do that one first. |
 | **#126** HEP-0041 macOS + Windows backends | **5** | SHM channel auth is Linux-only.  Gated on Windows CI existing at all. |
+| **#134** test-suite hygiene — Pattern-4 timing discipline | **5 — owner-lowered 2026-08-07** | **Consolidated:** the sleep-to-order in the shared wire base (9 files inherit it), the duplicated helper, the tight Phase 2.4b budget, and the hand-rolled poll loop are ONE item, deliberately parked below product work.  Nothing in it is a product defect and the suite is green.  Two things kept with it so they are not re-derived: Pattern 4 as an *architecture* is the remedy, not the problem — the defect is one helper inside it; and the verification when it runs is a stress run before/after, **not** a green run, since the suite is green today with the defect live. |
 
 #### Where the MESSAGEHUB / API / TOPOLOGY sweep findings land (2026-08-07)
 
