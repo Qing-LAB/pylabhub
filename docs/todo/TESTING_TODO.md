@@ -300,6 +300,22 @@ deferred to phantom future work.
 
 ### HEP-CORE-0042 Phase 2.4b — post-review follow-up flake risks (2026-07-01) ⏳
 
+> **Re-verified 2026-08-07 — these are STILL VALID, not stale.** Unlike the
+> attach-coordination section above (which was settled by a decision recorded
+> at the code site), every claim here reproduces:
+> `Pattern4AttachCoordinationTest.WaitPathTimeoutOnMissingAppliedReq` is live
+> at `test_pattern4_attach_coordination.cpp:877`, its header states an
+> expected wall-clock of **~3.5s** (budget + ~500ms sweep cadence), and the
+> receive at `:926` allows **6000ms**. That is a 1.7× margin on a project
+> whose suite runs under `-j2` build load and 4× CPU stress in the flake
+> checks — the exact shape that produces an intermittent failure nobody can
+> reproduce on an idle machine.
+> `WaitPathDrainOnProducerDisconnect` is live at `:663`.
+>
+> Worth stating because the sweep's other dated `⏳` sections turned out
+> closed: **a dated marker is not evidence of staleness either.** These were
+> written correctly and remain correct.
+
 Filed as follow-ups from the xhigh review of `tests/test_layer3_pattern4/
 test_pattern4_attach_coordination.cpp` (5 test-adding commits `4693c83d..
 6a7a7508`).  Reviewer flagged these as PLAUSIBLE-but-refuted — the
