@@ -8,6 +8,33 @@ matters.**
 
 ---
 
+## Progress
+
+**Update this table as work lands.** It is the tracking surface — a step
+is not done until its row says so and names the evidence.
+
+| # | Step | State | Evidence / outcome |
+|---|---|---|---|
+| 0a | Resolve HEP-0040 ↔ HEP-0043 key-memory ownership | ⏳ **evidence complete, one decision left** | HEP-0040 read and checked against code — it is accurate and current, not stale. Recommendation + the one remaining edit in §1.1. |
+| 0b | Repoint `attach_channel.hpp`'s stale HEP citation | ✅ **done** | HEP-0043 §9.2 itself assigns the `IAttachChannel` seam to HEP-0044; header now says so, with the 0043 §6 and 0041 §9 D4 references kept as *consumer* references. |
+| 1 | Audit §1.5 rotation & lifetime | ⬜ not started | never checked against code |
+| 2 | Audit §1.6 cross-platform layering | ⬜ not started | never checked against code |
+| 3 | Audit §2.4 cross-platform stubs | ⬜ not started | never checked against code |
+| 4 | Spot-verify §1.2 gate policy, per method | ⬜ not started | — |
+| 5 | Spot-verify §1.3's remaining four mechanisms | ⬜ not started | one defect already found and fixed (`crypto()`) |
+| 6 | Spot-verify §2.1 facade, §2.3 lifecycle, §3-§6 signatures | ⬜ not started | — |
+| 7 | Verify §11's platform rows against code | ⬜ not started | two rows already corrected; the rest untested |
+| 8 | Execute the named-key plan (seven steps of its own) | ⬜ blocked on 0a-7 | `DRAFT_named_key_operations_2026-08.md` |
+| 9 | Re-run the whole §2 table and record what remains | ⬜ not started | — |
+
+Legend: ⬜ not started · ⏳ in progress · ✅ done · ❌ found wrong
+
+**A row moves to ✅ only when both the HEP section and the code were
+read.** "Grep found nothing" is not evidence — it produced four false
+findings in this codebase inside a week.
+
+---
+
 ## 0. What "this module" actually is
 
 `src/*/security/` holds 28 files and about 10,200 lines. **HEP-CORE-0043
@@ -53,15 +80,39 @@ the resolution that would settle it. This is precisely the shape
 HEP-0043 §1.0 warns about — a decision with two owners — sitting inside
 the document that warns about it.
 
-Three ways out, all cheap; the choice is the owner's:
+**Evidence gathered 2026-08-09 — HEP-0040 was read and checked against
+code.** The result rules out one of the three candidate resolutions:
 
-- **0040 becomes the key-memory HEP and 0043 cites it.** 0043 §7 stops
-  claiming to be primary. Matches the file citations as they stand.
-- **0043 absorbs it and 0040 is marked superseded.** Requires amending
-  §13, which currently says nothing is.
-- **Split by layer:** 0040 owns the *storage types* (`SecureBuffer`,
-  `LockedKey`, `CurveKeypair`), 0043 owns the *module surface* that
-  exposes them. Closest to how the code is actually arranged.
+- **HEP-0040 is not stale.** §8.5.2 is a detailed normative contract with
+  a named root cause: confusing the raw and Z85 seckey encodings once
+  caused a silent SHM handshake failure, so the module exposes *two*
+  explicit accessors and there is deliberately no default.
+- **It matches the code exactly.** §8.5.2 specifies `with_seckey` (raw 32)
+  and `with_seckey_z85` (40 chars). Both are declared and defined. No
+  delta.
+- **So "0043 absorbs it and 0040 is superseded" is off the table** — you
+  would be superseding an accurate, more-specific contract with a
+  summary of itself.
+
+**Recommendation — split by layer.** It matches the file citations, the
+content division, and how the code is arranged:
+
+| Owner | Subject |
+|---|---|
+| **HEP-0040** | the storage layer — `LockedKey`, `SecureBuffer`, `Z85PublicKey`, the KeyStore API surface (§5.2), and the raw/Z85 representation contract (§8.5.2) |
+| **HEP-0043** | the module — singularity, the init gate, the facade shape, the named-key operations, and how the KeyStore sits inside it as a submodule |
+
+**One edit implements it, and it is the owner's call:** HEP-0043 §7
+currently calls itself *"the primary reference"* for the KeyStore API
+while also saying the surface was *"preserved from HEP-0040 §5.2"* and
+while §13 says nothing is superseded. Those three cannot all hold. §7
+should cite 0040 §5.2 as the contract rather than claim to replace it.
+
+**Already fixed — a duplication this review introduced.** The §1.0
+"raw inside, Z85 outside" paragraph restated §8.5.2's rule without
+attributing it, adding to the very overlap this conflict is about. It now
+names HEP-0040 §8.5.2 as the owner and points there for the part that
+matters — the two accessors, which the summary omitted.
 
 ### 1.2 `attach_channel.hpp` cites HEP-0043 for HEP-0044's subject
 

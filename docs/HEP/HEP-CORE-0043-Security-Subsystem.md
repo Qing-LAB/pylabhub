@@ -202,12 +202,18 @@ KeyStore
                      └── mlocked: never written to swap ──┘
 ```
 
-**Raw inside, Z85 outside — and the boundary is exactly here.**  Keys are
-stored as raw binary, never as text.  The 40-character Z85 form exists
-only where a key has to survive outside memory: in a vault file, on the
-wire, or printed for an operator.  Conversion happens at admission
-(`add_identity_from_z85`) and nowhere else, so no code downstream has to
-know or care which representation it holds.
+**Raw inside, Z85 outside.**  Keys are stored as raw binary, never as
+text.  The 40-character Z85 form exists only where a key has to survive
+outside memory: in a vault file, on the wire, or printed for an operator.
+
+**This rule is owned by HEP-CORE-0040 §8.5.2, not by this document.**  It
+is summarised here because a reader of §1.0 needs it to make sense of the
+layout above — but §8.5.2 is the contract, it is normative, and it is
+more specific than this paragraph: it names *two* accessors,
+`with_seckey` (raw 32 bytes, the default) and `with_seckey_z85` (40
+chars, only where a downstream API demands Z85), and it exists because
+confusing them once caused a silent handshake failure.  Go there before
+touching anything that moves a key across the boundary.
 
 ```
    vault file / wire / operator display        inside the module

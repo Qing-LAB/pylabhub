@@ -2,8 +2,18 @@
 /**
  * @file attach_channel.hpp
  * @brief Transport-agnostic frame-carrying channel used by the
- *        AttachProtocol challenge-response (HEP-CORE-0043 §6 +
- *        HEP-CORE-0041 §9 D4).
+ *        AttachProtocol challenge-response.
+ *
+ * @par Governing HEP
+ * **HEP-CORE-0044** (AttachProtocol) owns this seam.  HEP-CORE-0043
+ * §9.2 states it directly — "frames, state machine, `IAttachChannel`
+ * seam" are HEP-0044's — so the earlier citation of HEP-CORE-0043 §6
+ * as this file's owner was a stale pointer from before HEP-0044 was
+ * split out of §9.2.
+ *
+ * The other two references are real but are *consumer* references, not
+ * ownership: the protocol's crypto steps use HEP-CORE-0043 §6
+ * (`box_*_using`), and the SHM binding implements HEP-CORE-0041 §9 D4.
  *
  * @author  pyLabHub team
  * @date    2026-07-07 (Phase 3 — interface + SHM binding;
