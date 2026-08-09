@@ -129,7 +129,7 @@ not open: no nonce parameter on the symmetric jobs (generated inside, so
 it cannot be reused); process-lifetime keys; `add_` throws on duplicate
 while `replace_` is explicit; no new guard types.
 
-**Six steps, in order, each leaving the tree green** — see the plan.
+**Seven steps, in order, each leaving the tree green** — see the plan.
 
 **Step 6 is the one that decides whether any of it holds.** Steps 1-5
 move every caller off the fetch-a-key pattern; they do not remove the

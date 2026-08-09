@@ -292,7 +292,7 @@ encryption is broken and nothing says so.
 
 The right-hand version has none of them, because none of those decisions
 belongs to the caller.  That is what P3 buys, and the gap between these
-two blocks is the work listed in §2.5.6 — with the three holes in §2.5.5
+two blocks is the work listed in §2.5.6 — with the four holes in §2.5.5
 to settle first.
 
 ---
@@ -932,8 +932,35 @@ in the caller at all.
 
 ### 2.5.5 What this design does not cover — read before implementing
 
-Three holes, found by attacking the design rather than re-reading it.
+Four holes, found by attacking the design rather than re-reading it.
 None is hypothetical; each has a concrete path to a real secret.
+
+A note on P4 while reading these: **a vault object holds the secret in an
+ordinary heap array for its whole lifetime.**  `RoleVault::Impl` and
+`HubVault::Impl` keep fixed-size members and wipe them in the destructor
+— the good half — but the allocation is not locked, so it can be paged to
+disk while the object is alive.  Depositing into the key store is only a
+real fix if the secret never lands in a member on the way there.
+
+**0. The format is the cause, and it constrains the fix.**
+
+The vault payload is a JSON document and the private key is a value
+inside it.  A JSON string node holds a `std::string`, so the secret
+*must* become an unwiped heap string on the way in and on the way out.
+Tracing a freshly generated key through vault creation finds it in four
+such allocations before it reaches the one fixed-size member that is
+actually wiped.
+
+This is not a call-site problem and no amount of care at the call site
+removes it.  Either the secret stops being a JSON value — payload becomes
+non-secret metadata plus a raw key section — or it never reaches the
+caller at all: generate straight into the key store, and write the file
+by reading inside a scoped accessor directly into the output buffer, the
+same shape as arming a socket.  The second is preferable and is the one
+consistent with P3.
+
+Decide this before the file operations are written.  Every point below
+is downstream of it.
 
 **1. The output side is half-solved, and the unsolved half is the one
 the new API would enshrine.**

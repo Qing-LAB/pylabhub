@@ -45,6 +45,50 @@ job is to produce a key and hand it back therefore *cannot* use it. This
 is the clearest evidence that the problem is the shape of the API and not
 the diligence of the author.
 
+### 2.2a The create path is a chain of copies, and JSON is why
+
+**Understated in the first two drafts of this document, which said "a
+`std::string` copy". It is four.** Tracing `RoleVault::create` for a
+freshly generated private key:
+
+| # | Where it lands | Wiped? |
+|---|---|---|
+| 1 | `CurveKeypair::secret_z85` — the struct is two `std::string`s | no |
+| 2 | `const std::string sec_str = std::move(kp.secret_z85)` — moved, so the same allocation, but still an unwiped `std::string` | no |
+| 3 | `json payload = {…, {"secret_key", sec_str}}` — nlohmann copies it into a JSON string node | no |
+| 4 | `payload.dump()` — a third string, handed to `vault_write` | no |
+| 5 | `pImpl->secret_z85` — the fixed array | **yes**, in the destructor |
+
+Only the last one is handled. The other four are freed without wiping, so
+the bytes stay in released heap until something reuses that memory.
+
+**And this is the same problem as §7's write-side finding, seen from the
+other end.** Both come from one decision: **the vault payload is JSON, and
+a JSON string node holds a `std::string`.** As long as the private key has
+to become a value inside a JSON document, it must become an unwiped heap
+string on the way in and on the way out. No amount of care at the call
+site changes that — the format requires it.
+
+That reframes step 4. Making `save_encrypted_file` take a span is
+necessary but not sufficient; the caller still has to build the payload,
+and if building it means `json{{"secret_key", …}}.dump()`, the leak simply
+moves upstream of the new API.
+
+Two ways out, and this is a design decision, not an implementation detail:
+
+- **Keep the secret out of the JSON.** Payload becomes metadata (uid,
+  public key — none of it secret) plus a raw key section. The secret is
+  copied as bytes into locked storage and never becomes a string.
+- **Never let the secret reach the caller in the first place.** Create
+  goes through `keys().generate_and_add_identity(name)` — which already
+  exists and already returns only the public half — and the vault is
+  written by reading inside `with_seckey` straight into the output
+  buffer. Same shape as arming a socket. This removes copies 1-4 outright
+  and is the more consistent answer.
+
+The second is preferable and costs a restructure of `create`. Decide
+before step 4.
+
 ### 2.2 Private keys pass through `std::string`
 
 `hub_vault.cpp` and `role_vault.cpp` both do:
@@ -143,8 +187,18 @@ Each step leaves the tree green and is independently reviewable.
 | 2 | `secretbox_*_using` | the two `lookup_raw` spans in `admin_session.cpp` |
 | 3 | `add_key_from_password` + `replace_key_from_password` | — (prerequisite for 4) |
 | 4 | the three file operations; migrate `vault_crypto` | **the stack key (§2.1)** |
-| 5 | `load_identity_into` on **both** vault types; drop the secret accessors | **the couriers (§2.3)** and the `std::string` copies (§2.2) |
+| 5 | `load_identity_into` on **both** vault types; drop the secret accessors | **the couriers (§2.3)** |
+| 5b | restructure `create` onto `generate_and_add_identity` + `with_seckey`; delete the `secret_z85` members | **the four-copy chain (§2.2a)** and the `std::string` copies (§2.2) |
 | 6 | make the raw-key `secretbox_*` private; decide `lookup_raw` | **the ability to reintroduce any of it** |
+
+**Step 5b was missing from the first three drafts.** Step 5 removes the
+*accessor* — but the vault object still holds the secret in
+`Impl::secret_z85`, an ordinary heap array inside `unique_ptr<Impl>`. It
+is wiped on destruction, which is the good half, but it is not locked
+memory, so it can be paged to disk while the object is alive. Deposit-
+into-KeyStore is only a real fix if the secret never lands in a member on
+the way there. That means `open` decrypts and deposits directly from the
+`SecureBuffer`, and `create` never materialises a secret at all.
 
 Steps 1-2 are self-contained and prove the shape on a live consumer before
 the vault depends on it. Step 4 is the one with real risk — it touches the
@@ -262,9 +316,17 @@ a designer of key handling.
 
 ## 7. Open questions and risks
 
-**Three holes in the design itself are recorded in HEP-CORE-0043 §2.5.5.
+**Four holes in the design itself are recorded in HEP-CORE-0043 §2.5.5.
 Read that section before starting step 4.** Summarised:
 
+0. **The payload format is the cause and it constrains the fix.** The
+   vault payload is JSON and the private key is a value in it; a JSON
+   string node holds a `std::string`, so the secret must become unwiped
+   heap on the way in and out. §2.2a traces four such allocations during
+   vault creation. Either the secret stops being a JSON value, or it
+   never reaches the caller at all (generate into the key store, write
+   the file from inside a scoped accessor). **Every point below is
+   downstream of this one.**
 1. **The write side leaks and the new API would inherit it.** Reading a
    vault was already fixed — `vault_read_secure` decrypts into a
    `SecureBuffer` span, "no `std::string` materializes." Writing was not:
