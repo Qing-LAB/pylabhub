@@ -237,14 +237,35 @@ HubVault::load_identity_into(key_name)
 
 ## 5. Order of work
 
+> **Status 2026-08-09 (commit `512fe1d5`).** Steps 1-4 are shipped and the
+> §3.1 stack key — the defect that started this — is closed.  Steps 5-7
+> remain, and step 7 is still the one that decides whether any of it
+> holds: steps 1-6 move callers, they do not remove the ability.
+>
+> Two findings worth carrying, both from doing the work rather than
+> planning it:
+>
+> - **The vault now requires SMS to be `Initialized`**, because its key
+>   lives in the KeyStore.  59 tests were creating vaults with no
+>   lifecycle at all and began aborting on the `keys()` gate.  They were
+>   exercising a configuration production cannot have; they now run the
+>   module.  Any remaining step that moves a secret into the KeyStore
+>   should expect the same class of fallout and budget for it.
+> - **The at-rest format did not move.**  `secretbox_encrypt_using`
+>   emits exactly the layout `vault_crypto` used to build by hand, so
+>   the migration-fixture question raised under decision (a) never
+>   arose for this step.  It still will for step 6, which changes what
+>   is *inside* the payload.
+
+
 Seven steps, each leaving the tree green and independently reviewable.
 
 | Step | Change | Removes |
 |---|---|---|
 | 1 | `add_random_key` ✅ **DONE** | the mint-on-stack-then-`add_raw` pattern in the admin session seal |
-| 2 | `secretbox_*_using` | the two `lookup_raw` spans in `admin_session.cpp` |
-| 3 | `add_key_from_password` + `replace_key_from_password` | — (prerequisite for 4) |
-| 4 | the three file operations; migrate `vault_crypto` | **the stack key (§3.1)** |
+| 2 | `secretbox_*_using` ✅ **DONE** | the two `lookup_raw` spans in `admin_session.cpp` — **NOT yet migrated**; the operations exist and the vault uses them, but `admin_session` still hand-assembles the identical `[nonce ‖ MAC ‖ ct]` blob around the raw-key form.  Carried below. |
+| 3 | `add_key_from_password` + `replace_key_from_password` ✅ **DONE** | — (prerequisite for 4) |
+| 4 | migrate `vault_crypto` ✅ **DONE** | **the stack key (§3.1) — CLOSED.**  The file operations did NOT need to become new SMS methods: `vault_write` / `vault_read_secure` already were the file layer, so they took a `key_name` instead of a password and the key left the file entirely.  Fewer new methods than the plan assumed. |
 | 5 | re-express the vault tests off the secret accessors | — (prerequisite for 6) |
 | 6 | `load_identity_into` on both vaults; restructure `create` onto `generate_and_add_identity` + `with_seckey`; delete the `secret_z85` members and the secret accessors | **the couriers (§3.3)**, the four-copy chain (§3.2), the unlocked member (§3.4) |
 | 7 | make the raw-key `secretbox_*` private; decide `lookup_raw` | **the ability to reintroduce any of it** |

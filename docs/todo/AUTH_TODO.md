@@ -135,6 +135,35 @@ is built is the expensive way to find it.
 **Plan: `tech_draft/DRAFT_named_key_operations_2026-08.md`. Design:
 HEP-CORE-0043 §2.5. Task #137. Prerequisite for the file/dir vault below.**
 
+> **Steps 1-4 shipped 2026-08-09 (`512fe1d5`).** The vault half is done:
+> `add_random_key`, `secretbox_encrypt_using` / `secretbox_decrypt_using`,
+> `with_raw_key`, `add_key_from_password` / `replace_key_from_password`,
+> and `vault_crypto` migrated onto them. The stack key described in the
+> first bullet below is **closed** — the key is derived directly into
+> `sodium_malloc` memory and `vault_crypto` holds no key bytes at all.
+> `HubVault::save()` also lost its password and uid parameters, because
+> the key it opened with is still there under its name. At-rest format
+> unchanged, verified byte-for-byte.
+>
+> **Still open: steps 5, 6, 7.** 5 — re-express the ten test sites off
+> the secret accessors. 6 — `load_identity_into` on both vault types,
+> restructure `create`, delete the `secret_z85` members. 7 — make the
+> raw-key `secretbox_*` private and decide `lookup_raw`; **this is the
+> step that decides whether any of it holds**, since 1-6 move callers
+> without removing the ability.
+>
+> **Carried, found while doing step 2:** `admin_session.cpp` still
+> hand-assembles the identical `[nonce ‖ MAC ‖ ciphertext]` blob around
+> the raw-key form, and holds the last two production `lookup_raw`
+> spans. Migrating it is format-preserving and would leave `lookup_raw`
+> with no production callers, which is what makes step 7 cheap. Deferred
+> from `512fe1d5` deliberately to keep that commit to one concern.
+>
+> **Cost note for the remaining steps:** moving a secret into the
+> KeyStore makes its holder require SMS to be `Initialized`. That broke
+> 59 tests in step 4 — they were creating vaults with no lifecycle at
+> all. Budget for the same fallout in step 6.
+
 A review on 2026-08-08 found secret bytes held outside the security
 module in three places. They are one API gap with three symptoms, not
 three defects: the module can encrypt *for* you under a named key on the

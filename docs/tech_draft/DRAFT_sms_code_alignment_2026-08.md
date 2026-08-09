@@ -24,7 +24,7 @@ is not done until its row says so and names the evidence.
 | 5 | Spot-verify §1.3's remaining four mechanisms | ✅ **all present** | static local (`instance()`); CAS at `:265`; all four `= delete` at `:192-195`; `ModuleDef("SecureSubsystem")` + `add_dependency("…Logger")` at `:389`. |
 | 6 | Spot-verify §2.1 facade, §2.3 lifecycle, §3-§6 signatures | ✅ **doc accurate; one stale CODE comment fixed** | §2.1's "two categories" is right. The `.cpp` said "categories 2 + 3" over a block containing only `keys()` — stale from when Crypto was a second sub-container. Fixed in code, not in the HEP. |
 | 7 | Verify §11's platform rows against code | ⚠ **as far as a Linux box can** | Rows are consistent with the `#ifdef` structure and HEP-0041's phase status. **No non-Linux platform was exercised** — see the honest limit in §2b. |
-| 8 | Execute the named-key plan (seven steps of its own) | ⬜ blocked on 0a-7 | `DRAFT_named_key_operations_2026-08.md` |
+| 8 | Execute the named-key plan (seven steps of its own) | 🟡 **steps 1-4 shipped** (`512fe1d5`) | `DRAFT_named_key_operations_2026-08.md`.  The vault's stack key is closed: the key is derived straight into locked memory and cited by name, and `vault_crypto` holds no key bytes.  Steps 5-7 remain — test re-expression, `load_identity_into` + `create` restructure, and closing the raw-key doors. |
 | 9 | Re-run the whole §2 table and record what remains | ⬜ not started | — |
 
 Legend: ⬜ not started · ⏳ in progress · ✅ done · ❌ found wrong
