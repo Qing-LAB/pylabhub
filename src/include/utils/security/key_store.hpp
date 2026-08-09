@@ -295,11 +295,13 @@ class PYLABHUB_UTILS_EXPORT KeyStore
         std::function<void(std::string_view /*pubkey*/, std::string_view /*seckey*/)> use) const;
 
     /// Raw-secret access.  Live consumer: the admin-session seal key
-    /// (admin_session.cpp, HEP-CORE-0043 §7).  (The HEP-0038 script
-    /// `api.vault_load` binding is NOT implemented — deferred, #106;
-    /// when it lands, bindings MUST materialize the bytes into a
-    /// script-owned buffer, never pass the span to script code.)
-    /// Span lifetime is until `remove()` or KeyStore dtor.
+    /// (admin_session.cpp, HEP-CORE-0043 §7).  (A script-facing secret
+    /// store is NOT implemented and NOT designed — task #136; when it
+    /// lands, bindings MUST materialize the bytes into a script-owned
+    /// buffer, never pass the span to script code.)
+    /// Span lifetime is until `remove()` or KeyStore dtor — which is
+    /// exactly why handing spans out blocks key replacement; prefer a
+    /// `*_using(name, ...)` operation that keeps the bytes inside.
     /// Throws `std::out_of_range` if `name` is absent.
     [[nodiscard]] std::span<const std::byte> lookup_raw(std::string_view name) const;
 

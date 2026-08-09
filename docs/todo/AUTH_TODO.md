@@ -93,6 +93,48 @@ almost certainly re-deriving one of them.
 
 ## Open — security posture
 
+### 🔨 Named-key operations — stop callers carrying secrets around
+
+**Plan: `tech_draft/DRAFT_named_key_operations_2026-08.md`. Design:
+HEP-CORE-0043 §2.5. Task #137. Prerequisite for the file/dir vault below.**
+
+A review on 2026-08-08 found secret bytes held outside the security
+module in three places. They are one API gap with three symptoms, not
+three defects: the module can encrypt *for* you under a named key on the
+public-key side (`box_*_using`), but there is no symmetric equivalent —
+so every caller needing symmetric encryption must fetch the key first.
+
+- **The vault key is a plain stack array** (`vault_crypto.cpp`). Wiped
+  afterwards, but not page-locked, so the OS can write it to swap while
+  live. Also returned by value, and NRVO is not guaranteed, so a copy may
+  survive unwiped in the callee frame.
+  *Why it is written that way:* `SecureBuffer` has a deleted move
+  constructor, so it cannot be returned — the safe type could not express
+  "produce a key and hand it back." That is the API's fault, not the
+  author's, and it is the clearest argument for the fix.
+- **Private keys pass through `std::string`** in both vault create paths
+  and the hub save path. `std::string` does not wipe. This is the exact
+  pattern whose removal from the `Impl` members is commented in both
+  files — it survived in the functions either side.
+- **The two config loaders are couriers** — `vault.secret_key()` →
+  `string_view` → KeyStore, for no reason the vault could not do itself.
+
+**Already right, do not "fix":** socket arming already takes a name and
+never exposes a key; wiping discipline is good everywhere (the gap is
+locking, not wiping); `box_*_using` is the model to copy.
+
+**Fix:** nine operations defined in HEP-0043 §2.5 — three to admit a key,
+two symmetric jobs, three whole-file jobs, one vault deposit. Settled and
+not open: no nonce parameter on the symmetric jobs (generated inside, so
+it cannot be reused); process-lifetime keys; `add_` throws on duplicate
+while `replace_` is explicit; no new guard types.
+
+**Five steps, in order, each leaving the tree green** — see the plan. The
+verification is *absence*, not a green suite: these changes are invisible
+to behaviour, so a passing test proves nothing. Step 4 (the vault) needs
+a committed fixture vault to prove the at-rest format did not move; a
+round-trip inside one build passes even if both sides changed together.
+
 ### 🔨 CARRY FORWARD — design and finish the file/dir vault for user scripts
 
 **Owner-requested 2026-08-08 as a standing follow-up. Task #136.** This

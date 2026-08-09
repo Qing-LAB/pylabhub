@@ -47,6 +47,12 @@ historical R1-R8 reasoning trace.
 - **§2 Module surface** — the C++ class shape (`SecureSubsystem`),
   lifecycle registration, cross-platform layering.  This section
   is the SEC-Fold-2 refactor spec.
+- **§1.0 The contract in plain language** — the four promises, how the
+  pieces fit, what a stored key is, and a key's life from admission to
+  wipe.  **Start here.**
+- **§2.5 Named-key operations** — the surface a caller actually uses:
+  jobs identified by key *name*, never keys.  Includes what is shipped
+  and what is designed but unbuilt.
 - **§3-§7 Cryptographic primitives** — random, hash, KDF,
   symmetric AEAD, asymmetric box, and the `KeyStore` submodule.
 - **§8 Vault at rest** — an INDEX naming the owners (the directory
@@ -127,6 +133,131 @@ historical R1-R8 reasoning trace.
 ---
 
 ## 1. The contract
+
+### 1.0 In plain language — read this before the rest
+
+If you remember nothing else from this document, remember this:
+
+> **Secrets live in one place, and they do not come out.  Code asks for
+> a job to be done *by the name of a key*; it never receives the key.**
+
+Everything below is machinery serving that one sentence.
+
+**The four promises.** These are what "invariant" means here — code
+elsewhere is written assuming they hold, so breaking one silently breaks
+callers that never mentioned security:
+
+| # | Promise | What breaks if it stops being true |
+|---|---|---|
+| **P1** | One module owns libsodium. Nothing else calls it or includes its header. | Two crypto surfaces with different init assumptions. This already happened once and took down CI. |
+| **P2** | There is exactly one security module per process, brought up before anything uses it. | A second instance with an empty key store; or a key lookup against a store that does not exist yet. |
+| **P3** | Secret bytes do not leave the module. Callers name a key; the module does the work. | Copies of private keys in ordinary memory, which the OS can write to swap and a crash dump can capture. |
+| **P4** | A stored key sits in locked memory: not swappable, absent from core dumps, wiped when removed. | The key reaches disk without anyone doing anything wrong. |
+
+**How the pieces fit.** Three layers, and the boundary is the point:
+
+```mermaid
+flowchart TB
+    subgraph outside["Everything else — never sees a secret"]
+        vault["Vault files<br/>(save / load)"]
+        sockets["ZMQ sockets<br/>(arm with identity)"]
+        attach["Attach protocol<br/>(prove who we are)"]
+        admin["Admin console<br/>(seal session ids)"]
+    end
+
+    subgraph sms["SecureSubsystem — the only libsodium caller"]
+        ops["Operations<br/>encrypt · decrypt · hash · derive"]
+        ks[("KeyStore<br/>name → LockedKey")]
+    end
+
+    sodium["libsodium"]
+
+    vault -->|"key NAME"| ops
+    sockets -->|"key NAME"| ops
+    attach -->|"key NAME"| ops
+    admin -->|"key NAME"| ops
+    ops <-->|"bytes stay inside"| ks
+    ops --> sodium
+
+    style ks fill:#2d3748,color:#fff
+    style sms fill:#1a365d,color:#fff
+    style outside fill:#2c5282,color:#fff
+```
+
+The arrows into the module carry a **name**. No arrow carries key bytes
+outward. That is P3, drawn.
+
+**What a stored key is.** Each entry is a name pointing at one locked
+allocation. `sodium_malloc` gives it guard pages either side and a canary,
+so an overrun is caught rather than silently corrupting a neighbour, and
+the pages are locked so the OS cannot page them to disk:
+
+```
+KeyStore
+ ├── "hub_identity"        → LockedKey [ 40-byte pubkey ‖ 40-byte seckey ]
+ ├── "role_identity"       → LockedKey [ 40-byte pubkey ‖ 40-byte seckey ]
+ └── "admin.session.seal"  → LockedKey [ 32 raw bytes ]
+
+          guard page │ canary │ ...key bytes... │ canary │ guard page
+                     └── mlocked: never written to swap ──┘
+```
+
+Two kinds of entry: an **identity** (a keypair — the public half is
+freely readable, the secret half is not) and a **raw secret** (a symmetric
+key with no public half). Asking for the wrong kind throws rather than
+reinterpreting bytes.
+
+**A key's life, start to finish.** The important thing is that no arrow
+leaves the shaded region:
+
+```mermaid
+sequenceDiagram
+    participant App as Application code
+    participant SMS as SecureSubsystem
+    participant KS as KeyStore (locked memory)
+
+    Note over App,KS: Admission — the key gets in
+    App->>SMS: add a key under name "N"<br/>(mint / derive from password / load from vault)
+    SMS->>KS: write straight into a LockedKey
+    SMS-->>App: nothing secret returned
+
+    Note over App,KS: Use — many times, over the process lifetime
+    App->>SMS: do this job using key "N"
+    SMS->>KS: read in place
+    KS-->>SMS: bytes, inside the module only
+    SMS-->>App: result (ciphertext / plaintext / armed socket)
+
+    Note over App,KS: End
+    App->>SMS: remove "N", or the process exits
+    SMS->>KS: wipe the locked allocation
+```
+
+**The one honest exception.** libzmq's socket options take raw key bytes,
+so arming a CURVE socket has to hand the secret over. It is narrowed to
+the smallest possible window — read inside a callback and written directly
+into the socket option, never copied to a variable — but it is a genuine
+export, and this document does not pretend otherwise. See §2.2
+(`with_seckey`) and `curve_socket.hpp`.
+
+**A worked example.** Sealing an admin session id — the whole call, with
+no key in sight:
+
+```cpp
+// Once, at startup: mint the key into locked memory.
+secure().keys().add_random_key(kAdminSessionSealKeyName, 32);
+
+// Any time after: name the key, get the job done.
+std::vector<std::uint8_t> sealed(plaintext.size() + kOverhead);
+const auto n = secure().secretbox_encrypt_using(
+    kAdminSessionSealKeyName, plaintext, sealed);
+```
+
+Compare what the caller would need without P3: fetch the key, hold it in
+a buffer, pick a nonce that was never used with this key before, remember
+to wipe the buffer on every exit path including the ones that throw. Four
+chances to be wrong, all of them silent. The named-key form has none.
+
+---
 
 The three load-bearing statements about `SecureSubsystem`.  Every
 subsequent section — the API sketch (§2), primitives (§3-§7),
@@ -236,13 +367,17 @@ Mechanism, four layers deep:
    tests) documented in `secure_subsystem.cpp` "Gate policy"
    block.  Reaching a gated accessor before SMS is up remains
    a **programmer error** — the program aborts via `PLH_PANIC`.
-4. **Compile-time enforcement (post-SEC-Fold-2).**  Once all
-   consumer files migrate to the wrapper API, `<sodium.h>` is
-   included ONLY in `src/utils/security/*.cpp`.  Any file
-   elsewhere that adds `#include <sodium.h>` is a CI lint
-   violation.  Reaching libsodium without going through
-   `SecureSubsystem` becomes structurally impossible — and every
-   path through the wrapper goes through the panic gate.
+4. **Enforced by a test, not by convention.**  `<sodium.h>` is
+   included only inside a `security/` directory — six files, all
+   in the module.  `SecurityGuardrail_SodiumConfinedToModule`
+   fails the sweep if any file under `src/` outside that
+   directory includes it, in either the angle or the quoted
+   spelling.  It runs under the `guardrail` label as a setup
+   fixture, so it executes before any other test in the suite.
+   Scope is `src/` deliberately: a few L2 tests include the
+   header directly to build the malformed inputs the module is
+   designed to reject, and tests are not the production
+   boundary.  See §1.1 "Enforcement".
 
 Consequence: the 2026-07-04 CI failure class (sodium primitives
 called before `sodium_init`) cannot recur.  Even in Debug/pre-
@@ -298,8 +433,11 @@ deleted):
    §2.2).  Both ctors are private + friend `SecureSubsystem::Impl`
    — no external construction site is possible at compile time.
    Their lifetime is bound to SMS's — same singleton guarantee,
-   same bringup ordering.  Access via `secure().keys()` and
-   `secure().crypto()`.
+   same bringup ordering.  Access is `secure().keys()`.
+   *(An earlier revision also named `secure().crypto()`.  That
+   accessor and the `Crypto` scaffolding class behind it were
+   collapsed into `SecureSubsystem`'s own methods and no longer
+   exist — encryption verbs sit flat on the module.)*
 
 Standard construction site: `SecureSubsystem::GetLifecycleModule()`
 in the mods pack of `plh_hub_main` / `plh_role_main`, immediately
@@ -648,6 +786,133 @@ retain per-OS logic:
 Sodium is the SAME library across all four; wrapper API is
 identical.  Only the startup hardening + wire-protocol backends
 (§9) differ per OS.
+
+---
+
+## 2.5 Named-key operations — the surface callers actually use
+
+Sections §3-§7 list primitives.  This section lists **jobs**, which is
+what a caller comes here wanting done.  The distinction matters: a
+primitive takes a key, a job takes a key *name*.  P3 says callers get
+jobs, not primitives.
+
+### 2.5.1 Why the surface is shaped this way
+
+A caller that must fetch a key in order to use it becomes a courier: it
+holds secret bytes, in memory it chose, for a duration it controls, and
+it must remember to wipe them on every exit path.  Every promise in §1.0
+then depends on that caller getting it right.
+
+Making the *operation* the unit, rather than the key, removes the courier.
+The caller says what it wants done and which key to do it with; nothing
+secret crosses the boundary in either direction.
+
+The ZMQ socket case is the worked proof — `arm_curve_server(sock, name)`
+takes a name and returns an armed socket, and no caller of it has ever
+held a key.  The rest of this section extends that shape to the
+operations that still lack it.
+
+### 2.5.2 The operations
+
+**Getting a key in.**  None of these return key material.
+
+| Operation | What it does |
+|---|---|
+| `keys().generate_and_add_identity(name)` | Mint a fresh keypair inside the module.  Returns the **public** half only. |
+| `keys().add_identity_from_z85(name, pub, sec)` | Admit a keypair that already exists (e.g. read from a vault file). |
+| `keys().add_random_key(name, byte_count)` | Mint N random bytes straight into locked memory.  For symmetric keys with no public half. |
+| `keys().add_key_from_password(name, password, scope)` | Turn a password into a key (Argon2id) and keep it.  `scope` is what makes the same password yield a different key per vault — today, the role or hub uid.  Without it, one leaked password opens every vault on the machine. |
+| `keys().replace_key_from_password(name, password, scope)` | Same, but for a name that already exists.  Separate from `add_` on purpose: `add_` throws on a duplicate, so an identity key cannot be overwritten by accident.  Replacement has to say so. |
+| `keys().remove(name)` | Forget a key and wipe its memory. |
+
+**Doing a job with a key.**
+
+| Operation | What it does |
+|---|---|
+| `secretbox_encrypt_using(name, plaintext, out)` | Encrypt under a symmetric key.  **The nonce is generated inside and written into the output** — see §2.5.3. |
+| `secretbox_decrypt_using(name, sealed, out)` | Reverse.  Returns 0 if the data was tampered with or the key is wrong; callers must check. |
+| `box_encrypt_using(name, peer_pubkey, nonce, plaintext, out)` | Encrypt to a specific peer.  Keeps an explicit nonce — the attach protocol owns its frame layout and needs to control it. |
+| `box_decrypt_using(name, peer_pubkey, nonce, ciphertext, out)` | Reverse. |
+| `arm_curve_server(sock, name)` / `arm_curve_client(sock, name, peer)` | Configure a socket with our identity. |
+
+**Whole-file jobs.**  A file is a job, not a primitive, and treating it
+as one is what keeps the key out of the caller:
+
+| Operation | What it does |
+|---|---|
+| `save_encrypted_file(path, payload, key_name)` | Encrypt and write, at the right permissions, without following symlinks, replacing atomically. |
+| `load_encrypted_file(path, key_name)` | Read and decrypt. |
+| `open_file_with_password(path, password, scope, key_name)` | Derive the key, decrypt the file, and **on success keep the key** under `key_name`.  Later saves need no password. |
+
+That last one is deliberately one call and not two.  **A successful
+decrypt is the password check** — the authentication tag either verifies
+or it does not.  Splitting it into "check the password" and "derive the
+key" would invite deriving twice, and would invite someone to treat a
+check that passed a moment ago as still true.
+
+### 2.5.3 Why the symmetric operations do not take a nonce
+
+A nonce must never repeat for a given key.  Repeat one with XSalsa20 and
+the encryption fails catastrophically — not degrades, fails.
+
+Callers have no reason to choose one.  The sealed output already carries
+its nonce (`[nonce ‖ tag ‖ ciphertext]`), so the value is an internal
+detail of the format.  Generating it inside means **a caller cannot reuse
+a nonce, because a caller cannot supply one.**
+
+`box_*_using` keeps its explicit nonce and that is not an inconsistency:
+there the bytes are a protocol frame whose layout another implementation
+must agree with, so the protocol owns the nonce.  Here the bytes are an
+opaque blob only we ever open.
+
+### 2.5.4 How a caller composes these
+
+Reading a vault at startup and writing it later, end to end:
+
+```mermaid
+sequenceDiagram
+    participant R as Role startup
+    participant S as SecureSubsystem
+    participant D as Disk
+
+    R->>S: open_file_with_password(path, pw, uid, "role.vault.key")
+    S->>D: read bytes
+    S->>S: derive key (Argon2id) into locked memory
+    S->>S: decrypt — tag verifies, so the password was right
+    S-->>R: payload  (key retained under "role.vault.key")
+    Note over R,S: password is now gone; the key stays for the process
+
+    R->>S: save_encrypted_file(path, new_payload, "role.vault.key")
+    S->>S: encrypt using the retained key, fresh nonce
+    S->>D: atomic write, 0600
+    S-->>R: ok
+```
+
+The password appears exactly once, at the top.  The key appears nowhere
+in the caller at all.
+
+### 2.5.5 Status
+
+Shipped: `generate_and_add_identity`, `add_identity_from_z85`,
+`box_encrypt_using`, `box_decrypt_using`, `remove`, and the socket-arming
+helpers.
+
+Designed here, not yet built: `add_random_key`,
+`add_key_from_password`, `replace_key_from_password`,
+`secretbox_encrypt_using`, `secretbox_decrypt_using`,
+`save_encrypted_file`, `load_encrypted_file`,
+`open_file_with_password`.
+
+Until they exist, the callers that need them fetch keys instead — which
+is why `vault_crypto` derives a key onto the stack and the two config
+loaders pass a secret through a `string_view`.  Those are consequences of
+the gap, not independent defects.
+
+**A scope-bound key handle** (`ScopedKey` — removes its key on
+destruction) is a natural companion for keys that must not outlive a
+scope.  It is not needed for anything described above, all of which is
+process-lifetime.  The real customer is the ephemeral capability grant,
+and it should be designed there rather than speculatively here.
 
 ---
 
