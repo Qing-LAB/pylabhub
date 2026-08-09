@@ -194,13 +194,30 @@ the pages are locked so the OS cannot page them to disk:
 
 ```
 KeyStore
- ├── "hub_identity"        → LockedKey [ 40-byte pubkey ‖ 40-byte seckey ]
- ├── "role_identity"       → LockedKey [ 40-byte pubkey ‖ 40-byte seckey ]
- └── "admin.session.seal"  → LockedKey [ 32 raw bytes ]
+ ├── "hub_identity"        → LockedKey [ pub_raw(32) ‖ sec_raw(32) ]   64 bytes
+ ├── "role_identity"       → LockedKey [ pub_raw(32) ‖ sec_raw(32) ]   64 bytes
+ └── "admin.session.seal"  → LockedKey [ raw(32) ]                     32 bytes
 
           guard page │ canary │ ...key bytes... │ canary │ guard page
                      └── mlocked: never written to swap ──┘
 ```
+
+**Raw inside, Z85 outside — and the boundary is exactly here.**  Keys are
+stored as raw binary, never as text.  The 40-character Z85 form exists
+only where a key has to survive outside memory: in a vault file, on the
+wire, or printed for an operator.  Conversion happens at admission
+(`add_identity_from_z85`) and nowhere else, so no code downstream has to
+know or care which representation it holds.
+
+```
+   vault file / wire / operator display        inside the module
+   ─────────────────────────────────────       ─────────────────
+   40-char Z85 text            ──admit──►      32 raw bytes
+```
+
+This is a hard rule, not a convention: a mixed codebase where some paths
+carry Z85 and some carry raw invites a length check that passes on the
+wrong thing.
 
 Two kinds of entry: an **identity** (a keypair — the public half is
 freely readable, the secret half is not) and a **raw secret** (a symmetric
@@ -239,23 +256,43 @@ into the socket option, never copied to a variable — but it is a genuine
 export, and this document does not pretend otherwise. See §2.2
 (`with_seckey`) and `curve_socket.hpp`.
 
-**A worked example.** Sealing an admin session id — the whole call, with
-no key in sight:
+**A worked example, showing where P3 is not yet reached.**  Sealing an
+admin session id.  This is the honest comparison — the left is what the
+code does today, the right is what §2.5 designs and has **not yet built**:
 
 ```cpp
-// Once, at startup: mint the key into locked memory.
-secure().keys().add_random_key(kAdminSessionSealKeyName, 32);
+// TODAY — the caller fetches the key and drives the primitive itself.
+auto keyspan = secure().keys().lookup_raw(kAdminSessionSealKeyName);
+if (keyspan.size() != 32) { /* handle */ }
+std::array<std::uint8_t, 24> nonce{};
+secure().random_bytes(nonce);                       // must not ever repeat
+std::vector<std::uint8_t> ct(plaintext.size() + 16);
+const auto n = secure().secretbox_encrypt(
+    ct.data(), ct.size(), plaintext.data(), plaintext.size(),
+    nonce, std::span<const std::uint8_t, 32>(
+        reinterpret_cast<const std::uint8_t *>(keyspan.data()), 32));
+// ...then the caller assembles [nonce ‖ ct] itself.
+```
 
-// Any time after: name the key, get the job done.
-std::vector<std::uint8_t> sealed(plaintext.size() + kOverhead);
+```cpp
+// DESIGNED (§2.5) — not implemented yet.  The caller names a key.
+std::vector<std::uint8_t> sealed(plaintext.size() + 40);  // nonce 24 + tag 16
 const auto n = secure().secretbox_encrypt_using(
     kAdminSessionSealKeyName, plaintext, sealed);
 ```
 
-Compare what the caller would need without P3: fetch the key, hold it in
-a buffer, pick a nonce that was never used with this key before, remember
-to wipe the buffer on every exit path including the ones that throw. Four
-chances to be wrong, all of them silent. The named-key form has none.
+Count what the left-hand version asks of every caller: hold a span into
+key memory for the duration; check the key length yourself; produce a
+nonce that has never been used with this key; get the reinterpret-cast
+right; assemble the output framing consistently with whoever will read
+it.  Five chances to be wrong, and **every one of them fails silently** —
+wrong-length key, reused nonce and mismatched framing all produce bytes
+that look fine until something cannot be decrypted, or worse, until the
+encryption is broken and nothing says so.
+
+The right-hand version has none of them, because none of those decisions
+belongs to the caller.  That is what P3 buys, and the gap between these
+two blocks is the work in §2.5.5.
 
 ---
 
@@ -824,6 +861,7 @@ operations that still lack it.
 | `keys().add_key_from_password(name, password, scope)` | Turn a password into a key (Argon2id) and keep it.  `scope` is what makes the same password yield a different key per vault — today, the role or hub uid.  Without it, one leaked password opens every vault on the machine. |
 | `keys().replace_key_from_password(name, password, scope)` | Same, but for a name that already exists.  Separate from `add_` on purpose: `add_` throws on a duplicate, so an identity key cannot be overwritten by accident.  Replacement has to say so. |
 | `keys().remove(name)` | Forget a key and wipe its memory. |
+| `RoleVault::load_identity_into(name)` / `HubVault::load_identity_into(name)` | Open the vault file and deposit the identity into the key store directly.  **This method is on the vault, not on this module** — it is listed here because it exists to satisfy P3.  Without it, the caller reads `secret_key()` and forwards it, which makes the caller a courier for no reason.  When it lands, `secret_key()` leaves the public surface. |
 
 **Doing a job with a key.**
 
@@ -833,7 +871,7 @@ operations that still lack it.
 | `secretbox_decrypt_using(name, sealed, out)` | Reverse.  Returns 0 if the data was tampered with or the key is wrong; callers must check. |
 | `box_encrypt_using(name, peer_pubkey, nonce, plaintext, out)` | Encrypt to a specific peer.  Keeps an explicit nonce — the attach protocol owns its frame layout and needs to control it. |
 | `box_decrypt_using(name, peer_pubkey, nonce, ciphertext, out)` | Reverse. |
-| `arm_curve_server(sock, name)` / `arm_curve_client(sock, name, peer)` | Configure a socket with our identity. |
+| `arm_curve_server(sock, name)` / `arm_curve_client(sock, name, peer)` | Configure a socket with our identity.  Free functions in `curve_socket.hpp`, not methods on this module — but the same shape, and the proof it works.  These are where the §1.0 export exception lives. |
 
 **Whole-file jobs.**  A file is a job, not a primitive, and treating it
 as one is what keeps the key out of the caller:
@@ -897,11 +935,12 @@ Shipped: `generate_and_add_identity`, `add_identity_from_z85`,
 `box_encrypt_using`, `box_decrypt_using`, `remove`, and the socket-arming
 helpers.
 
-Designed here, not yet built: `add_random_key`,
+Designed here, not yet built — **nine**: `add_random_key`,
 `add_key_from_password`, `replace_key_from_password`,
 `secretbox_encrypt_using`, `secretbox_decrypt_using`,
 `save_encrypted_file`, `load_encrypted_file`,
-`open_file_with_password`.
+`open_file_with_password`, and `load_identity_into` on the two vault
+types.
 
 Until they exist, the callers that need them fetch keys instead — which
 is why `vault_crypto` derives a key onto the stack and the two config

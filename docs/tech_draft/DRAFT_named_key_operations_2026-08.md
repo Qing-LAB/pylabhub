@@ -109,6 +109,7 @@ load_encrypted_file(path, key_name)
 open_file_with_password(path, password, scope, key_name)
 
 RoleVault::load_identity_into(key_name)
+HubVault::load_identity_into(key_name)
 ```
 
 **Decisions already taken, not open for re-litigation:**
@@ -142,11 +143,42 @@ Each step leaves the tree green and is independently reviewable.
 | 2 | `secretbox_*_using` | the two `lookup_raw` spans in `admin_session.cpp` |
 | 3 | `add_key_from_password` + `replace_key_from_password` | — (prerequisite for 4) |
 | 4 | the three file operations; migrate `vault_crypto` | **the stack key (§2.1)** |
-| 5 | `RoleVault::load_identity_into`; drop `secret_key()` from the public surface | **the couriers (§2.3)** and the `std::string` copies (§2.2) |
+| 5 | `load_identity_into` on **both** vault types; drop the secret accessors | **the couriers (§2.3)** and the `std::string` copies (§2.2) |
 
 Steps 1-2 are self-contained and prove the shape on a live consumer before
 the vault depends on it. Step 4 is the one with real risk — it touches the
 at-rest format's read and write paths.
+
+**Step 5 is bigger than one line and needs deciding before it starts.**
+Both vault types need the method — `role_config.cpp` uses
+`secret_key()` and `hub_config.cpp` uses `broker_curve_secret_key()`, so
+naming only `RoleVault` would leave the hub courier in place.
+
+More importantly, **ten test sites depend on those two accessors**, across
+`test_role_vault.cpp` and `test_hub_vault.cpp`, and they are not lazy
+tests:
+
+| What the test proves | Why it currently needs the secret |
+|---|---|
+| The vault file is genuinely encrypted | searches the raw bytes for the secret and expects **not found** |
+| Create and open yield the same keypair | compares the secret across two objects |
+| The keypair survives a reopen | stores the secret, reopens, compares |
+
+Removing the accessor removes the ability to write the first one as
+currently framed. The resolution is not to keep a test-only accessor —
+that is a production surface existing for tests, which this project
+rejects. It is to re-express each assertion:
+
+- **Encrypted-at-rest:** search the raw bytes for the **public** key
+  instead. If the payload were plaintext the pubkey would appear too, and
+  the pubkey is not secret. Same proof, no secret needed.
+- **Round-trip and persistence:** call `load_identity_into(name)` and
+  compare `keys().pubkey(name)`. This is a *better* test than the current
+  one — it exercises the production deposit path rather than an accessor
+  that would then exist only for tests.
+
+Do this re-expression as its own commit **before** deleting the accessors,
+so the deletion is mechanical and the test change is reviewable on its own.
 
 ---
 
@@ -166,6 +198,22 @@ about whether a secret stopped being copied.
 - **Whole arc:** the existing sodium-boundary guardrail keeps holding, and
   a new guardrail could assert that `secret_key()` has no callers once step
   5 lands.
+
+**New tests each step must bring.** The absence checks above prove the old
+pattern is gone; they say nothing about whether the new methods are
+correct. Each step adds L2 coverage for what it introduces:
+
+| Step | What must be pinned |
+|---|---|
+| 1 | A minted key is present, is the requested length, and the same name twice throws. |
+| 2 | Encrypt-then-decrypt round-trips; a tampered byte fails to open; **two encryptions of the same plaintext under the same key differ** — that is the nonce actually being fresh, and it is the assertion that would catch a nonce bug. |
+| 3 | Same password and scope give the same key; **the same password with a different scope gives a different one** — that is the property protecting one vault from another's password. `add_` throws on an existing name, `replace_` succeeds and the new key is the one used afterwards. |
+| 4 | Save-then-load round-trips. Wrong password fails to open. File permissions are what §8's owners require. Plus the fixture-vault compatibility check above. |
+| 5 | After `load_identity_into`, the store holds the expected public key; the vault types no longer expose a secret accessor. |
+
+Derive these from what the design promises, not from what the new code
+happens to do — a test written by reading the implementation passes
+whatever the implementation does.
 
 ---
 
