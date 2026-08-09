@@ -93,6 +93,43 @@ almost certainly re-deriving one of them.
 
 ## Open — security posture
 
+### 🔨 Align the security module's code to HEP-CORE-0043
+
+**Owner ruling 2026-08-09: HEP-CORE-0043 is the source of truth for this
+module.** Plan: `tech_draft/DRAFT_sms_code_alignment_2026-08.md`. Task
+**#138**. Umbrella over the named-key work below.
+
+**Scope is a quarter of what it looks like.** `src/*/security/` holds 28
+files and ~10,200 lines, but the directory is a **location, not an
+ownership boundary** — six HEPs own code that lives there, per each
+file's own header citation. HEP-0043 governs `secure_subsystem` and
+`key_store`, about 2,100 lines. `zap_router` answers to HEP-0036,
+`attach_protocol` to HEP-0044, five files to HEP-0035. Aligning those to
+HEP-0043 would be a category error.
+
+**Two ownership conflicts must be settled first** — both doc-vs-doc, both
+cheap, and nothing else is well-defined until they are:
+
+- **HEP-0040 and HEP-0043 both claim key memory.** `secure_buffer` and
+  `curve_keypair` cite 0040, whose status is "impl in flight" and which
+  does not say superseded. HEP-0043 §7 calls itself "the primary
+  reference" for that same surface, while §13 says nothing is superseded
+  by 0043 — foreclosing the resolution. Two live owners for one subject,
+  inside the document that warns against exactly that.
+- **`attach_channel.hpp` cites 0043 for 0044's subject** — stale from
+  before HEP-0044 was split out. Verify and repoint.
+
+**Three sections were never audited against code:** §1.5 rotation and
+lifetime, §1.6 cross-platform layering, §2.4 cross-platform stubs. Not in
+the planning pass, and not before it as far as the record shows. That is
+where unknown deltas most likely are; §1.5 is the largest.
+
+**Order:** settle ownership → audit the three unaudited sections →
+spot-verify the shipped-marked ones → then the named-key work → re-run
+the table. The two audit steps are read-only and come first on purpose:
+they are cheap, and finding a conflicting delta after the expensive half
+is built is the expensive way to find it.
+
 ### 🔨 Named-key operations — stop callers carrying secrets around
 
 **Plan: `tech_draft/DRAFT_named_key_operations_2026-08.md`. Design:
