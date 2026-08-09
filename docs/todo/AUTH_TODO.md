@@ -131,10 +131,21 @@ while `replace_` is explicit; no new guard types.
 
 **Seven steps, in order, each leaving the tree green** — see the plan.
 
-**Step 6 is the one that decides whether any of it holds.** Steps 1-5
+**Two things gate the work — settle them before any code.** (a) The
+payload format: the private key is a value in a JSON document, and a JSON
+string node is a `std::string`, so the secret *must* become unwiped heap
+going in and out. Either it stops being a JSON value (**which changes the
+at-rest format**) or it never reaches the caller at all. (b) The strategy
+is find-every-site, and five review passes each found one more — so
+prefer the steps that make a whole *class* of copy impossible over those
+fixing known sites one at a time. `mlockall` would be the completeness-
+proof backstop and is unusable here: `MCL_FUTURE` would lock the SHM data
+blocks too.
+
+**Step 7 is the one that decides whether any of it holds.** Steps 1-6
 move every caller off the fetch-a-key pattern; they do not remove the
 *ability*. The raw-key `secretbox_encrypt` / `secretbox_decrypt` stay
-public unless step 6 makes them private, and then the next person writes
+public unless step 7 makes them private, and then the next person writes
 a new courier with the API inviting them to. The asymmetric side is the
 proof: it exposes **no** raw-key `box_encrypt`, only `box_*_using`, which
 is exactly why it never grew this problem. `lookup_raw` is the harder
