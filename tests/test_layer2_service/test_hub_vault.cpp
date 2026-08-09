@@ -15,6 +15,9 @@
 #include "utils/security/key_file_acl.hpp"
 #include "utils/uuid_utils.hpp"
 
+#include "utils/logger.hpp"
+#include "utils/security/secure_subsystem.hpp"
+#include "binary_lifecycle.h"
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
@@ -99,6 +102,15 @@ bool is_valid_hex_token(std::string_view s)
 // ============================================================================
 // Fixture
 // ============================================================================
+
+// Pattern 1+ (BinaryLifecycleEnvironment) — the vault deposits its
+// decryption key in the process KeyStore, so `SecureSubsystem` must be
+// up before any HubVault call.  This is not a test accommodation: it is
+// what production does.  Before the key moved into locked memory the
+// vault only used ungated primitives and these tests ran with no
+// lifecycle at all, exercising a configuration production never has.
+PLH_BINARY_LIFECYCLE_MODULES(pylabhub::utils::Logger::GetLifecycleModule(),
+                             pylabhub::utils::security::SecureSubsystem::GetLifecycleModule())
 
 class HubVaultTest : public ::testing::Test
 {
@@ -430,7 +442,7 @@ TEST_F(HubVaultTest, KnownRoles_SurvivesSaveAndReopen)
     HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
     const nlohmann::json roster = sample_roster();
     v.set_known_roles(roster);
-    v.save(vault_path_, hub_uid_, kPassword);
+    v.save(vault_path_);
 
     // Simulate the hub starting in a new process against the saved vault.
     HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword);
@@ -450,7 +462,7 @@ TEST_F(HubVaultTest, Save_PreservesKeypairAndAdminToken)
     const std::string expected_token{v.admin_token()};
 
     v.set_known_roles(sample_roster());
-    v.save(vault_path_, hub_uid_, kPassword);
+    v.save(vault_path_);
 
     HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword);
     EXPECT_EQ(reopened.broker_curve_public_key(), expected_pubkey)
@@ -469,7 +481,7 @@ TEST_F(HubVaultTest, KnownRoles_IsStoredInsideTheEncryptedPayload)
     // readable in the vault file, and no plaintext sidecar may appear.
     HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
     v.set_known_roles(sample_roster());
-    v.save(vault_path_, hub_uid_, kPassword);
+    v.save(vault_path_);
 
     std::ifstream ifs(vault_path_, std::ios::binary);
     const std::string raw_bytes((std::istreambuf_iterator<char>(ifs)),

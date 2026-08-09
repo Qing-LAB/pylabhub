@@ -35,9 +35,11 @@
  *     - **1b. Hash + KDF** — `compute_blake2b`, `verify_blake2b`,
  *       `pwhash_argon2id`.
  *     - **1c. Encryption / decryption** — `secretbox_encrypt`,
- *       `secretbox_decrypt`, `box_encrypt_using`, `box_decrypt_using`
- *       (all shipped).  Future: `aead_encrypt/_decrypt`,
- *       `sealed_box_*`.
+ *       `secretbox_decrypt`, `secretbox_encrypt_using`,
+ *       `secretbox_decrypt_using`, `box_encrypt_using`,
+ *       `box_decrypt_using` (all shipped).  The `_using` forms name
+ *       their key instead of taking it; prefer them.  Future:
+ *       `aead_encrypt/_decrypt`, `sealed_box_*`.
  *   Category 1 has NO instance state — every method is stateless.
  *
  * - **Category 2 — Key management.**  Nested sub-container
@@ -90,9 +92,10 @@
  *   `compute_blake2b`, `verify_blake2b`, `derive_pwhash_salt`,
  *   `pwhash_argon2id`, `secretbox_encrypt`, `secretbox_decrypt`).
  *
- * Note: `box_encrypt_using` / `box_decrypt_using` reach through
- * `keys()` internally to resolve the seckey by name — they inherit
- * the `keys()` gate transitively.  Callers get the PANIC if they
+ * Note: the four `*_using` methods (`secretbox_encrypt_using`,
+ * `secretbox_decrypt_using`, `box_encrypt_using`, `box_decrypt_using`)
+ * reach through `keys()` internally to resolve the key by name — they
+ * inherit the `keys()` gate transitively.  Callers get the PANIC if they
  * invoke these methods without SMS being up.
  *
  * See `secure_subsystem.cpp` "Gate policy" block for the full
@@ -316,10 +319,11 @@ class PYLABHUB_UTILS_EXPORT SecureSubsystem
     /// length participates in the algorithm's initial state per RFC
     /// 7693 §3.1).
     ///
-    /// Deterministic: same `domain` produces the same salt.  Used by
-    /// `vault_crypto.cpp` so `vault_derive_key(password, uid)` can
-    /// reproduce the derived key without persisting the salt
-    /// separately in the vault file.
+    /// Deterministic: same `domain` produces the same salt.  That is
+    /// what lets a vault be reopened without storing its salt in the
+    /// file: the uid reproduces it.  The live caller is
+    /// `KeyStore::add_key_from_password`, which hashes the caller's
+    /// `scope` into the salt.
     ///
     /// @param salt_out  16-byte output buffer.  Must be non-null.
     /// @param domain    Non-secret domain separator (typically a uid).
@@ -407,9 +411,13 @@ class PYLABHUB_UTILS_EXPORT SecureSubsystem
     /// unsafe `const std::uint8_t *nonce, const std::uint8_t *key`
     /// signature that would silently read past a shorter buffer).
     ///
-    /// Use case: symmetric file-at-rest encryption where the key is
-    /// derived from a password (vault_crypto.cpp).  Both parties are
-    /// the same person / process — no pubkey infrastructure needed.
+    /// **Prefer `secretbox_encrypt_using` below.**  This form makes the
+    /// caller hold the key, which is the courier problem HEP-CORE-0043
+    /// §2.5.1 exists to remove; it also makes the caller pick a nonce,
+    /// and a repeated nonce breaks XSalsa20 catastrophically.  The
+    /// vault used to be the caller here and no longer is.  Retained for
+    /// callers that must control the nonce because a peer parses the
+    /// frame — the same reason `box_*_using` keeps its explicit nonce.
     [[nodiscard]] std::size_t secretbox_encrypt(std::uint8_t *out, std::size_t out_max_len,
                                                 const std::uint8_t *plaintext,
                                                 std::size_t plaintext_len,
@@ -430,6 +438,51 @@ class PYLABHUB_UTILS_EXPORT SecureSubsystem
                                                 std::size_t ciphertext_len,
                                                 std::span<const std::uint8_t, 24> nonce,
                                                 std::span<const std::uint8_t, 32> key);
+
+    /// Encrypt `plaintext` under the **named** symmetric key, writing
+    /// a self-contained sealed blob to `out`.
+    ///
+    /// This is the symmetric twin of `box_encrypt_using`, and the
+    /// reason to prefer it over `secretbox_encrypt` above: the key is
+    /// named, not passed, so the caller never holds key bytes.
+    ///
+    /// **The nonce is generated inside and written to the front of
+    /// `out`** — `[nonce(24) ‖ MAC(16) ‖ ciphertext]`.  Callers do not
+    /// supply one, which is the point: a nonce must never repeat for a
+    /// given key, and a caller that cannot supply one cannot repeat
+    /// one.  `box_*_using` keeps its explicit nonce because there the
+    /// bytes are a protocol frame another implementation must parse;
+    /// here they are an opaque blob only we ever open.
+    ///
+    /// `out` needs `plaintext.size() + kSealedOverheadBytes` bytes.
+    /// Returns bytes written, or 0 on failure (short `out`, missing
+    /// key, or a key that is not `kSecretboxKeyBytes` long).
+    ///
+    /// Throws `std::out_of_range` if `key_name` is absent — a missing
+    /// key is a wiring error, distinct from the 0 return that means
+    /// "the crypto did not work".
+    [[nodiscard]] std::size_t secretbox_encrypt_using(std::string_view key_name,
+                                                      std::span<const std::uint8_t> plaintext,
+                                                      std::span<std::uint8_t> out);
+
+    /// Reverse of `secretbox_encrypt_using`.  `sealed` is the whole
+    /// blob including its leading nonce.  Writes
+    /// `sealed.size() - kSealedOverheadBytes` bytes to `out`.
+    ///
+    /// Returns 0 if the MAC does not verify — meaning the data was
+    /// tampered with, or the key is wrong.  **Callers must check.**
+    /// For a password-derived key this return IS the password check:
+    /// the tag verifies or it does not.
+    ///
+    /// Throws `std::out_of_range` if `key_name` is absent.
+    [[nodiscard]] std::size_t secretbox_decrypt_using(std::string_view key_name,
+                                                      std::span<const std::uint8_t> sealed,
+                                                      std::span<std::uint8_t> out);
+
+    /// Bytes that `secretbox_encrypt_using` adds to the plaintext
+    /// length: the leading nonce plus the MAC.  Sizing constant for
+    /// callers allocating an output buffer.
+    static constexpr std::size_t kSealedOverheadBytes = 24 + 16;
 
     /// `crypto_secretbox_KEYBYTES` (32) — the exact secretbox key
     /// size.  Exposed so callers can size their key buffers without

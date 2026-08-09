@@ -158,8 +158,24 @@ inline std::string keygen_role_and_read_pubkey(const fs::path &role_dir,
                                      << kg.get_stderr();
     const fs::path vault_path = role_dir / "vault" / (uid + ".vault");
     ExpectVaultFileSecured(vault_path);
-    auto vault = pylabhub::utils::RoleVault::open(vault_path, uid, role_password);
-    return std::string(vault.public_key());
+
+    // Read the pubkey from `--keygen` stdout, NOT by opening the vault.
+    // HEP-CORE-0035 §4.8.4: that printed line is the operator's only
+    // source for a role pubkey (roles publish no `.pub` sidecar and
+    // there is no `--print-pubkey`), so parsing it is what makes this
+    // harness follow the documented bootstrap.  Opening the vault here
+    // also reached past the interface into encrypted state the operator
+    // never touches — and now that the vault deposits its key in the
+    // process KeyStore, it would require this observer-only parent to
+    // stand up the security module for no reason.
+    static const std::regex kPubkeyLine(R"(public_key\s*:\s*([!-~]{40}))");
+    const std::string out = kg.get_stdout();
+    std::smatch m;
+    EXPECT_TRUE(std::regex_search(out, m, kPubkeyLine))
+        << "no `public_key : <z85>` line in `plh_role --keygen` stdout:\n"
+        << out;
+    (void)role_password; // the vault is no longer opened here
+    return m.empty() ? std::string{} : m[1].str();
 }
 
 /// Append a role to `<hub_dir>/vault/known_roles.json` via

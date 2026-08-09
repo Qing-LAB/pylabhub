@@ -46,6 +46,12 @@ namespace pylabhub::utils
  * The vault holds the broker CurveZMQ keypair (Z85) and the admin
  * authentication token. Nothing secret is written to hub.json or hub.pubkey.
  */
+/// Default KeyStore name for the key that decrypts the hub vault.
+/// The name is a parameter rather than an internal detail so a caller
+/// can cite the key afterwards — `save()` needs no password because of
+/// it, and a script holding two vaults open can tell them apart.
+inline constexpr std::string_view kHubVaultKeyName = "hub.vault.key";
+
 class PYLABHUB_UTILS_EXPORT HubVault
 {
   public:
@@ -69,11 +75,19 @@ class PYLABHUB_UTILS_EXPORT HubVault
      *
      * @param vault_path  Filesystem path where the vault file is created.
      * @param hub_uid     Hub UUID4 string — determines the KDF salt.
-     * @param password    Master password. Empty string is allowed (dev mode).
+     * @param password    Master password.  An empty password is accepted
+     *                    and still encrypts — it simply derives the key
+     *                    from an empty string, which is weak.  There is
+     *                    no unencrypted mode.
+     * @param key_name    KeyStore name the derived key is filed under, so
+     *                    the caller can cite it later.  Defaults to
+     *                    `kHubVaultKeyName`; pass your own to hold more
+     *                    than one vault open at a time.
      * @throws std::runtime_error on crypto or I/O failure.
      */
     static HubVault create(const std::filesystem::path &vault_path, const std::string &hub_uid,
-                           const std::string &password);
+                           const std::string &password,
+                           std::string_view key_name = kHubVaultKeyName);
 
     /**
      * @brief Open an existing vault file at the operator-supplied path.
@@ -84,10 +98,14 @@ class PYLABHUB_UTILS_EXPORT HubVault
      * The Poly1305 MAC authenticates the ciphertext — a wrong password or
      * corrupted file throws rather than returning garbage.
      *
+     * On success the derived key stays in the process KeyStore under
+     * `key_name`, which is what lets `save()` run without a password.
+     *
      * @throws std::runtime_error on MAC failure, I/O error, or malformed JSON.
      */
     static HubVault open(const std::filesystem::path &vault_path, const std::string &hub_uid,
-                         const std::string &password);
+                         const std::string &password,
+                         std::string_view key_name = kHubVaultKeyName);
 
     /// Broker CurveZMQ secret key (Z85, 40 chars).  View points into
     /// the vault's internal zero-on-destruct storage (HEP-CORE-0040
@@ -132,10 +150,17 @@ class PYLABHUB_UTILS_EXPORT HubVault
     /// (§4.8.3) after `set_known_roles()`.  The keypair and token are
     /// round-tripped unchanged from what `open()` decrypted; only the
     /// `known_roles` document reflects any `set_known_roles()` call.
-    /// @param password  Master password (same one that `open()` used).
+    ///
+    /// Takes no password: it re-uses the key that `create()` / `open()`
+    /// filed in the KeyStore.  Before 2026-08-09 the caller had to hold
+    /// the password for the vault's whole lifetime and hand it back
+    /// here, and every save paid a fresh ~100 ms Argon2id derivation to
+    /// arrive at the key it already had.
+    ///
     /// @throws std::runtime_error on crypto or I/O failure.
-    void save(const std::filesystem::path &vault_path, const std::string &hub_uid,
-              const std::string &password) const;
+    /// @throws std::out_of_range if the vault's key is no longer in the
+    ///         KeyStore (it was removed, or this vault outlived it).
+    void save(const std::filesystem::path &vault_path) const;
 
     /**
      * @brief Write the broker public key to <hub_dir>/hub.pubkey.

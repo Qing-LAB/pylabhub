@@ -16,6 +16,7 @@
 #include "utils/hub_vault.hpp"
 #include "utils/json_config.hpp"
 #include "utils/logger.hpp"
+#include "utils/security/secure_subsystem.hpp"
 #include "utils/timeout_constants.hpp"
 
 #if !defined(_WIN32) && !defined(_WIN64)
@@ -504,7 +505,8 @@ int load_keypair_refuses_loose_file_mode(const char *tmpdir)
             }
         },
         "hub_config::load_keypair_refuses_loose_file_mode", Logger::GetLifecycleModule(),
-        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 // ── load_keypair_refuses_loose_parent_dir_mode ──────────────────────────────
@@ -540,7 +542,8 @@ int load_keypair_refuses_loose_parent_dir_mode(const char *tmpdir)
             }
         },
         "hub_config::load_keypair_refuses_loose_parent_dir_mode", Logger::GetLifecycleModule(),
-        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 #endif
 

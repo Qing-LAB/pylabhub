@@ -223,7 +223,7 @@ int do_known_role_ops(const hub_cli::HubArgs &args)
         try
         {
             vault.set_known_roles(s.to_json());
-            vault.save(vault_path, uid, *password);
+            vault.save(vault_path);
             return true;
         }
         catch (const std::exception &e)

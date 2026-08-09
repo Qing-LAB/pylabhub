@@ -290,9 +290,10 @@ PYLABHUB_UTILS_EXPORT void write_keyfile(const std::filesystem::path &path,
 ///      `path` already exists.
 ///
 /// Use for any non-secret-but-integrity-sensitive owner-only file
-/// (e.g., `known_roles.json` in PeerAdmission Phase B).  Vault payloads
-/// use a stricter variant (`vault_crypto::write_secure_file`) that
-/// REFUSES to overwrite at all.
+/// (e.g., `known_roles.json`).  Vault payloads call this same function
+/// with `ExistingFilePolicy::Refuse`, so a vault is never silently
+/// clobbered; `vault_crypto::write_secure_file` is a thin wrapper that
+/// picks that policy, not a separate implementation.
 ///
 /// On Windows: writes via std::ofstream + SetNamedSecurityInfoW DACL
 /// (matches the publish_public_key pattern in hub_vault.cpp).  Atomicity
@@ -328,9 +329,10 @@ PYLABHUB_UTILS_EXPORT void atomic_write_owner_only_file(const std::filesystem::p
 /// later.  A racing process could change the mode between
 /// `verify_keyfile_acl` and the read.  Per HEP-CORE-0035 §4.6 the
 /// file-mode floor is defence in depth on top of the vault's
-/// encryption-at-rest layer (libsodium AEAD via `vault_crypto.cpp`);
-/// the encryption is the primary protection and is not subject to
-/// the TOCTOU window.
+/// encryption-at-rest layer (XSalsa20-Poly1305, reached through the
+/// security module — `vault_crypto.cpp` itself no longer calls
+/// libsodium).  The encryption is the primary protection and is not
+/// subject to the TOCTOU window.
 [[nodiscard]] PYLABHUB_UTILS_EXPORT AclVerdict verify_keyfile_acl(const std::filesystem::path &path,
                                                                   KeyFileRole role) noexcept;
 

@@ -42,6 +42,10 @@ static_assert(pylabhub::utils::security::SecureSubsystem::kBoxNonceBytes == cryp
               "SMS kBoxNonceBytes must equal sodium's crypto_box_NONCEBYTES");
 static_assert(pylabhub::utils::security::SecureSubsystem::kBoxMacBytes == crypto_box_MACBYTES,
               "SMS kBoxMacBytes must equal sodium's crypto_box_MACBYTES");
+static_assert(pylabhub::utils::security::SecureSubsystem::kSealedOverheadBytes ==
+                  crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES,
+              "SMS kSealedOverheadBytes must equal the nonce + MAC that "
+              "secretbox_encrypt_using prepends");
 
 #ifndef _WIN32
 #include <unistd.h> // getpid — used in the SodiumInit event log line
@@ -599,6 +603,79 @@ std::size_t SecureSubsystem::secretbox_decrypt(std::uint8_t *out, std::size_t ou
 // Seckey cited by KeyStore name (use-not-export) — bytes never
 // cross the API boundary.  HEP-CORE-0043 §1.4 + §6.
 // ─────────────────────────────────────────────────────────────────
+
+std::size_t SecureSubsystem::secretbox_encrypt_using(std::string_view key_name,
+                                                     std::span<const std::uint8_t> plaintext,
+                                                     std::span<std::uint8_t> out)
+{
+    const std::size_t need = plaintext.size() + kSealedOverheadBytes;
+    if (out.size() < need)
+        return 0;
+    if (plaintext.data() == nullptr && !plaintext.empty())
+        return 0;
+
+    // Nonce goes at the front of the sealed blob, and we generate it —
+    // see the header: a caller that cannot supply a nonce cannot repeat
+    // one.  It is not secret, so it lives in `out` directly.
+    std::uint8_t *const nonce = out.data();
+    ::randombytes_buf(nonce, kSecretboxNonceBytes);
+
+    // `keys()` is the SMS gate — panics if SMS is not `Initialized`.
+    // `with_raw_key` holds the shared lock across the callback, so the
+    // key cannot be removed underneath sodium, and the bytes never
+    // leave the module.
+    std::size_t written = 0;
+    keys().with_raw_key(key_name,
+                        [&](std::span<const std::byte> key)
+                        {
+                            if (key.size() != kSecretboxKeyBytes)
+                                return;
+                            const int rc = ::crypto_secretbox_easy(
+                                out.data() + kSecretboxNonceBytes, plaintext.data(),
+                                plaintext.size(), nonce,
+                                reinterpret_cast<const std::uint8_t *>(key.data()));
+                            if (rc == 0)
+                                written = need;
+                        });
+    if (written == 0)
+    {
+        // Do not leave a fresh nonce sitting in a buffer the caller may
+        // mistake for a short-but-valid blob.
+        ::sodium_memzero(out.data(), kSecretboxNonceBytes);
+    }
+    return written;
+}
+
+std::size_t SecureSubsystem::secretbox_decrypt_using(std::string_view key_name,
+                                                     std::span<const std::uint8_t> sealed,
+                                                     std::span<std::uint8_t> out)
+{
+    if (sealed.size() < kSealedOverheadBytes)
+        return 0;
+    if (sealed.data() == nullptr)
+        return 0;
+    const std::size_t plain_len = sealed.size() - kSealedOverheadBytes;
+    if (out.size() < plain_len)
+        return 0;
+
+    const std::uint8_t *const nonce = sealed.data();
+    const std::uint8_t *const ciphertext = sealed.data() + kSecretboxNonceBytes;
+    const std::size_t clen = sealed.size() - kSecretboxNonceBytes;
+
+    std::size_t decoded = 0;
+    keys().with_raw_key(key_name,
+                        [&](std::span<const std::byte> key)
+                        {
+                            if (key.size() != kSecretboxKeyBytes)
+                                return;
+                            const int rc = ::crypto_secretbox_open_easy(
+                                out.data(), ciphertext, clen, nonce,
+                                reinterpret_cast<const std::uint8_t *>(key.data()));
+                            if (rc == 0)
+                                decoded = plain_len;
+                        });
+    return decoded;
+}
 
 std::size_t SecureSubsystem::box_encrypt_using(std::string_view own_seckey_name,
                                                std::span<const std::uint8_t, 32> peer_pubkey_raw,

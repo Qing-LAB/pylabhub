@@ -25,6 +25,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -533,6 +534,194 @@ int add_random_key_mints_into_locked_memory(const char * /*tmpdir*/)
             EXPECT_THROW(secure().keys().add_random_key("mint:zero", 0), std::invalid_argument);
         },
         "key_store::add_random_key_mints_into_locked_memory", Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
+/// The symmetric named-key operations (HEP-CORE-0043 §2.5).  The
+/// assertion that matters here is the SECOND one: sealing the same
+/// plaintext twice must give different bytes.  A roundtrip test alone
+/// passes just as happily with a fixed nonce, and a repeated nonce
+/// under XSalsa20 does not degrade — it fails outright.
+int secretbox_using_seals_with_a_fresh_nonce(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            namespace sec = pylabhub::utils::security;
+            constexpr std::string_view kName = "seal:a";
+            const std::string plain = "the payload that goes in the vault";
+
+            secure().keys().add_random_key(kName, sec::SecureSubsystem::kSecretboxKeyBytes);
+
+            const auto plain_span = std::span<const std::uint8_t>(
+                reinterpret_cast<const std::uint8_t *>(plain.data()), plain.size());
+            const std::size_t sealed_len =
+                plain.size() + sec::SecureSubsystem::kSealedOverheadBytes;
+
+            std::vector<std::uint8_t> first(sealed_len);
+            std::vector<std::uint8_t> second(sealed_len);
+            ASSERT_EQ(secure().secretbox_encrypt_using(kName, plain_span,
+                                                       std::span<std::uint8_t>(first)),
+                      sealed_len);
+            ASSERT_EQ(secure().secretbox_encrypt_using(kName, plain_span,
+                                                       std::span<std::uint8_t>(second)),
+                      sealed_len);
+
+            // THE assertion.  Same key, same plaintext, different bytes —
+            // only a fresh nonce produces that.
+            EXPECT_NE(first, second)
+                << "two seals of the same plaintext are byte-identical — the nonce is not fresh, "
+                   "which is a catastrophic XSalsa20 failure, not a cosmetic one";
+
+            // ...and the differing part is the leading nonce.
+            EXPECT_FALSE(std::equal(first.begin(),
+                                    first.begin() + sec::SecureSubsystem::kSecretboxNonceBytes,
+                                    second.begin()))
+                << "the nonce prefix repeated across two seals";
+
+            // Roundtrip.
+            std::vector<std::uint8_t> out(plain.size());
+            ASSERT_EQ(secure().secretbox_decrypt_using(
+                          kName, std::span<const std::uint8_t>(first), std::span<std::uint8_t>(out)),
+                      plain.size());
+            EXPECT_EQ(std::string(reinterpret_cast<const char *>(out.data()), out.size()), plain);
+
+            // A different key must NOT open it — 0, not garbage, not a throw.
+            secure().keys().add_random_key("seal:other", sec::SecureSubsystem::kSecretboxKeyBytes);
+            EXPECT_EQ(secure().secretbox_decrypt_using("seal:other",
+                                                       std::span<const std::uint8_t>(first),
+                                                       std::span<std::uint8_t>(out)),
+                      0u)
+                << "a foreign key opened the blob — the MAC is not being checked";
+
+            // Tamper one ciphertext byte: the MAC must catch it.
+            auto tampered = first;
+            tampered[tampered.size() - 1] ^= std::uint8_t{0x01};
+            EXPECT_EQ(secure().secretbox_decrypt_using(kName,
+                                                       std::span<const std::uint8_t>(tampered),
+                                                       std::span<std::uint8_t>(out)),
+                      0u)
+                << "a flipped ciphertext bit decrypted successfully";
+
+            // An absent key is a wiring error, distinct from a crypto failure.
+            EXPECT_THROW((void)secure().secretbox_encrypt_using("seal:nope", plain_span,
+                                                                std::span<std::uint8_t>(first)),
+                         std::out_of_range);
+
+            // Too-short output buffer is refused, not overrun.
+            std::vector<std::uint8_t> tiny(4);
+            EXPECT_EQ(
+                secure().secretbox_encrypt_using(kName, plain_span, std::span<std::uint8_t>(tiny)),
+                0u);
+        },
+        "key_store::secretbox_using_seals_with_a_fresh_nonce", Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
+/// Password-derived keys (HEP-CORE-0043 §2.5).  The assertion that
+/// matters: the same password under a DIFFERENT scope must produce a
+/// different key.  That is what stops one cracked password opening
+/// every vault on the machine, and it is invisible to a roundtrip test.
+///
+/// Keys are never compared directly — nothing exports them.  Two keys
+/// are proven different by sealing under one and failing to open under
+/// the other, which is the property that actually matters anyway.
+int key_from_password_separates_by_scope(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            namespace sec = pylabhub::utils::security;
+            const std::string password = "the-same-password-for-both";
+            const std::string plain = "vault payload";
+
+            // Cheap KDF cost: this worker is proving scope separation and
+            // duplicate handling, not that Argon2id is slow.  Correctness
+            // of the cost plumbing is pinned by
+            // SecureSubsystemTest.PwhashArgon2id_Roundtrip instead.
+            constexpr unsigned long long kOps = 1ULL;
+            constexpr std::size_t kMem = 8192U;
+            constexpr std::size_t kLen = sec::SecureSubsystem::kSecretboxKeyBytes;
+
+            secure().keys().add_key_from_password("vault:a", password, "hub.uid.AAAA", kLen, kOps,
+                                                  kMem);
+            secure().keys().add_key_from_password("vault:b", password, "hub.uid.BBBB", kLen, kOps,
+                                                  kMem);
+
+            const auto plain_span = std::span<const std::uint8_t>(
+                reinterpret_cast<const std::uint8_t *>(plain.data()), plain.size());
+            std::vector<std::uint8_t> sealed(plain.size() +
+                                             sec::SecureSubsystem::kSealedOverheadBytes);
+            ASSERT_EQ(secure().secretbox_encrypt_using("vault:a", plain_span,
+                                                       std::span<std::uint8_t>(sealed)),
+                      sealed.size());
+
+            std::vector<std::uint8_t> out(plain.size());
+
+            // THE assertion: same password, different scope → cannot open.
+            EXPECT_EQ(secure().secretbox_decrypt_using(
+                          "vault:b", std::span<const std::uint8_t>(sealed),
+                          std::span<std::uint8_t>(out)),
+                      0u)
+                << "the same password under a different scope produced the SAME key — one "
+                   "cracked password would open every vault on the machine";
+
+            // Determinism: the same password AND scope reproduce the key,
+            // which is what lets a vault be reopened at all.
+            secure().keys().add_key_from_password("vault:a_again", password, "hub.uid.AAAA", kLen,
+                                                  kOps, kMem);
+            ASSERT_EQ(secure().secretbox_decrypt_using("vault:a_again",
+                                                       std::span<const std::uint8_t>(sealed),
+                                                       std::span<std::uint8_t>(out)),
+                      plain.size())
+                << "same password + same scope did not reproduce the key — no vault could ever "
+                   "be reopened";
+            EXPECT_EQ(std::string(reinterpret_cast<const char *>(out.data()), out.size()), plain);
+
+            // A wrong password under the right scope must not open it.
+            secure().keys().add_key_from_password("vault:wrongpw", "not-the-password",
+                                                  "hub.uid.AAAA", kLen, kOps, kMem);
+            EXPECT_EQ(secure().secretbox_decrypt_using("vault:wrongpw",
+                                                       std::span<const std::uint8_t>(sealed),
+                                                       std::span<std::uint8_t>(out)),
+                      0u);
+
+            // add_ refuses a duplicate; replace_ is the explicit door.
+            EXPECT_THROW(secure().keys().add_key_from_password("vault:a", password, "hub.uid.AAAA",
+                                                               kLen, kOps, kMem),
+                         std::runtime_error);
+            EXPECT_NO_THROW(secure().keys().replace_key_from_password(
+                "vault:a", password, "hub.uid.AAAA", kLen, kOps, kMem));
+            // Replacing with the same inputs keeps the blob openable.
+            EXPECT_EQ(secure().secretbox_decrypt_using("vault:a",
+                                                       std::span<const std::uint8_t>(sealed),
+                                                       std::span<std::uint8_t>(out)),
+                      plain.size());
+            // Replacing with a different scope changes the key.
+            EXPECT_NO_THROW(secure().keys().replace_key_from_password(
+                "vault:a", password, "hub.uid.CCCC", kLen, kOps, kMem));
+            EXPECT_EQ(secure().secretbox_decrypt_using("vault:a",
+                                                       std::span<const std::uint8_t>(sealed),
+                                                       std::span<std::uint8_t>(out)),
+                      0u)
+                << "replace_key_from_password did not actually replace the stored key";
+
+            // replace_ on an absent name behaves as add_.
+            EXPECT_NO_THROW(secure().keys().replace_key_from_password(
+                "vault:fresh", password, "hub.uid.AAAA", kLen, kOps, kMem));
+            EXPECT_TRUE(secure().keys().has("vault:fresh"));
+
+            // An empty scope is refused: it would give every vault the
+            // same salt, which is the whole failure this parameter exists
+            // to prevent.
+            EXPECT_THROW(secure().keys().add_key_from_password("vault:noscope", password, "", kLen,
+                                                               kOps, kMem),
+                         std::invalid_argument);
+            EXPECT_THROW(secure().keys().add_key_from_password("vault:zerolen", password,
+                                                               "hub.uid.AAAA", 0, kOps, kMem),
+                         std::invalid_argument);
+        },
+        "key_store::key_from_password_separates_by_scope", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -1613,6 +1802,10 @@ int dispatch_key_store(int argc, char **argv)
         return add_identity_wrong_size_throws(tmpdir);
     if (scenario == "add_random_key_mints_into_locked_memory")
         return add_random_key_mints_into_locked_memory(tmpdir);
+    if (scenario == "secretbox_using_seals_with_a_fresh_nonce")
+        return secretbox_using_seals_with_a_fresh_nonce(tmpdir);
+    if (scenario == "key_from_password_separates_by_scope")
+        return key_from_password_separates_by_scope(tmpdir);
     if (scenario == "add_raw_then_lookup_raw_roundtrip")
         return add_raw_then_lookup_raw_roundtrip(tmpdir);
     if (scenario == "remove_makes_subsequent_lookup_throw")

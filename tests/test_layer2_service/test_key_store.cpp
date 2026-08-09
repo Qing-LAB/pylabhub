@@ -168,6 +168,24 @@ TEST_F(KeyStoreTest, AddRandomKey_MintsIntoLockedMemory)
     ExpectWorkerOk(w);
 }
 
+/// HEP-CORE-0043 §2.5.3 — the sealed blob carries its own nonce and the
+/// caller cannot supply one, so a caller cannot repeat one.
+TEST_F(KeyStoreTest, SecretboxUsing_SealsWithAFreshNonce)
+{
+    auto w = SpawnWorker("key_store.secretbox_using_seals_with_a_fresh_nonce",
+                         {unique_dir("seal_nonce")});
+    ExpectWorkerOk(w);
+}
+
+/// HEP-CORE-0043 §2.5 — `scope` is the per-vault domain separator.
+/// Without it one cracked password opens every vault on the machine.
+TEST_F(KeyStoreTest, KeyFromPassword_SeparatesByScope)
+{
+    auto w = SpawnWorker("key_store.key_from_password_separates_by_scope",
+                         {unique_dir("pw_scope")});
+    ExpectWorkerOk(w);
+}
+
 // ── Raw secret (HEP-0038) happy path ───────────────────────────────────────
 
 TEST_F(KeyStoreTest, AddRaw_LookupRawRoundtrip)

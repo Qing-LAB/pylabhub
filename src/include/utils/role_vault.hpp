@@ -56,6 +56,12 @@ namespace pylabhub::utils
  * The vault holds only the role's CurveZMQ keypair (Z85).
  * Nothing secret is ever written to role config files.
  */
+/// Default KeyStore name for the key that decrypts the role vault.
+/// The name is a parameter rather than an internal detail so a caller
+/// can cite the key afterwards — a later save needs no password, and a
+/// script holding two vaults open can tell them apart.
+inline constexpr std::string_view kRoleVaultKeyName = "role.vault.key";
+
 class PYLABHUB_UTILS_EXPORT RoleVault
 {
   public:
@@ -69,11 +75,19 @@ class PYLABHUB_UTILS_EXPORT RoleVault
      *
      * @param vault_path  Destination file path (e.g. role_dir / "role.key").
      * @param role_uid    Role UID string — determines the KDF salt.
-     * @param password    Master password. Empty string = no encryption (dev mode).
+     * @param password    Master password.  An empty password is accepted
+     *                    and still encrypts — it simply derives the key
+     *                    from an empty string, which is weak.  There is
+     *                    no unencrypted mode.
+     * @param key_name    KeyStore name the derived key is filed under, so
+     *                    the caller can cite it later.  Defaults to
+     *                    `kRoleVaultKeyName`; pass your own to hold more
+     *                    than one vault open at a time.
      * @throws std::runtime_error on crypto or I/O failure.
      */
     static RoleVault create(const std::filesystem::path &vault_path, const std::string &role_uid,
-                            const std::string &password);
+                            const std::string &password,
+                            std::string_view key_name = kRoleVaultKeyName);
 
     /**
      * @brief Open an existing vault file at vault_path.
@@ -82,10 +96,15 @@ class PYLABHUB_UTILS_EXPORT RoleVault
      * The Poly1305 MAC authenticates the ciphertext — a wrong password or
      * corrupted file throws rather than returning garbage.
      *
+     * On success the derived key stays in the process KeyStore under
+     * `key_name`, so later work needs neither the password nor a second
+     * ~100 ms derivation.
+     *
      * @throws std::runtime_error on MAC failure, I/O error, or malformed JSON.
      */
     static RoleVault open(const std::filesystem::path &vault_path, const std::string &role_uid,
-                          const std::string &password);
+                          const std::string &password,
+                          std::string_view key_name = kRoleVaultKeyName);
 
     /// CurveZMQ public key (Z85, 40 chars).  View points into the
     /// vault's internal zero-on-destruct storage (HEP-CORE-0040 §175);

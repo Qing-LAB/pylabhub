@@ -551,7 +551,8 @@ int load_keypair_refuses_loose_file_mode(const std::string &dir)
             }
         },
         "role_config::load_keypair_refuses_loose_file_mode", Logger::GetLifecycleModule(),
-        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 int load_keypair_refuses_loose_parent_dir_mode(const std::string &dir)
@@ -583,7 +584,8 @@ int load_keypair_refuses_loose_parent_dir_mode(const std::string &dir)
             }
         },
         "role_config::load_keypair_refuses_loose_parent_dir_mode", Logger::GetLifecycleModule(),
-        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
 // AUTH_TODO §C5 (#161) loader contract: vault file present with the
@@ -664,7 +666,8 @@ int load_keypair_rejects_corrupt_vault_contents(const std::string &dir)
             }
         },
         "role_config::load_keypair_rejects_corrupt_vault_contents", Logger::GetLifecycleModule(),
-        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
+        FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 #endif
 

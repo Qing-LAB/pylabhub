@@ -38,9 +38,13 @@
  *   callback.  The seckey `std::string_view` handed to the callback
  *   is valid ONLY for callback scope; bytes NEVER leave the mlocked
  *   `LockedKey` region as data.
- * - **Raw secrets (`lookup_raw`)** — returned as
- *   `std::span<const std::byte>` into LockedKey-owned bytes.  Live
- *   consumer: the admin-session seal key (HEP-CORE-0043 §7).  Future
+ * - **Raw secrets (`with_raw_key`)** — accessed via a callback, same
+ *   contract as `with_seckey`.  This is what the symmetric
+ *   `secretbox_*_using` operations are built on, and why they can
+ *   promise the key never leaves the module.
+ * - **Raw secrets, unscoped (`lookup_raw`)** — returned as
+ *   `std::span<const std::byte>` into LockedKey-owned bytes, after the
+ *   lock is dropped.  The weaker form; prefer `with_raw_key`.  Future
  *   script bindings (deferred — see task #136) must materialize into a
  *   script-owned buffer before returning to the script layer.
  *
@@ -62,17 +66,26 @@
  *
  * - **Read-mostly** (shared lock, parallel):
  *   `pubkey`, `with_seckey`, `with_seckey_z85`, `with_keypair_z85`,
- *   `lookup_raw`, `has`, `size`.
+ *   `with_raw_key`, `lookup_raw`, `has`, `size`.
  * - **Write** (exclusive lock):
  *   `add_identity`, `add_identity_from_z85`,
- *   `generate_and_add_identity`, `add_raw`, `remove`.
+ *   `generate_and_add_identity`, `add_raw`, `add_random_key`,
+ *   `add_key_from_password`, `replace_key_from_password`, `remove`.
  *
- * The `with_seckey` callback runs under the SHARED lock.  Callback
- * MUST be prompt (microseconds — no blocking I/O, no syscalls beyond
- * consuming the bytes).  A concurrent `remove(name)` blocks until
- * every in-flight `with_seckey` callback for that name returns —
- * this is the security guarantee that "bytes become unreachable for
- * every caller as soon as `remove()` returns."
+ * The two password methods hold the exclusive lock only for the map
+ * insert.  Argon2id runs BEFORE the lock is taken — it is deliberately
+ * slow (100 ms at the default cost, ~5 s at the high one) and holding
+ * a writer lock across it would stall every reader in the process for
+ * that whole time.  The duplicate check still happens under the lock,
+ * so a lost race costs one wasted derivation and nothing else.
+ *
+ * The `with_seckey` and `with_raw_key` callbacks run under the SHARED
+ * lock.  A callback MUST be prompt (microseconds — no blocking I/O, no
+ * syscalls beyond consuming the bytes).  A concurrent `remove(name)`
+ * blocks until every in-flight callback for that name returns — this
+ * is the security guarantee that "bytes become unreachable for every
+ * caller as soon as `remove()` returns."  `lookup_raw` is outside that
+ * guarantee: it returns after dropping the lock.
  *
  * Full thread-safety contract: HEP-CORE-0040 §5.5.
  *
@@ -239,6 +252,56 @@ class PYLABHUB_UTILS_EXPORT KeyStore
     /// `byte_count` is 0.
     void add_random_key(std::string_view name, std::size_t byte_count);
 
+    /// Derive a key from `password` with Argon2id and store it under
+    /// `name`, **straight into locked memory** — same rationale as
+    /// `add_random_key`: `crypto_pwhash` writes its output directly
+    /// into the `sodium_malloc` allocation, so the derived key never
+    /// exists in ordinary pageable memory.
+    ///
+    /// `scope` is the domain separator, hashed into the Argon2id salt
+    /// (`SecureSubsystem::derive_pwhash_salt`).  It is what makes the
+    /// same password produce a DIFFERENT key per vault: pass the hub
+    /// or role uid.  Without it, one leaked password would open every
+    /// vault on the machine.
+    ///
+    /// `opslimit` / `memlimit` are the caller's cost policy, defaulting
+    /// to libsodium's INTERACTIVE pair.  They are parameters and not
+    /// constants on purpose: whoever owns the data at rest owns how
+    /// hard it is to brute-force, and a generic wrapper choosing for
+    /// them is how the vault's three compile-time profiles ended up
+    /// reaching nothing at all (fixed 2026-08-09).
+    ///
+    /// Throws `std::runtime_error` if `name` is already present (use
+    /// `replace_key_from_password`), if `sodium_malloc` fails, or if
+    /// Argon2id fails (which for these inputs means it could not get
+    /// `memlimit` bytes).  Throws `std::invalid_argument` if
+    /// `byte_count` is 0 or `scope` is empty — an empty scope would
+    /// silently give every vault the same salt.
+    void add_key_from_password(std::string_view name, std::string_view password,
+                               std::string_view scope,
+                               std::size_t byte_count = SecureSubsystem::kSecretboxKeyBytes,
+                               unsigned long long opslimit =
+                                   SecureSubsystem::kPwhashOpsLimitInteractive,
+                               std::size_t memlimit = SecureSubsystem::kPwhashMemLimitInteractive);
+
+    /// As `add_key_from_password`, but replaces an existing entry
+    /// instead of throwing.  Separate from `add_` deliberately: `add_`
+    /// refusing a duplicate is what stops an identity key being
+    /// overwritten by accident, so replacement has to be asked for by
+    /// name.  Absent `name` is fine — it behaves as `add_`.
+    ///
+    /// The live consumer is re-opening a vault: deriving the same key
+    /// again from the same password is a legitimate replacement, and
+    /// making the vault call `remove` first would leave a window where
+    /// the name resolves to nothing.
+    void replace_key_from_password(std::string_view name, std::string_view password,
+                                   std::string_view scope,
+                                   std::size_t byte_count = SecureSubsystem::kSecretboxKeyBytes,
+                                   unsigned long long opslimit =
+                                       SecureSubsystem::kPwhashOpsLimitInteractive,
+                                   std::size_t memlimit =
+                                       SecureSubsystem::kPwhashMemLimitInteractive);
+
     /// Remove a stored secret.  No-op if absent.  Blocks until any
     /// in-flight `with_seckey` callback for the same name returns —
     /// correct security semantic: bytes become unreachable for every
@@ -310,14 +373,36 @@ class PYLABHUB_UTILS_EXPORT KeyStore
         std::string_view name,
         std::function<void(std::string_view /*pubkey*/, std::string_view /*seckey*/)> use) const;
 
+    /// Invoke `use` with a raw (non-identity) secret — the symmetric
+    /// twin of `with_seckey`, and the scoped alternative to
+    /// `lookup_raw`.  The shared lock is held for the callback's
+    /// duration, so a concurrent `remove(name)` waits; the view is
+    /// valid ONLY inside `use`.  Callback MUST be prompt
+    /// (HEP-CORE-0040 §5.5).
+    ///
+    /// This is what `secretbox_encrypt_using` / `secretbox_decrypt_using`
+    /// are built on: it is the reason those operations can promise the
+    /// key never leaves the module.  `lookup_raw` cannot make that
+    /// promise — it returns a span after dropping the lock.
+    ///
+    /// Throws `std::out_of_range` if `name` is absent, or if it names
+    /// an identity keypair (use `with_seckey`, which knows to return
+    /// the 32-byte secret half rather than the whole 64-byte pack).
+    void with_raw_key(std::string_view name,
+                      std::function<void(std::span<const std::byte>)> use) const;
+
     /// Raw-secret access.  Live consumer: the admin-session seal key
     /// (admin_session.cpp, HEP-CORE-0043 §7).  (A script-facing secret
     /// store is NOT implemented and NOT designed — task #136; when it
     /// lands, bindings MUST materialize the bytes into a script-owned
     /// buffer, never pass the span to script code.)
     /// Span lifetime is until `remove()` or KeyStore dtor — which is
-    /// exactly why handing spans out blocks key replacement; prefer a
-    /// `*_using(name, ...)` operation that keeps the bytes inside.
+    /// exactly why handing spans out blocks key replacement.
+    ///
+    /// **Prefer `with_raw_key` or a `*_using(name, ...)` operation.**
+    /// This one returns after dropping the lock, so the span it hands
+    /// back can be invalidated by a concurrent `remove()`; the scoped
+    /// forms hold the shared lock for the callback and cannot be.
     /// Throws `std::out_of_range` if `name` is absent.
     [[nodiscard]] std::span<const std::byte> lookup_raw(std::string_view name) const;
 

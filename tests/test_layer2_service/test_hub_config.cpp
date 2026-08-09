@@ -9,6 +9,9 @@
  */
 #include "test_patterns.h"
 
+#include "utils/logger.hpp"
+#include "utils/security/secure_subsystem.hpp"
+#include "binary_lifecycle.h"
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -21,6 +24,15 @@ using pylabhub::tests::IsolatedProcessTest;
 
 namespace
 {
+
+// Pattern 1+ (BinaryLifecycleEnvironment) — the vault deposits its
+// decryption key in the process KeyStore, so `SecureSubsystem` must be
+// up before any HubConfig call.  This is not a test accommodation: it is
+// what production does.  Before the key moved into locked memory the
+// vault only used ungated primitives and these tests ran with no
+// lifecycle at all, exercising a configuration production never has.
+PLH_BINARY_LIFECYCLE_MODULES(pylabhub::utils::Logger::GetLifecycleModule(),
+                             pylabhub::utils::security::SecureSubsystem::GetLifecycleModule())
 
 class HubConfigTest : public IsolatedProcessTest
 {

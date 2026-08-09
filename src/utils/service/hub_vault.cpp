@@ -57,6 +57,11 @@ struct HubVault::Impl
     std::array<char, 40> broker_public_z85{};
     std::array<char, 64> admin_token_hex{};
 
+    /// KeyStore name the vault's decryption key was filed under by
+    /// `create()` / `open()`.  `save()` cites it instead of asking the
+    /// caller for the password again.  Not secret — it is a name.
+    std::string key_name_;
+
     /// View sizes (`size()` of each accessor's returned `std::string_view`).
     /// All three secrets are fixed-length in this vault, so the views are
     /// always full-size after a successful `open()` or `create()`.
@@ -126,10 +131,8 @@ HubVault &HubVault::operator=(HubVault &&) noexcept = default;
 // ============================================================================
 
 HubVault HubVault::create(const fs::path &vault_path, const std::string &hub_uid,
-                          const std::string &password)
+                          const std::string &password, std::string_view key_name)
 {
-    detail::vault_require_sodium();
-
     // Generate broker CurveZMQ keypair (Z85).
     auto kp = pylabhub::utils::security::generate_curve_keypair();
     const std::string broker_public = std::move(kp.public_z85);
@@ -169,9 +172,11 @@ HubVault HubVault::create(const fs::path &vault_path, const std::string &hub_uid
                                      vault_path.parent_path().string() +
                                      "': " + std::strerror(chmod_err));
     }
-    detail::vault_write(vault_path, payload.dump(), password, hub_uid);
+    detail::vault_add_key_from_password(key_name, password, hub_uid);
+    detail::vault_write(vault_path, payload.dump(), key_name);
 
     HubVault v;
+    v.pImpl->key_name_ = std::string(key_name);
     if (broker_secret.size() != HubVault::Impl::kSecretLen ||
         broker_public.size() != HubVault::Impl::kPublicLen ||
         admin_tok.size() != HubVault::Impl::kAdminLen)
@@ -191,18 +196,18 @@ HubVault HubVault::create(const fs::path &vault_path, const std::string &hub_uid
 // ============================================================================
 
 HubVault HubVault::open(const fs::path &vault_path, const std::string &hub_uid,
-                        const std::string &password)
+                        const std::string &password, std::string_view key_name)
 {
-    detail::vault_require_sodium();
-
     // HEP-CORE-0040 §175: decrypt directly into a stack buffer whose
     // destructor zeroes the plaintext when this scope exits.  Sized
     // generously for the small JSON payload (broker keys + admin
     // token + framing); fits comfortably under 4 KiB.
     pylabhub::utils::security::SecureBuffer<4096> json_buf;
-    const std::size_t n = detail::vault_read_secure(vault_path, password, hub_uid, json_buf.span());
+    detail::vault_add_key_from_password(key_name, password, hub_uid);
+    const std::size_t n = detail::vault_read_secure(vault_path, key_name, json_buf.span());
 
     HubVault v;
+    v.pImpl->key_name_ = std::string(key_name);
     try
     {
         const auto bytes = json_buf.span().first(n);
@@ -283,8 +288,7 @@ void HubVault::set_known_roles(json roles)
     pImpl->known_roles = std::move(roles);
 }
 
-void HubVault::save(const fs::path &vault_path, const std::string &hub_uid,
-                    const std::string &password) const
+void HubVault::save(const fs::path &vault_path) const
 {
     // Reconstruct the full payload from the in-memory state.  The
     // keypair + token round-trip unchanged from open(); only
@@ -310,7 +314,7 @@ void HubVault::save(const fs::path &vault_path, const std::string &hub_uid,
                                     std::to_string(static_cast<long long>(::getpid())));
     std::error_code ec;
     fs::remove(tmp, ec); // clear any stale temp from a prior crash
-    detail::vault_write(tmp, payload.dump(), password, hub_uid);
+    detail::vault_write(tmp, payload.dump(), pImpl->key_name_);
     fs::rename(tmp, vault_path, ec);
     if (ec)
     {

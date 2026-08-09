@@ -4,6 +4,7 @@
  */
 #include "vault_crypto.hpp"
 #include "plh_platform.hpp"
+#include "utils/security/key_store.hpp" // keys().replace_key_from_password
 #include "utils/security/secure_subsystem.hpp"
 #include "utils/security/key_file_acl.hpp" // write_keyfile — HEP-0035 §4.6.1 recipe
 
@@ -101,97 +102,57 @@ std::vector<uint8_t> read_file(const fs::path &path)
 
 // ── Public implementations ────────────────────────────────────────────────────
 
-void vault_require_sodium()
-{
-    // No-op — retained as a stable API name during the SEC-Fold-2
-    // rollout.  All vault ops now route through `secure()` /
-    // `secure()`'s gate, which PANICs if SMS is not
-    // `Initialized`.  Delete this shim once callers stop referencing it.
-}
-
-std::array<uint8_t, kVaultKeyBytes> vault_derive_key(const std::string &password,
-                                                     const std::string &uid)
+void vault_add_key_from_password(std::string_view key_name, const std::string &password,
+                                 const std::string &uid)
 {
     namespace sec = pylabhub::utils::security;
-    // Salt = BLAKE2b-16(uid): deterministic, per-vault domain separation.
-    // Same password on two vaults with different uids produces different keys.
-    // Salt derivation via the purpose-specific SMS method
-    // `derive_pwhash_salt`.  Encapsulates the "16 bytes because
-    // Argon2id" reasoning inside the security module — this call
-    // site just names the operation.
     static_assert(kVaultSaltBytes == pylabhub::utils::security::SecureSubsystem::kPwhashSaltBytes,
                   "vault salt size must match SMS's Argon2id salt size");
-    uint8_t salt[kVaultSaltBytes]{};
-    if (!sec::secure().derive_pwhash_salt(salt, uid))
-    {
-        throw std::runtime_error("vault: salt derivation failed");
-    }
+    static_assert(kVaultKeyBytes == pylabhub::utils::security::SecureSubsystem::kSecretboxKeyBytes,
+                  "vault key size must match SMS's secretbox key size");
 
-    std::array<uint8_t, kVaultKeyBytes> key{};
-    // Pass the vault's OWN cost parameters.  Until 2026-08-09 this call
-    // omitted them and `pwhash_argon2id` hardcoded INTERACTIVE, so the
-    // three compile-time profiles above selected constants that reached
-    // nothing: `-DPYLABHUB_VAULT_HIGH_SECURITY` produced ordinary
-    // INTERACTIVE vaults while reporting success, and the CI fast-KDF
-    // build paid the full ~100 ms it was added to avoid.  The default
-    // profile matched INTERACTIVE by coincidence, which is why it went
-    // unnoticed.
-    if (!sec::secure().pwhash_argon2id(key.data(), key.size(), password.data(), password.size(),
-                                       salt, kVaultOpsLimit, kVaultMemLimit))
-    {
-        throw std::runtime_error("vault: Argon2id key derivation failed (insufficient memory?)");
-    }
-    return key;
+    // `replace_` rather than `add_`: re-opening a vault legitimately
+    // re-derives the same key under the same name, and making the
+    // caller `remove` first would leave a window where the name
+    // resolves to nothing.
+    //
+    // `uid` is the domain separator — the same password on two vaults
+    // with different uids yields different keys.  The vault's own
+    // compile-time cost profile is passed explicitly; a wrapper
+    // choosing it for us is exactly the bug fixed on 2026-08-09, where
+    // all three profiles selected constants that reached nothing.
+    sec::secure().keys().replace_key_from_password(key_name, password, uid, kVaultKeyBytes,
+                                                   kVaultOpsLimit, kVaultMemLimit);
 }
 
-void vault_write(const fs::path &path, const std::string &json_payload, const std::string &password,
-                 const std::string &uid)
+void vault_write(const fs::path &path, const std::string &json_payload, std::string_view key_name)
 {
     namespace sec = pylabhub::utils::security;
-    vault_require_sodium();
-
-    auto key = vault_derive_key(password, uid);
-    struct KeyGuard
+    // No key appears in this function.  `secretbox_encrypt_using`
+    // generates the nonce internally and emits
+    // `[nonce(24) || MAC(16) || ciphertext]` — byte-for-byte the vault
+    // format this file used to assemble by hand, so the on-disk layout
+    // is unchanged and old vaults still open.
+    std::vector<uint8_t> vault_bytes(json_payload.size() +
+                                     sec::SecureSubsystem::kSealedOverheadBytes);
+    const std::size_t written = sec::secure().secretbox_encrypt_using(
+        key_name,
+        std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(json_payload.data()),
+                                      json_payload.size()),
+        std::span<std::uint8_t>(vault_bytes.data(), vault_bytes.size()));
+    if (written != vault_bytes.size())
     {
-        std::array<uint8_t, kVaultKeyBytes> &k;
-        ~KeyGuard()
-        {
-            pylabhub::utils::security::secure().memzero(
-                std::span<std::uint8_t>(k.data(), k.size()));
-        }
-    } key_guard{key};
-
-    // Random nonce.
-    uint8_t nonce[kVaultNonceBytes]{};
-    sec::secure().random_bytes(nonce, kVaultNonceBytes);
-
-    // Encrypt: [MAC(16) || ciphertext].
-    const std::size_t clen = json_payload.size() + kVaultMacBytes;
-    std::vector<uint8_t> ciphertext(clen);
-    const std::size_t written = sec::secure().secretbox_encrypt(
-        ciphertext.data(), ciphertext.size(),
-        reinterpret_cast<const std::uint8_t *>(json_payload.data()), json_payload.size(),
-        std::span<const std::uint8_t, 24>(nonce, kVaultNonceBytes),
-        std::span<const std::uint8_t, 32>(key.data(), kVaultKeyBytes));
-    if (written == 0)
-    {
-        throw std::runtime_error("vault: secretbox_encrypt failed");
+        throw std::runtime_error("vault: encryption failed for key '" + std::string(key_name) +
+                                 "'");
     }
 
-    // Write [nonce(24) || MAC+ciphertext] to path at mode 0600.
-    std::vector<uint8_t> vault_bytes;
-    vault_bytes.reserve(kVaultNonceBytes + clen);
-    vault_bytes.insert(vault_bytes.end(), nonce, nonce + kVaultNonceBytes);
-    vault_bytes.insert(vault_bytes.end(), ciphertext.begin(), ciphertext.end());
     write_secure_file(path, vault_bytes);
 }
 
-std::size_t vault_read_secure(const fs::path &path, const std::string &password,
-                              const std::string &uid, std::span<std::byte> out_buf)
+std::size_t vault_read_secure(const fs::path &path, std::string_view key_name,
+                              std::span<std::byte> out_buf)
 {
     namespace sec = pylabhub::utils::security;
-    vault_require_sodium();
-
     const auto vault_bytes = read_file(path);
 
     constexpr std::size_t kMinSize = kVaultNonceBytes + kVaultMacBytes + 1;
@@ -200,10 +161,7 @@ std::size_t vault_read_secure(const fs::path &path, const std::string &password,
         throw std::runtime_error("vault: file too small or corrupted: " + path.string());
     }
 
-    const uint8_t *nonce = vault_bytes.data();
-    const uint8_t *ciphertext = vault_bytes.data() + kVaultNonceBytes;
-    const std::size_t clen = vault_bytes.size() - kVaultNonceBytes;
-    const std::size_t plain_len = clen - kVaultMacBytes;
+    const std::size_t plain_len = vault_bytes.size() - sec::SecureSubsystem::kSealedOverheadBytes;
 
     auto span_as_u8 = std::span<std::uint8_t>(reinterpret_cast<std::uint8_t *>(out_buf.data()),
                                               out_buf.size_bytes());
@@ -215,23 +173,12 @@ std::size_t vault_read_secure(const fs::path &path, const std::string &password,
                                  std::to_string(out_buf.size_bytes()) + "): " + path.string());
     }
 
-    auto key = vault_derive_key(password, uid);
-    struct KeyGuard
-    {
-        std::array<uint8_t, kVaultKeyBytes> &k;
-        ~KeyGuard()
-        {
-            pylabhub::utils::security::secure().memzero(
-                std::span<std::uint8_t>(k.data(), k.size()));
-        }
-    } key_guard{key};
-
-    // Decrypt into the caller's span via SMS Category 1c
-    // (HEP-CORE-0043 §5).
-    const std::size_t decoded = sec::secure().secretbox_decrypt(
-        span_as_u8.data(), span_as_u8.size(), ciphertext, clen,
-        std::span<const std::uint8_t, 24>(nonce, kVaultNonceBytes),
-        std::span<const std::uint8_t, 32>(key.data(), kVaultKeyBytes));
+    // No key here either — the whole file, nonce included, goes to the
+    // named-key operation.  A 0 return IS the password check: the
+    // Poly1305 tag either verifies or it does not.
+    const std::size_t decoded = sec::secure().secretbox_decrypt_using(
+        key_name, std::span<const std::uint8_t>(vault_bytes.data(), vault_bytes.size()),
+        span_as_u8);
     if (decoded == 0)
     {
         sec::secure().memzero(span_as_u8);

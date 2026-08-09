@@ -1090,6 +1090,7 @@ add_executable(test_layer2_hub_vault
 target_link_libraries(test_layer2_hub_vault
     PRIVATE
         pylabhub::utils
+        pylabhub::test_framework
         GTest::gtest
         GTest::gtest_main
 )
@@ -1116,6 +1117,7 @@ add_executable(test_layer2_role_vault
 target_link_libraries(test_layer2_role_vault
     PRIVATE
         pylabhub::utils
+        pylabhub::test_framework
         GTest::gtest
         GTest::gtest_main
 )

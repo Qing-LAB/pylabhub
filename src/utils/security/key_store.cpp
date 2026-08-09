@@ -17,6 +17,7 @@
 #include "utils/security/secure_buffer.hpp"
 #include "utils/security/secure_subsystem.hpp"
 
+#include <array>
 #include <cstring>
 #include <mutex>
 #include <shared_mutex>
@@ -54,8 +55,11 @@ class LockedKey
         : buf_(static_cast<std::byte *>(::sodium_malloc(plaintext_src.size_bytes()))),
           len_(plaintext_src.size_bytes())
     {
-        // Debug — first sodium_malloc site.  Shows exactly what happens
-        // when the failing CI test hits the allocator.
+        // Every locked allocation is logged: `sodium_malloc` is the one
+        // step here that fails for an environmental reason rather than a
+        // programming one (RLIMIT_MEMLOCK), and when it does, the throw
+        // below surfaces far from the cause.  Size and outcome only —
+        // never the bytes.
         LOGGER_INFO("[LockedKey] event=SodiumMalloc size={} buf_null={}", len_, buf_ == nullptr);
         if (buf_ == nullptr)
         {
@@ -120,6 +124,51 @@ class LockedKey
 
 #ifdef __linux__
         // Same page-granular defence as the span ctor.
+        if (::madvise(buf_, len_, MADV_DONTDUMP) != 0)
+        {
+            // Best-effort; PR_SET_DUMPABLE=0 is the primary defence.
+        }
+#endif
+    }
+
+    /// Tag for the password-derivation constructor below.
+    struct PasswordDerive
+    {
+    };
+
+    /// Allocate `len` locked bytes and let Argon2id write its output
+    /// **directly into them**.  Same reasoning as `RandomFill`: the
+    /// derived key is a secret, and `crypto_pwhash` is perfectly happy
+    /// to write into the locked allocation, so there is no reason to
+    /// let it land in a caller's array first.
+    ///
+    /// Throws `std::runtime_error` if allocation fails, or if Argon2id
+    /// fails — for these inputs that means it could not obtain
+    /// `memlimit` bytes.
+    LockedKey(std::size_t len, PasswordDerive, std::string_view password,
+              const std::uint8_t *salt, unsigned long long opslimit, std::size_t memlimit)
+        : buf_(static_cast<std::byte *>(::sodium_malloc(len))), len_(len)
+    {
+        if (buf_ == nullptr)
+        {
+            throw std::runtime_error("LockedKey: sodium_malloc failed — RLIMIT_MEMLOCK likely "
+                                     "exhausted (HEP-CORE-0040 §6.1).");
+        }
+        const bool ok = secure().pwhash_argon2id(reinterpret_cast<std::uint8_t *>(buf_), len_,
+                                                 password.data(), password.size(), salt, opslimit,
+                                                 memlimit);
+        if (!ok)
+        {
+            // The allocation is ours and half-written; release it here
+            // rather than leaving a partially-derived key behind.  The
+            // dtor does not run — the object never finished construction.
+            ::sodium_free(buf_);
+            buf_ = nullptr;
+            throw std::runtime_error("LockedKey: Argon2id derivation failed — could not obtain " +
+                                     std::to_string(memlimit) + " bytes for the KDF.");
+        }
+
+#ifdef __linux__
         if (::madvise(buf_, len_, MADV_DONTDUMP) != 0)
         {
             // Best-effort; PR_SET_DUMPABLE=0 is the primary defence.
@@ -402,6 +451,110 @@ void KeyStore::add_random_key(std::string_view name, std::size_t byte_count)
     pImpl->store.emplace(std::move(name_key), std::move(entry));
 }
 
+namespace
+{
+/// Shared by `add_key_from_password` and `replace_key_from_password`:
+/// validate, hash the scope into a salt, and derive into locked memory.
+/// Returns the finished entry; the caller holds the lock and decides
+/// whether an existing name is an error or a replacement.
+///
+/// The salt is NOT secret — it is BLAKE2b(scope) and the scope is a
+/// uid — so an ordinary stack array is the right home for it.  The
+/// derived key is secret, and it never appears here at all: it is
+/// written straight into the LockedKey.
+[[nodiscard]] std::unique_ptr<LockedKey> derive_locked(const char *op, std::string_view name,
+                                                       std::string_view password,
+                                                       std::string_view scope,
+                                                       std::size_t byte_count,
+                                                       unsigned long long opslimit,
+                                                       std::size_t memlimit)
+{
+    if (byte_count == 0)
+    {
+        throw std::invalid_argument(std::string("KeyStore::") + op +
+                                    ": byte_count must be non-zero: '" + std::string(name) + "'");
+    }
+    if (scope.empty())
+    {
+        // An empty scope is not a harmless default — it would give every
+        // vault on the machine the same salt, so one cracked password
+        // would open all of them.  The caller must name a domain.
+        throw std::invalid_argument(std::string("KeyStore::") + op +
+                                    ": scope must be non-empty (it is the per-vault domain "
+                                    "separator — pass the hub or role uid): '" +
+                                    std::string(name) + "'");
+    }
+
+    std::array<std::uint8_t, SecureSubsystem::kPwhashSaltBytes> salt{};
+    if (!secure().derive_pwhash_salt(salt.data(), scope))
+    {
+        throw std::runtime_error(std::string("KeyStore::") + op + ": salt derivation failed: '" +
+                                 std::string(name) + "'");
+    }
+
+    return std::make_unique<LockedKey>(byte_count, LockedKey::PasswordDerive{}, password,
+                                       salt.data(), opslimit, memlimit);
+}
+} // namespace
+
+void KeyStore::add_key_from_password(std::string_view name, std::string_view password,
+                                     std::string_view scope, std::size_t byte_count,
+                                     unsigned long long opslimit, std::size_t memlimit)
+{
+    // Derive BEFORE taking the write lock.  Argon2id is deliberately
+    // slow — 100 ms at the default cost, five seconds at the high one —
+    // and holding an exclusive lock across it would stall every reader
+    // in the process for that whole time.  The duplicate check below
+    // still happens under the lock, so the only cost of a race is a
+    // wasted derivation on the losing thread.
+    auto key = derive_locked("add_key_from_password", name, password, scope, byte_count, opslimit,
+                             memlimit);
+
+    LOGGER_INFO("[KeyStore] event=AddKeyFromPassword name='{}' size={} scope='{}'",
+                std::string(name), byte_count, std::string(scope));
+    std::string name_key(name);
+
+    std::unique_lock<std::shared_mutex> wlk(pImpl->mu);
+
+    if (pImpl->store.find(name_key) != pImpl->store.end())
+    {
+        throw std::runtime_error("KeyStore::add_key_from_password: name already present: '" +
+                                 std::string(name) + "' (use replace_key_from_password)");
+    }
+
+    Impl::Entry entry;
+    entry.key = std::move(key);
+    entry.is_identity = false;
+
+    pImpl->store.emplace(std::move(name_key), std::move(entry));
+}
+
+void KeyStore::replace_key_from_password(std::string_view name, std::string_view password,
+                                         std::string_view scope, std::size_t byte_count,
+                                         unsigned long long opslimit, std::size_t memlimit)
+{
+    // Same out-of-lock derivation as `add_key_from_password`, and for
+    // the same reason.
+    auto key = derive_locked("replace_key_from_password", name, password, scope, byte_count,
+                             opslimit, memlimit);
+
+    LOGGER_INFO("[KeyStore] event=ReplaceKeyFromPassword name='{}' size={} scope='{}'",
+                std::string(name), byte_count, std::string(scope));
+    std::string name_key(name);
+
+    std::unique_lock<std::shared_mutex> wlk(pImpl->mu);
+
+    // Assign over any existing entry.  The old LockedKey's dtor runs
+    // here, under the write lock, so it is memzero'd + freed before any
+    // reader can observe the new one — there is never a window where
+    // the name resolves to nothing.
+    Impl::Entry entry;
+    entry.key = std::move(key);
+    entry.is_identity = false;
+
+    pImpl->store.insert_or_assign(std::move(name_key), std::move(entry));
+}
+
 std::string_view KeyStore::pubkey(std::string_view name) const
 {
     std::shared_lock<std::shared_mutex> rlk(pImpl->mu);
@@ -537,6 +690,31 @@ void KeyStore::with_keypair_z85(
         throw;
     }
     ::sodium_memzero(sec_z85_buf, sizeof(sec_z85_buf));
+}
+
+void KeyStore::with_raw_key(std::string_view name,
+                            std::function<void(std::span<const std::byte>)> use) const
+{
+    std::shared_lock<std::shared_mutex> rlk(pImpl->mu);
+
+    const auto it = pImpl->store.find(std::string(name));
+    if (it == pImpl->store.end())
+    {
+        throw std::out_of_range("KeyStore::with_raw_key: name not present: '" + std::string(name) +
+                                "'");
+    }
+    if (it->second.is_identity)
+    {
+        throw std::out_of_range("KeyStore::with_raw_key: '" + std::string(name) +
+                                "' is an identity keypair, not a raw secret — use with_seckey "
+                                "(the stored buffer is the 64-byte pub||sec pack, so handing it "
+                                "over whole would be the wrong bytes)");
+    }
+
+    // Shared lock held across the callback: a concurrent remove(name)
+    // blocks until this returns.  Same contract as with_seckey
+    // (HEP-CORE-0040 §5.5) — callback MUST be prompt.
+    use(it->second.key->bytes());
 }
 
 std::span<const std::byte> KeyStore::lookup_raw(std::string_view name) const

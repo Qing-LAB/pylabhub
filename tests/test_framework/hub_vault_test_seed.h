@@ -59,7 +59,7 @@ inline void provision_hub_vault(pylabhub::config::HubConfig &cfg, const CurveSet
 
     auto vault = pylabhub::utils::HubVault::create(vault_path, cfg.identity().uid, password);
     vault.set_known_roles(store.to_json());
-    vault.save(vault_path, cfg.identity().uid, password);
+    vault.save(vault_path);
 }
 
 /// Read the provisioned vault back through the PRODUCTION

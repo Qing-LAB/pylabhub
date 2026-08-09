@@ -5,11 +5,17 @@
  * Used by HubVault and RoleVault. NOT a public header — do not include from
  * outside src/utils/service/.
  *
- * Vault binary format (written/read by vault_write / vault_read):
+ * Vault binary format (written by vault_write, read by vault_read_secure):
  *   [nonce (24 bytes)] [MAC (16 bytes) || ciphertext]
  *
  * Key derivation: Argon2id(password, salt=BLAKE2b-16(uid),
  *                           kVaultOpsLimit, kVaultMemLimit)
+ *
+ * The derived key is held in the process KeyStore under a caller-chosen
+ * name and never appears in this file: `vault_add_key_from_password`
+ * puts it there, and `vault_write` / `vault_read_secure` cite it by
+ * name.  Naming it is what lets the caller reuse it — a save after an
+ * open needs no password and no second derivation.
  *
  * KDF parameters are selected at compile time:
  *   Default (INTERACTIVE):                                       64 MB RAM, ~100 ms/hash
@@ -18,8 +24,10 @@
  *
  * PYLABHUB_VAULT_TEST_KDF is set by tests/CMakeLists.txt ONLY when the
  * build is configured with BUILD_TESTS=ON AND a CI environment is
- * detected.  Production builds (no BUILD_TESTS) cannot reach this
- * branch.  The guard is there because CI runners experience Argon2id
+ * detected.  Note BUILD_TESTS DEFAULTS TO ON — a build that wants the
+ * production KDF in a CI environment must set it OFF explicitly, which
+ * is what the wheel build does (pyproject.toml).  The guard is there
+ * because CI runners experience Argon2id
  * INTERACTIVE stretching to 60+ seconds under memory pressure; MIN
  * restores predictable sub-millisecond keygen for CI runs without
  * compromising the production security posture.
@@ -30,8 +38,8 @@
  */
 #pragma once
 
-// Post-SEC-Fold-2 Phase 2 (HEP-CORE-0043 §1.2 mechanism 4): this
-// header does NOT include `<sodium.h>` directly.  Sodium constants
+// HEP-CORE-0043 §1.2 mechanism 4: this header does NOT include
+// `<sodium.h>` directly.  Sodium constants
 // are hardcoded here — their values are stable ABI (libsodium has
 // preserved them for a decade); if libsodium ever changes them, the
 // static_asserts inside `secure_subsystem.cpp` catch the drift at
@@ -43,6 +51,7 @@
 #include <filesystem>
 #include <span>
 #include <string>
+#include <string_view>
 
 namespace pylabhub::utils::detail
 {
@@ -74,21 +83,34 @@ constexpr std::size_t kVaultSaltBytes = 16U;  // crypto_pwhash_SALTBYTES
 
 // ── Function declarations ─────────────────────────────────────────────────────
 
-/// Ensure libsodium is initialised (idempotent, thread-safe).
-void vault_require_sodium();
+/// Derive the vault's 256-bit key from `password` and file it in the
+/// process KeyStore under `key_name`.  `uid` is the domain separator
+/// (salt = BLAKE2b-16(uid)), so the same password on two vaults with
+/// different uids gives different keys.
+///
+/// The key is derived straight into locked memory and never leaves the
+/// security module — which is why the write / read functions below take
+/// a NAME and not a key.  Before 2026-08-09 this file derived into a
+/// plain stack array and wiped it by hand at two sites; the bytes were
+/// pageable for the whole operation.
+///
+/// Replaces any existing entry under `key_name` — re-opening a vault
+/// re-derives the same key, and a remove-then-add would leave a window
+/// where the name resolves to nothing.
+///
+/// Throws `std::runtime_error` if derivation fails (which, for these
+/// inputs, means Argon2id could not get `kVaultMemLimit` bytes).
+void vault_add_key_from_password(std::string_view key_name, const std::string &password,
+                                 const std::string &uid);
 
-/// Derive a 256-bit encryption key from password and uid (domain separator).
-/// Salt = BLAKE2b-16(uid). Deterministic: same (password, uid) → same key.
-/// The uid acts as a per-vault domain separator so different vaults using the
-/// same password produce different encryption keys.
-std::array<uint8_t, kVaultKeyBytes> vault_derive_key(const std::string &password,
-                                                     const std::string &uid);
-
-/// Encrypt json_payload and write to path as [nonce(24)][MAC(16)||ciphertext].
+/// Encrypt json_payload under the KeyStore key `key_name` and write to
+/// path as [nonce(24)][MAC(16)||ciphertext].  The nonce is generated
+/// inside the security module, so no caller can reuse one.
 /// File permissions are set to 0600 (owner read/write only).
-/// Throws std::runtime_error on crypto or I/O failure.
+/// Throws std::runtime_error on crypto or I/O failure, and
+/// `std::out_of_range` if `key_name` is not in the KeyStore.
 void vault_write(const std::filesystem::path &path, const std::string &json_payload,
-                 const std::string &password, const std::string &uid);
+                 std::string_view key_name);
 
 /// Decrypt the vault at `path` and write the plaintext JSON bytes
 /// directly into `out_buf`.  Returns the number of bytes written.
@@ -96,20 +118,25 @@ void vault_write(const std::filesystem::path &path, const std::string &json_payl
 /// `out_buf` MUST be large enough to hold the plaintext; throws
 /// `std::runtime_error` if the plaintext does not fit (the caller's
 /// span is zeroed before the throw to avoid leaving a partial leak).
-/// Same throws as `vault_read` for MAC failure / I/O error / minimum-
-/// size violation.
+/// Also throws `std::runtime_error` on MAC failure, I/O error, or a
+/// file too short to hold a nonce and a MAC.
 ///
-/// Unlike `vault_read`, no `std::string` materializes — the plaintext
-/// never lives in a heap-allocated container whose destructor cannot
-/// be trusted to zero (HEP-CORE-0040 §175).  Callers typically pair
-/// this with `pylabhub::utils::security::SecureBuffer<N>` whose
-/// destructor `sodium_memzero`'s the bytes:
+/// No `std::string` materializes on this path — the plaintext never
+/// lives in a heap-allocated container whose destructor cannot be
+/// trusted to zero (HEP-CORE-0040 §175).  Callers typically pair this
+/// with `pylabhub::utils::security::SecureBuffer<N>` whose destructor
+/// `sodium_memzero`'s the bytes:
 ///
+///     vault_add_key_from_password(kName, pw, uid);
 ///     SecureBuffer<4096> json_buf;
-///     auto n = vault_read_secure(path, pw, uid, json_buf.span());
+///     auto n = vault_read_secure(path, kName, json_buf.span());
 ///     // parse JSON from json_buf.span().first(n) ...
 ///     // json_buf dtor zeros the plaintext when this scope exits.
-std::size_t vault_read_secure(const std::filesystem::path &path, const std::string &password,
-                              const std::string &uid, std::span<std::byte> out_buf);
+///
+/// A wrong password is not distinguishable from a corrupted file, and
+/// deliberately so: the Poly1305 tag verifying IS the password check.
+/// Throws `std::out_of_range` if `key_name` is not in the KeyStore.
+std::size_t vault_read_secure(const std::filesystem::path &path, std::string_view key_name,
+                              std::span<std::byte> out_buf);
 
 } // namespace pylabhub::utils::detail

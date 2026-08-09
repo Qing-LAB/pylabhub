@@ -81,10 +81,8 @@ RoleVault &RoleVault::operator=(RoleVault &&) noexcept = default;
 // ============================================================================
 
 RoleVault RoleVault::create(const fs::path &vault_path, const std::string &role_uid,
-                            const std::string &password)
+                            const std::string &password, std::string_view key_name)
 {
-    detail::vault_require_sodium();
-
     // Generate CurveZMQ keypair (Z85).
     auto kp = pylabhub::utils::security::generate_curve_keypair();
     const std::string pub_str = std::move(kp.public_z85);
@@ -116,7 +114,8 @@ RoleVault RoleVault::create(const fs::path &vault_path, const std::string &role_
 
     // Serialize and encrypt payload.
     const json payload = {{"role_uid", role_uid}, {"public_key", pub_str}, {"secret_key", sec_str}};
-    detail::vault_write(vault_path, payload.dump(), password, role_uid);
+    detail::vault_add_key_from_password(key_name, password, role_uid);
+    detail::vault_write(vault_path, payload.dump(), key_name);
 
     RoleVault v;
     if (pub_str.size() != Impl::kKeyLen || sec_str.size() != Impl::kKeyLen)
@@ -134,15 +133,13 @@ RoleVault RoleVault::create(const fs::path &vault_path, const std::string &role_
 // ============================================================================
 
 RoleVault RoleVault::open(const fs::path &vault_path, const std::string &role_uid,
-                          const std::string &password)
+                          const std::string &password, std::string_view key_name)
 {
-    detail::vault_require_sodium();
-
     // HEP-CORE-0040 §175: decrypt into a stack buffer whose destructor
     // zeroes the plaintext when this scope exits.
     pylabhub::utils::security::SecureBuffer<4096> json_buf;
-    const std::size_t n =
-        detail::vault_read_secure(vault_path, password, role_uid, json_buf.span());
+    detail::vault_add_key_from_password(key_name, password, role_uid);
+    const std::size_t n = detail::vault_read_secure(vault_path, key_name, json_buf.span());
 
     RoleVault v;
     try
