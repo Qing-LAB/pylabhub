@@ -488,6 +488,54 @@ int add_identity_wrong_size_throws(const char * /*tmpdir*/)
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
+// ── add_random_key — mint straight into locked memory ──────────────────────
+//
+// Pins what the operation promises (HEP-CORE-0043 §2.5): a key of the
+// requested length exists under the name, a duplicate name is refused
+// rather than silently replaced, and a zero length is rejected.
+//
+// The assertion that earns its place is the LAST one: two mints under
+// different names must differ.  A stub that returned zeroed memory, or
+// one that reused a buffer, would satisfy "present and correct length"
+// and fail only here.
+int add_random_key_mints_into_locked_memory(const char * /*tmpdir*/)
+{
+    return run_gtest_worker(
+        [&]()
+        {
+            secure().keys().add_random_key("mint:a", 32);
+
+            ASSERT_TRUE(secure().keys().has("mint:a"));
+            auto a = secure().keys().lookup_raw("mint:a");
+            ASSERT_EQ(a.size(), 32u) << "minted key is not the requested length";
+
+            // Not all-zero.  A zeroed allocation would pass a
+            // presence-and-length check and be catastrophic.
+            bool any_nonzero = false;
+            for (auto b : a)
+                if (b != std::byte{0})
+                    any_nonzero = true;
+            EXPECT_TRUE(any_nonzero) << "minted key is all zeroes — CSPRNG did not run";
+
+            // A second name yields different bytes.  Catches a stub, a
+            // reused buffer, or a mis-seeded generator.
+            secure().keys().add_random_key("mint:b", 32);
+            auto b = secure().keys().lookup_raw("mint:b");
+            ASSERT_EQ(b.size(), 32u);
+            EXPECT_FALSE(std::equal(a.begin(), a.end(), b.begin()))
+                << "two mints produced identical bytes";
+
+            // Duplicate name is refused, not silently replaced —
+            // overwriting a live key must never be accidental.
+            EXPECT_THROW(secure().keys().add_random_key("mint:a", 32), std::runtime_error);
+
+            // Zero length is a caller error.
+            EXPECT_THROW(secure().keys().add_random_key("mint:zero", 0), std::invalid_argument);
+        },
+        "key_store::add_random_key_mints_into_locked_memory", Logger::GetLifecycleModule(),
+        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
+}
+
 int add_raw_then_lookup_raw_roundtrip(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
@@ -1312,6 +1360,27 @@ int pwhash_argon2id_roundtrip(const char * /*tmpdir*/)
             EXPECT_NE(key_a1, key_a_alt)
                 << "different salt (same password) must give different key";
 
+            // The cost parameters must actually REACH libsodium.
+            //
+            // Until 2026-08-09 this wrapper hardcoded INTERACTIVE and
+            // ignored any caller setting, which silently disabled the
+            // vault's three compile-time strength profiles: asking for
+            // SENSITIVE produced an INTERACTIVE vault and reported
+            // success.  The default profile happened to equal
+            // INTERACTIVE, so nothing looked wrong.
+            //
+            // Same password, same salt, one notch more work — a
+            // different key, because opslimit feeds the hash.  If the
+            // parameter is ignored again, these come out equal and this
+            // fails.  That is the whole point of the assertion.
+            std::array<std::uint8_t, 32> key_costly{};
+            ASSERT_TRUE(sec::secure().pwhash_argon2id(
+                key_costly.data(), key_costly.size(), password_a, std::strlen(password_a),
+                salt_a.data(), sec::SecureSubsystem::kPwhashOpsLimitInteractive + 1,
+                sec::SecureSubsystem::kPwhashMemLimitInteractive));
+            EXPECT_NE(key_a1, key_costly)
+                << "opslimit did not reach crypto_pwhash — caller cost settings are being ignored";
+
             // Null pointer → false.
             EXPECT_FALSE(sec::secure().pwhash_argon2id(nullptr, 32, password_a,
                                                        std::strlen(password_a), salt_a.data()));
@@ -1542,6 +1611,8 @@ int dispatch_key_store(int argc, char **argv)
         return add_identity_duplicate_throws(tmpdir);
     if (scenario == "add_identity_wrong_size_throws")
         return add_identity_wrong_size_throws(tmpdir);
+    if (scenario == "add_random_key_mints_into_locked_memory")
+        return add_random_key_mints_into_locked_memory(tmpdir);
     if (scenario == "add_raw_then_lookup_raw_roundtrip")
         return add_raw_then_lookup_raw_roundtrip(tmpdir);
     if (scenario == "remove_makes_subsequent_lookup_throw")

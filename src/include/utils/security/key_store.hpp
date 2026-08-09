@@ -223,6 +223,22 @@ class PYLABHUB_UTILS_EXPORT KeyStore
     /// `sodium_malloc` fails.
     void add_raw(std::string_view name, std::span<std::byte> plaintext);
 
+    /// Mint `byte_count` fresh random bytes **directly into locked
+    /// memory** and store them under `name`.
+    ///
+    /// Prefer this over `random_bytes` into a buffer followed by
+    /// `add_raw`: that sequence puts a secret in ordinary memory,
+    /// which the OS may page to disk before the buffer is wiped.  Here
+    /// no buffer exists — the CSPRNG writes into the `sodium_malloc`
+    /// allocation, so the key is never anywhere unlocked.
+    ///
+    /// Throws `std::runtime_error` if `name` is already present (same
+    /// rule as `add_raw` — an existing key is never silently replaced;
+    /// remove it first, or use the explicit replace operation) or if
+    /// `sodium_malloc` fails.  Throws `std::invalid_argument` if
+    /// `byte_count` is 0.
+    void add_random_key(std::string_view name, std::size_t byte_count);
+
     /// Remove a stored secret.  No-op if absent.  Blocks until any
     /// in-flight `with_seckey` callback for the same name returns —
     /// correct security semantic: bytes become unreachable for every

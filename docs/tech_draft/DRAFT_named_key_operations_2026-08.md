@@ -55,6 +55,27 @@ Two ways out:
 The second is preferable and is the one consistent with the module's
 promise. It costs a restructure of `create`.
 
+**✅ DECIDED — the second, and the on-disk bytes do not move at all.**
+Confirmed by reading both sides of the format:
+
+```
+on disk today:   [ nonce(24) ][ MAC(16) ‖ ciphertext ]
+   vault_write        assembles exactly this
+   vault_read_secure  parses exactly this
+```
+
+That is **byte-for-byte what `secretbox_encrypt_using` produces** when it
+generates the nonce and prepends it — which is the shape §2.5.3 already
+settled on for its own reason (a caller cannot reuse a nonce it cannot
+supply). The two decisions happen to agree.
+
+Consequence, and it removes the biggest risk in the plan: a vault written
+by the old code opens under the new code and vice versa, because they
+write identical bytes. **Step 4's fixture-vault check becomes a
+straightforward compatibility test rather than a migration**, and the
+contradiction flagged in §6 dissolves — there is no format change to
+reconcile.
+
 ### 2.2 The strategy depends on completeness, and completeness has failed
 
 **This plan finds and fixes copies one at a time. Five review passes each
@@ -220,7 +241,7 @@ Seven steps, each leaving the tree green and independently reviewable.
 
 | Step | Change | Removes |
 |---|---|---|
-| 1 | `add_random_key` | the mint-on-stack-then-`add_raw` pattern in the admin session seal |
+| 1 | `add_random_key` ✅ **DONE** | the mint-on-stack-then-`add_raw` pattern in the admin session seal |
 | 2 | `secretbox_*_using` | the two `lookup_raw` spans in `admin_session.cpp` |
 | 3 | `add_key_from_password` + `replace_key_from_password` | — (prerequisite for 4) |
 | 4 | the three file operations; migrate `vault_crypto` | **the stack key (§3.1)** |
@@ -231,6 +252,32 @@ Seven steps, each leaving the tree green and independently reviewable.
 Steps 1-2 prove the shape on a live consumer before the vault depends on
 it. Step 4 carries the real risk — it touches the at-rest read and write
 paths.
+
+### Step 1 — done, and one design choice worth recording
+
+`KeyStore::add_random_key(name, byte_count)` shipped; the admin
+session-seal key now uses it.
+
+**The choice that mattered: a naive implementation would have recreated
+the problem inside the module.** `LockedKey`'s only constructor took a
+source span — safe, because it wipes that source, but a caller still has
+to materialise the bytes *somewhere* first, and that somewhere is
+ordinary memory the OS may page out before the wipe runs. Implementing
+`add_random_key` on top of it would have moved the exposure window from
+`admin_session.cpp` into `key_store.cpp` and called it fixed.
+
+So `LockedKey` gained a **fill-in-place constructor**: allocate the
+locked region, then have the CSPRNG write directly into it. There is no
+source buffer at any point, so there is nothing to wipe and no window at
+all. That is the difference between relocating a problem and removing
+one, and it is the shape the remaining steps should follow.
+
+**Verified:** mutation-checked — deleting the `randombytes_buf` call
+makes the test fail on the all-zeroes assertion, which is the assertion
+that exists for exactly that. Absence check on the migrated caller: no
+`add_raw`, no key-bearing buffer, no key `memzero`. One `random_bytes`
+call remains there for the *nonce* — that is step 2's target, not step
+1's residue.
 
 ### Why step 5 exists as its own step
 

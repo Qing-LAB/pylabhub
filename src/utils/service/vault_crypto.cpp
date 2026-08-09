@@ -128,8 +128,16 @@ std::array<uint8_t, kVaultKeyBytes> vault_derive_key(const std::string &password
     }
 
     std::array<uint8_t, kVaultKeyBytes> key{};
+    // Pass the vault's OWN cost parameters.  Until 2026-08-09 this call
+    // omitted them and `pwhash_argon2id` hardcoded INTERACTIVE, so the
+    // three compile-time profiles above selected constants that reached
+    // nothing: `-DPYLABHUB_VAULT_HIGH_SECURITY` produced ordinary
+    // INTERACTIVE vaults while reporting success, and the CI fast-KDF
+    // build paid the full ~100 ms it was added to avoid.  The default
+    // profile matched INTERACTIVE by coincidence, which is why it went
+    // unnoticed.
     if (!sec::secure().pwhash_argon2id(key.data(), key.size(), password.data(), password.size(),
-                                       salt))
+                                       salt, kVaultOpsLimit, kVaultMemLimit))
     {
         throw std::runtime_error("vault: Argon2id key derivation failed (insufficient memory?)");
     }

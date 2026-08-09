@@ -670,8 +670,17 @@ std::size_t SecureSubsystem::box_decrypt_using(std::string_view own_seckey_name,
 }
 
 bool SecureSubsystem::pwhash_argon2id(std::uint8_t *out, std::size_t out_len, const char *password,
-                                      std::size_t password_len, const std::uint8_t *salt)
+                                      std::size_t password_len, const std::uint8_t *salt,
+                                      unsigned long long opslimit, std::size_t memlimit)
 {
+    // The header mirrors libsodium's INTERACTIVE pair so callers can
+    // name them without including <sodium.h>.  Pin them here so the
+    // mirror cannot drift from the library.
+    static_assert(kPwhashOpsLimitInteractive == crypto_pwhash_OPSLIMIT_INTERACTIVE,
+                  "mirrored Argon2id opslimit no longer matches libsodium");
+    static_assert(kPwhashMemLimitInteractive == crypto_pwhash_MEMLIMIT_INTERACTIVE,
+                  "mirrored Argon2id memlimit no longer matches libsodium");
+
     if (out == nullptr || password == nullptr || salt == nullptr)
     {
         LOGGER_ERROR("[SecureSubsystem] pwhash_argon2id: null pointer argument");
@@ -686,9 +695,8 @@ bool SecureSubsystem::pwhash_argon2id(std::uint8_t *out, std::size_t out_len, co
                      static_cast<unsigned long long>(crypto_pwhash_BYTES_MAX));
         return false;
     }
-    const int rc = ::crypto_pwhash(
-        out, out_len, password, password_len, salt, crypto_pwhash_OPSLIMIT_INTERACTIVE,
-        crypto_pwhash_MEMLIMIT_INTERACTIVE, crypto_pwhash_ALG_ARGON2ID13);
+    const int rc = ::crypto_pwhash(out, out_len, password, password_len, salt, opslimit, memlimit,
+                                   crypto_pwhash_ALG_ARGON2ID13);
     if (rc != 0)
     {
         LOGGER_ERROR("[SecureSubsystem] crypto_pwhash returned {}", rc);

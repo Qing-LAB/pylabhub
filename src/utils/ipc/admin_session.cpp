@@ -63,11 +63,12 @@ void ensure_session_seal_key()
     auto &ks = sec::secure().keys();
     if (ks.has(kAdminSessionSealKeyName))
         return;
-    std::array<std::uint8_t, kKeyBytes> key{};
-    sec::secure().random_bytes(std::span<std::uint8_t>(key.data(), key.size()));
-    ks.add_raw(kAdminSessionSealKeyName,
-               std::as_writable_bytes(std::span<std::uint8_t>(key.data(), key.size())));
-    sec::secure().memzero(std::span<std::uint8_t>(key.data(), key.size()));
+    // Minted straight into locked memory.  This previously generated
+    // into a stack array, copied it in with `add_raw`, then wiped the
+    // array — three steps during which the key existed in ordinary
+    // memory the OS could page to disk before the wipe.  `add_random_key`
+    // has no such window: there is no source buffer to page out.
+    ks.add_random_key(kAdminSessionSealKeyName, kKeyBytes);
 }
 
 std::string seal_session_id(const AdminSessionFacts &facts)

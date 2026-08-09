@@ -155,6 +155,19 @@ TEST_F(KeyStoreTest, AddIdentity_WrongSize_Throws)
     ExpectWorkerOk(w);
 }
 
+// ── Minted secrets — add_random_key (HEP-CORE-0043 §2.5) ───────────────────
+
+/// The named-key mint: CSPRNG writes straight into the locked
+/// allocation, so a fresh secret is never present in ordinary memory.
+/// Replaces the random_bytes → stack buffer → add_raw → memzero
+/// sequence, which held the key in pageable memory for three steps.
+TEST_F(KeyStoreTest, AddRandomKey_MintsIntoLockedMemory)
+{
+    auto w = SpawnWorker("key_store.add_random_key_mints_into_locked_memory",
+                         {unique_dir("mint_random")});
+    ExpectWorkerOk(w);
+}
+
 // ── Raw secret (HEP-0038) happy path ───────────────────────────────────────
 
 TEST_F(KeyStoreTest, AddRaw_LookupRawRoundtrip)

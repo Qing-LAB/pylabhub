@@ -344,13 +344,41 @@ class PYLABHUB_UTILS_EXPORT SecureSubsystem
     /// @param salt           16-byte salt (`kPwhashSaltBytes`).
     /// @return true on success, false on null pointer or Argon2
     ///         failure (typically insufficient memory).
+    /// Argon2id password hashing.
+    ///
+    /// **`opslimit` / `memlimit` are the caller's policy, not this
+    /// module's.**  How expensive a derivation should be depends on
+    /// what is being protected and where it runs, so the owner of the
+    /// data chooses; the defaults below are libsodium's INTERACTIVE
+    /// pair and suit a caller with no opinion.
+    ///
+    /// This used to hardcode INTERACTIVE with no way to override it,
+    /// which silently disabled every caller-side strength setting —
+    /// `vault_crypto`'s three compile-time profiles selected constants
+    /// that then reached nothing.  A cost knob that cannot be read is
+    /// worse than none: the build reports success and the strength
+    /// never changes.
+    ///
+    /// **Changing these changes what can be decrypted.**  A key derived
+    /// at one setting will not match one derived at another, and the
+    /// failure surfaces as a MAC mismatch — indistinguishable from a
+    /// wrong password.
     [[nodiscard]] bool pwhash_argon2id(std::uint8_t *out, std::size_t out_len, const char *password,
-                                       std::size_t password_len, const std::uint8_t *salt);
+                                       std::size_t password_len, const std::uint8_t *salt,
+                                       unsigned long long opslimit = kPwhashOpsLimitInteractive,
+                                       std::size_t memlimit = kPwhashMemLimitInteractive);
 
     /// `crypto_pwhash_SALTBYTES` (16) — the exact salt size Argon2id
     /// requires as input.  Exposed as a constant so callers can size
     /// their salt buffers without pulling `<sodium.h>` in.
     static constexpr std::size_t kPwhashSaltBytes = 16;
+
+    /// libsodium's INTERACTIVE cost pair — the default for callers with
+    /// no policy of their own.  Mirrored here so callers can name the
+    /// values without including `<sodium.h>`; static-asserted against
+    /// the real constants in the implementation, so they cannot drift.
+    static constexpr unsigned long long kPwhashOpsLimitInteractive = 2ULL;
+    static constexpr std::size_t kPwhashMemLimitInteractive = 67108864U; // 64 MiB
 
     // ═════════════════════════════════════════════════════════════
     // Category 1c — Encryption / decryption (protocol operations)

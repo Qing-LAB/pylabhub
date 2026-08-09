@@ -92,6 +92,41 @@ class LockedKey
         }
     }
 
+    /// Tag for the fill-in-place constructor below.
+    struct RandomFill
+    {
+    };
+
+    /// Allocate `len` locked bytes and fill them with CSPRNG output
+    /// **in place** — there is no source buffer, so there is nothing to
+    /// copy from and nothing to wipe afterwards.
+    ///
+    /// This exists so `add_random_key` can mint a secret without one
+    /// ever existing outside locked memory.  The span constructor above
+    /// is safe (it wipes its source), but a caller still has to
+    /// materialise the bytes somewhere first; that "somewhere" is
+    /// ordinary memory the OS may page out before the wipe happens.
+    /// For a freshly minted key there is no reason to accept that
+    /// window at all.
+    LockedKey(std::size_t len, RandomFill)
+        : buf_(static_cast<std::byte *>(::sodium_malloc(len))), len_(len)
+    {
+        if (buf_ == nullptr)
+        {
+            throw std::runtime_error("LockedKey: sodium_malloc failed — RLIMIT_MEMLOCK likely "
+                                     "exhausted (HEP-CORE-0040 §6.1).");
+        }
+        ::randombytes_buf(buf_, len_);
+
+#ifdef __linux__
+        // Same page-granular defence as the span ctor.
+        if (::madvise(buf_, len_, MADV_DONTDUMP) != 0)
+        {
+            // Best-effort; PR_SET_DUMPABLE=0 is the primary defence.
+        }
+#endif
+    }
+
     LockedKey(const LockedKey &) = delete;
     LockedKey &operator=(const LockedKey &) = delete;
     LockedKey(LockedKey &&) = delete;
@@ -332,6 +367,36 @@ void KeyStore::add_raw(std::string_view name, std::span<std::byte> plaintext)
 
     Impl::Entry entry;
     entry.key = std::make_unique<LockedKey>(plaintext);
+    entry.is_identity = false;
+
+    pImpl->store.emplace(std::move(name_key), std::move(entry));
+}
+
+void KeyStore::add_random_key(std::string_view name, std::size_t byte_count)
+{
+    if (byte_count == 0)
+    {
+        throw std::invalid_argument("KeyStore::add_random_key: byte_count must be non-zero: '" +
+                                    std::string(name) + "'");
+    }
+
+    LOGGER_INFO("[KeyStore] event=AddRandomKey name='{}' size={}", std::string(name), byte_count);
+    std::string name_key(name);
+
+    std::unique_lock<std::shared_mutex> wlk(pImpl->mu);
+
+    if (pImpl->store.find(name_key) != pImpl->store.end())
+    {
+        throw std::runtime_error("KeyStore::add_random_key: name already present: '" +
+                                 std::string(name) + "'");
+    }
+
+    Impl::Entry entry;
+    // Fill-in-place: the CSPRNG writes straight into the locked
+    // allocation.  No source buffer exists at any point, so unlike the
+    // random_bytes-then-add_raw sequence this replaces, the key is
+    // never present in memory the OS could page out.
+    entry.key = std::make_unique<LockedKey>(byte_count, LockedKey::RandomFill{});
     entry.is_identity = false;
 
     pImpl->store.emplace(std::move(name_key), std::move(entry));
