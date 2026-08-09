@@ -15,7 +15,7 @@ is not done until its row says so and names the evidence.
 
 | # | Step | State | Evidence / outcome |
 |---|---|---|---|
-| 0a | Resolve HEP-0040 ↔ HEP-0043 key-memory ownership | ⏳ **evidence complete, one decision left** | HEP-0040 read and checked against code — it is accurate and current, not stale. Recommendation + the one remaining edit in §1.1. |
+| 0a | Resolve HEP-0040 ↔ HEP-0043 key-memory ownership | ✅ **done — owner ruled split-by-layer** | 0040 owns storage, 0043 owns the module. Landed in both documents; §7's existing three-subsection list turned out to be the correct answer already. See §1.1. |
 | 0b | Repoint `attach_channel.hpp`'s stale HEP citation | ✅ **done** | HEP-0043 §9.2 itself assigns the `IAttachChannel` seam to HEP-0044; header now says so, with the 0043 §6 and 0041 §9 D4 references kept as *consumer* references. |
 | 1 | Audit §1.5 rotation & lifetime | ❌→✅ **three defects, all fixed** | See §2a. Named a CLI that does not exist; asserted a naming convention §7 explicitly denies; cited an example that cannot occur. |
 | 2 | Audit §1.6 cross-platform layering | ✅ **accurate** | Both named functions exist and are called from the ctor — `disable_core_dumps_or_panic` (`secure_subsystem.cpp:202`, called `:290`), `inspect_memlock_capability` (`:237`, called `:293`). |
@@ -102,11 +102,42 @@ content division, and how the code is arranged:
 | **HEP-0040** | the storage layer — `LockedKey`, `SecureBuffer`, `Z85PublicKey`, the KeyStore API surface (§5.2), and the raw/Z85 representation contract (§8.5.2) |
 | **HEP-0043** | the module — singularity, the init gate, the facade shape, the named-key operations, and how the KeyStore sits inside it as a submodule |
 
-**One edit implements it, and it is the owner's call:** HEP-0043 §7
-currently calls itself *"the primary reference"* for the KeyStore API
-while also saying the surface was *"preserved from HEP-0040 §5.2"* and
-while §13 says nothing is superseded. Those three cannot all hold. §7
-should cite 0040 §5.2 as the contract rather than claim to replace it.
+**✅ RULED AND LANDED — split by layer.** 0040 owns storage, 0043 owns
+the module.
+
+**The surprise while implementing it: §7 already had the right answer,
+at finer granularity than the recommendation.** It listed exactly three
+HEP-0040 subsections as superseded — §5.1 singularity, §5.4
+dynamic-module registration, §5.6 namespace accessor, all module-level
+concerns — and named §5.3, §5.5, §6 and §8.5.2 as remaining
+authoritative. That *is* split-by-layer, written before anyone asked
+for it.
+
+**Two coarser statements contradicted it, in opposite directions**, and
+both were the actual defect:
+
+- The header's `Supersedes` field claimed HEP-0043 supersedes HEP-0040
+  (and 0036, and 0038) **wholesale** — far too broad.
+- §13, added during a recent review pass, said **"No HEP is superseded
+  by this one"** — too narrow, and wrong about the three subsections
+  that genuinely were.
+
+So the fix was not to choose a resolution but to make the blunt claims
+match the precise one that was already there. Landed:
+
+| Site | Change |
+|---|---|
+| Header `Supersedes` | now "nothing wholesale; three subsections of 0040, listed in §7" |
+| §0.4 | §7 is a *convenience view*; 0040 §5.2 is the contract — "where the two differ, 0040 wins and §7 is the bug" |
+| §13 | layer table added; the three superseded subsections named |
+| §13 ownership map | new row: storage → HEP-0040 |
+| **HEP-0040** | banner added stating the same split from its side, so the ruling does not live in only one document |
+
+HEP-0040's own charter had anticipated this: it said it does *not*
+define a general secure-memory subsystem and that future use cases "may
+motivate a broader successor." HEP-0043 is that successor — and the
+ruling is that a successor at a different layer does not replace the
+layer beneath it.
 
 **Already fixed — a duplication this review introduced.** The §1.0
 "raw inside, Z85 outside" paragraph restated §8.5.2's rule without

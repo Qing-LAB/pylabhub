@@ -9,7 +9,7 @@
 | **Area**        | Framework Architecture (security module, libsodium ownership, key management, wire auth) |
 | **Depends on**  | HEP-CORE-0001 (Hybrid Lifecycle Model), HEP-CORE-0031 (ThreadManager pattern) |
 | **Related**     | HEP-CORE-0035 (Hub-Role Auth + Federation Trust — NOT folded; stays independent per SEC-Fold R5), HEP-CORE-0042 (Channel Attach Coordination — NOT folded; stays independent per SEC-Fold R5) |
-| **Supersedes**  | **HEP-CORE-0036** (Authenticated Connection Establishment) — status pointer only; wire content authoritative until further §9.1 migration; **HEP-CORE-0038** (Script-Accessible Vault Keystore) → §8 + §10 (content authoritative in HEP-0038); **HEP-CORE-0040** (Locked Key Memory) → §2 + §7 (raw-32-byte seckey contract in HEP-0040 §8.5.2 still authoritative). |
+| **Supersedes**  | **Nothing wholesale.**  Three *subsections* of **HEP-CORE-0040** are superseded — §5.1, §5.4, §5.6, all module-level concerns this HEP now owns; the rest of HEP-0040 is current and authoritative.  See §7 for the list and §13 for the ownership split.  **HEP-CORE-0036** and **HEP-CORE-0038** are *not* superseded: 0036 is current, and 0038 is a draft whose premises are wrong but which this HEP does not replace. |
 | **Splits from** | **HEP-CORE-0041 §5.5 / §D4.5 / §10.5** — application-layer AttachProtocol + Frame 3 mutual auth hoisted to **HEP-CORE-0044** (2026-07-08); observer path hoisted to **HEP-CORE-0045** (2026-07-08). |
 
 ---
@@ -101,9 +101,11 @@ historical R1-R8 reasoning trace.
   / `box_decrypt_using(...)` cite the seckey by KeyStore entry name
   (use-not-export, §1.4).  `attach_protocol.cpp` migrated
   (Frame 2 verify + Frame 3 mutual-auth signing).
-- **§7 (KeyStore API surface) — SHIPPED 2026-07-06** — carries the
-  full API surface preserved from HEP-CORE-0040 §5.2.  Now the
-  primary reference.
+- **§7 (KeyStore API surface) — SHIPPED 2026-07-06** — restates the
+  surface for readers of this HEP.  **The contract lives in
+  HEP-CORE-0040 §5.2**, which is current and more specific; §7 is a
+  convenience view of it, not a replacement.  Where the two differ,
+  0040 wins and §7 is the bug.
 - **§8–§10** — INDEX sections, not stubs awaiting content.  §8 vault
   → HEP-CORE-0024 §3.4 + HEP-CORE-0033 §7.1 (placement, finalized)
   and HEP-CORE-0035 §4.6/§4.8 (format, payload, CLI).  §9.1 →
@@ -1538,11 +1540,26 @@ missing row.  The broker-observer row was dropped with the feature
 
 ## 13. What this HEP owns, and what it does not
 
-**No HEP is superseded by this one.  Nothing is scheduled to be
-migrated into it.**  An earlier revision listed four HEPs as folding
-in and instructed that each be banner-marked
-"SUPERSEDED-STATUS-ONLY — content authoritative until migration."
-That instruction was withdrawn, for three reasons worth keeping:
+**Owner ruling: the split is by layer.  HEP-CORE-0040 owns storage;
+this HEP owns the module.**
+
+| Layer | Owner | What it covers |
+|---|---|---|
+| **Storage** | **HEP-CORE-0040** | `LockedKey` RAII (§6), `SecureBuffer`, `Z85PublicKey`, the KeyStore API surface (§5.2), canonical entry names (§5.3), the thread-safety contract (§5.5), and the raw-32 seckey representation (§8.5.2) |
+| **Module** | **this HEP** | the libsodium boundary, the init gate, singularity, the facade shape, lifecycle registration, the named-key operations, and how the KeyStore sits inside the module |
+
+Three *subsections* of HEP-0040 moved here when the module absorbed
+those concerns, and only three: **§5.1** (singularity — now enforced by
+this module's singleton), **§5.4** (dynamic-module registration —
+deleted; registration is this module's), **§5.6** (namespace accessor —
+deleted; access is `secure().keys()`).  §7 carries that list and is the
+detailed statement of it.
+
+**Nothing else is superseded, and nothing is scheduled to migrate into
+this HEP.**  An earlier revision listed four HEPs as folding in and
+instructed that each be banner-marked "SUPERSEDED-STATUS-ONLY — content
+authoritative until migration."  That instruction was withdrawn, for
+three reasons worth keeping:
 
 1. **The status was self-contradicting.**  "Superseded but
    authoritative" tells a reader to distrust the only document that
@@ -1560,7 +1577,8 @@ That instruction was withdrawn, for three reasons worth keeping:
 
 | Concern | Owner | Relationship to this HEP |
 |---|---|---|
-| libsodium access, init gate, singularity, key memory | **this HEP §1-§7** | owned here |
+| libsodium access, init gate, singularity, module surface, named-key operations | **this HEP §1-§7** | owned here |
+| Key **storage** — `LockedKey`, `SecureBuffer`, `Z85PublicKey`, KeyStore API surface, entry names, thread safety, raw-32 representation | **HEP-CORE-0040** | the layer beneath this one; §7 cites it, does not replace it |
 | Vault on disk — placement, format, payload, CLI | **0024 §3.4 · 0033 §7.1 · 0035 §4.6/§4.8** | indexed by §8 |
 | ZMQ CURVE + ZAP | **HEP-CORE-0036** | indexed by §9.1; current, not superseded |
 | SHM capability transport | **HEP-CORE-0041** | indexed by §9.2 |

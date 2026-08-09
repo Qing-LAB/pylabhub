@@ -47,6 +47,33 @@
 
 ---
 
+> ## Ownership: this HEP owns the storage layer
+>
+> **Owner ruling — the security material is split by layer, and this is
+> the storage half.**  The charter above anticipated a "broader
+> successor"; **HEP-CORE-0043 is it, and it did not replace this
+> document.**
+>
+> | Layer | Owner |
+> |---|---|
+> | **Storage** — `LockedKey` RAII (§6), `SecureBuffer`, `Z85PublicKey`, the KeyStore API surface (§5.2), canonical entry names (§5.3), thread safety (§5.5), and the raw-32 seckey representation (§8.5.2) | **this HEP** |
+> | **Module** — the libsodium boundary, init gate, singularity, facade shape, lifecycle registration, named-key operations | **HEP-CORE-0043** |
+>
+> **Three subsections here were superseded** when the module absorbed
+> those concerns, and only three:
+>
+> - **§5.1** singularity — now enforced by HEP-0043's singleton
+> - **§5.4** dynamic-module registration — deleted; registration is the
+>   module's
+> - **§5.6** namespace accessor — deleted; access is `secure().keys()`
+>
+> Everything else in this document is **current and authoritative**.
+> HEP-0043 §7 restates the API surface as a convenience view for its own
+> readers; **where the two differ, this document wins and §7 is the
+> bug.**  §8.5.2 in particular is normative and more specific than any
+> summary of it: it defines *two* seckey accessors and exists because
+> confusing them once caused a silent handshake failure.
+
 ## 1. Motivation
 
 CURVE identity keypairs (HEP-CORE-0035) and script-saved vault secrets (HEP-CORE-0038 / task #106) share a runtime-memory protection requirement: locked pages, no core dump exposure, zero-on-destruction. Today HEP-0035 §4.7 sketches a flat utility layer (`SecureKeyBuffer` RAII + `disable_core_dumps()` free function) but treats those as ad-hoc helpers rather than registered framework subsystems.
