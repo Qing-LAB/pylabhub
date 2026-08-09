@@ -20,10 +20,10 @@ is not done until its row says so and names the evidence.
 | 1 | Audit §1.5 rotation & lifetime | ❌→✅ **three defects, all fixed** | See §2a. Named a CLI that does not exist; asserted a naming convention §7 explicitly denies; cited an example that cannot occur. |
 | 2 | Audit §1.6 cross-platform layering | ✅ **accurate** | Both named functions exist and are called from the ctor — `disable_core_dumps_or_panic` (`secure_subsystem.cpp:202`, called `:290`), `inspect_memlock_capability` (`:237`, called `:293`). |
 | 3 | Audit §2.4 cross-platform stubs | ✅ **accurate** | Windows mechanisms present as described: `SetErrorMode` (`:226`), `WerAddExcludedApplication` (`:232`). The `SeLockMemoryPrivilege` "(Windows follow-on)" annotation matches a real WARN-and-skip at `:303`. |
-| 4 | Spot-verify §1.2 gate policy, per method | ⬜ not started | — |
-| 5 | Spot-verify §1.3's remaining four mechanisms | ⬜ not started | one defect already found and fixed (`crypto()`) |
-| 6 | Spot-verify §2.1 facade, §2.3 lifecycle, §3-§6 signatures | ⬜ not started | — |
-| 7 | Verify §11's platform rows against code | ⬜ not started | two rows already corrected; the rest untested |
+| 4 | Spot-verify §1.2 gate policy, per method | ⚠→✅ **outcome right, mechanism misdescribed; fixed** | `panic_if_not_ready` has exactly one call site — `keys()` (`:404`). `box_encrypt_using` does route through `keys().with_seckey`, so the transitive claim holds. But `instance()` has **no gate**; the "double gate" claim was false. See §2b. |
+| 5 | Spot-verify §1.3's remaining four mechanisms | ✅ **all present** | static local (`instance()`); CAS at `:265`; all four `= delete` at `:192-195`; `ModuleDef("SecureSubsystem")` + `add_dependency("…Logger")` at `:389`. |
+| 6 | Spot-verify §2.1 facade, §2.3 lifecycle, §3-§6 signatures | ✅ **doc accurate; one stale CODE comment fixed** | §2.1's "two categories" is right. The `.cpp` said "categories 2 + 3" over a block containing only `keys()` — stale from when Crypto was a second sub-container. Fixed in code, not in the HEP. |
+| 7 | Verify §11's platform rows against code | ⚠ **as far as a Linux box can** | Rows are consistent with the `#ifdef` structure and HEP-0041's phase status. **No non-Linux platform was exercised** — see the honest limit in §2b. |
 | 8 | Execute the named-key plan (seven steps of its own) | ⬜ blocked on 0a-7 | `DRAFT_named_key_operations_2026-08.md` |
 | 9 | Re-run the whole §2 table and record what remains | ⬜ not started | — |
 
@@ -166,6 +166,64 @@ real WARN-and-skip rather than papering over a gap.
 Worth recording that two of three came back clean. The value of an audit
 is not only what it finds — "unaudited" and "audited, fine" are different
 states, and only one of them lets the next reader stop worrying.
+
+---
+
+## 2b. Spot-verify results — the sections marked shipped
+
+### §1.2 gate policy — outcome right, mechanism misdescribed
+
+`panic_if_not_ready` has **exactly one call site**: `keys()`. The two
+substantive claims hold — `keys()` is gated, and `box_encrypt_using`
+really does route through `keys().with_seckey`, so it inherits the gate.
+
+But §1.2 said reaching it via `SecureSubsystem::instance().keys()` panics
+because of a **"double gate"**. There is no second gate. `instance()`
+returns the static and checks nothing; both routes land on the *same*
+check inside `keys()`. The behaviour §1.2 promises is correct; the reason
+it gave was not.
+
+That distinction matters in one specific way: someone removing the check
+from `keys()` while believing a second one existed would open both routes
+at once. Corrected to say there is one gate.
+
+### §1.3 singularity — all five mechanisms present
+
+Static function-local in `instance()`; bringup CAS at `secure_subsystem.cpp:265`;
+all four copy/move operations `= delete` at `secure_subsystem.hpp:192-195`;
+`ModuleDef("SecureSubsystem")` with `add_dependency("pylabhub::utils::Logger")`
+at `:389`; KeyStore a member reached through the gated `keys()`. The one
+defect here — a reference to the deleted `secure().crypto()` — was found
+and fixed in an earlier pass.
+
+### §2.1 / §2.3 — doc accurate, one stale code comment
+
+§2.1's "two categories" is right: flat sodium methods (Category 1,
+subdivided 1a/1b/1c) plus `KeyStore` as the single nested sub-container
+(Category 2). §2.3's lifecycle registration matches exactly.
+
+**The stale artefact was in the code, not the HEP.** `secure_subsystem.cpp`
+labelled that block *"Sub-container accessors (categories 2 + 3)"* — from
+when `Crypto` was a second sub-container. Crypto was collapsed into the
+flat Category 1 methods; only `keys()` remains under that heading. Fixed
+in the source.
+
+Worth naming because it is the reverse of the usual direction here: most
+findings this week were documents overstating code. This one was code
+lagging a document that had already been corrected.
+
+### §11 platform matrix — verified as far as a Linux box allows
+
+The rows are consistent with the `#ifdef` structure in
+`secure_subsystem.cpp` and with HEP-0041's phase status for the SHM row.
+Two rows were corrected in an earlier pass (the false script-store ✅, and
+Windows permission enforcement being partial).
+
+**The honest limit: no non-Linux platform was exercised.** Consistency
+with the preprocessor branches is not the same as the feature working on
+FreeBSD, macOS or Windows, and this audit cannot close that. A row saying
+✅ for Windows rests on reading the Windows branch, not on running it.
+Treat the matrix as "the code intends this", not "this was observed".
 
 ---
 

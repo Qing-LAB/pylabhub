@@ -396,7 +396,11 @@ pylabhub::utils::ModuleDef SecureSubsystem::GetLifecycleModule()
 }
 
 // ============================================================================
-// Sub-container accessors (categories 2 + 3)
+// Sub-container accessor (Category 2 — HEP-CORE-0043 §2.1)
+//
+// There is exactly ONE sub-container.  This block read "categories 2 + 3"
+// while Crypto was a second one; Crypto was collapsed into the flat
+// Category 1 methods and only KeyStore remains.
 // ============================================================================
 
 KeyStore &SecureSubsystem::keys()

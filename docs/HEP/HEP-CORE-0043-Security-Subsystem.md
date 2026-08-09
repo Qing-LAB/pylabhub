@@ -397,8 +397,13 @@ Mechanism, four layers deep:
    and production processes always run under the mod pack
    anyway).  The gate now applies to:
    - **`keys()`** — accesses SMS's `KeyStore` state; PANICs on
-     non-`Initialized` state (bypass path
-     `SecureSubsystem::instance().keys()` also PANICs).
+     non-`Initialized` state.  Reaching it as
+     `SecureSubsystem::instance().keys()` panics too, but note what
+     that is and is not: `instance()` has no gate of its own — it
+     returns the static — so both routes arrive at the **same single
+     check** inside `keys()`.  An earlier revision called this a
+     "double gate", which would imply defence in depth that does not
+     exist.  There is one gate; remove it and both routes open.
    - **`box_encrypt_using` / `box_decrypt_using`** — reach
      through `keys().with_seckey(name, ...)` internally to
      resolve the seckey; inherit the `keys()` gate transitively.
