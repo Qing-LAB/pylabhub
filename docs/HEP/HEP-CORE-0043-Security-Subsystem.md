@@ -292,7 +292,8 @@ encryption is broken and nothing says so.
 
 The right-hand version has none of them, because none of those decisions
 belongs to the caller.  That is what P3 buys, and the gap between these
-two blocks is the work in §2.5.5.
+two blocks is the work listed in §2.5.6 — with the three holes in §2.5.5
+to settle first.
 
 ---
 
@@ -929,7 +930,67 @@ sequenceDiagram
 The password appears exactly once, at the top.  The key appears nowhere
 in the caller at all.
 
-### 2.5.5 Status
+### 2.5.5 What this design does not cover — read before implementing
+
+Three holes, found by attacking the design rather than re-reading it.
+None is hypothetical; each has a concrete path to a real secret.
+
+**1. The output side is half-solved, and the unsolved half is the one
+the new API would enshrine.**
+
+Reading a vault was fixed already: `vault_read_secure` decrypts into a
+caller-supplied `SecureBuffer` span, and its own comment says *"no
+`std::string` materializes."* Both callers use it. That is the right
+shape and it exists.
+
+Writing was not.  `vault_write` takes `const std::string &json_payload`,
+and all three call sites pass `payload.dump()` — which materialises the
+role's or hub's **private key** in an ordinary heap string that nothing
+wipes.  The read path is careful and the write path, three lines away,
+is not.
+
+This lands directly on `save_encrypted_file(path, payload, key_name)`:
+**if `payload` is a `std::string`, the new API inherits the leak and
+blesses it.**  It must take a span, matching `vault_read_secure`.
+
+That is not free, and the difficulty should not be glossed: JSON
+serialisation naturally produces a `std::string`, so the caller needs a
+way to serialise into locked storage rather than dumping and copying.
+Wiping the temporary afterwards is not a fix — small-string optimisation
+and reallocation mean the bytes may have already been elsewhere.  **This
+needs deciding before the file operations are written, not after.**
+
+**2. Nothing in this design constrains which *file* a caller may touch.**
+
+§10 places sandboxing in the binding layer, and it namespaces the **key
+name**.  It says nothing about the **path**.  `save_encrypted_file` and
+`open_file_with_password` both take an arbitrary path.
+
+If a script-facing store is ever built on these calls, a script that can
+influence a path can address another role's vault, or the hub's.  The
+key-name sandbox does not help: the caller supplies the file, and the
+file is where the secrets are.
+
+Whatever exposes these operations to scripts must confine the path — the
+store owns its directory and the caller names an entry within it, never
+a path.  Stated here because the constraint belongs with the operation,
+not with whichever binding is written first and remembered second.
+
+**3. `replace_key_from_password` is unrestricted, and it is a
+replacement primitive pointed at the key store.**
+
+`add_` throws on an existing name, so it cannot clobber anything.
+`replace_` exists precisely to overwrite — and nothing in this design
+says *which* names it may target.  Called with `"hub_identity"` it would
+swap the hub's identity for one derived from an attacker-chosen password.
+
+No caller does this and no path reaches it from untrusted input today.
+It is recorded because the primitive is new, its whole purpose is
+overwriting, and "no caller does this yet" is the weakest guarantee in
+the codebase.  The obvious constraint — `replace_` refuses the framework
+identity names — costs a few lines and closes the question permanently.
+
+### 2.5.6 Status
 
 Shipped: `generate_and_add_identity`, `add_identity_from_z85`,
 `box_encrypt_using`, `box_decrypt_using`, `remove`, and the socket-arming

@@ -260,13 +260,33 @@ a designer of key handling.
 
 ---
 
-## 7. Open question
+## 7. Open questions and risks
 
-None blocking. The one live uncertainty is whether the at-rest format
-should gain a self-describing header — today a vault written under
-different KDF parameters fails to open with an error indistinguishable
-from a wrong password. That is recorded in HEP-CORE-0043 §8 and is
-independent of this work.
+**Three holes in the design itself are recorded in HEP-CORE-0043 §2.5.5.
+Read that section before starting step 4.** Summarised:
+
+1. **The write side leaks and the new API would inherit it.** Reading a
+   vault was already fixed — `vault_read_secure` decrypts into a
+   `SecureBuffer` span, "no `std::string` materializes." Writing was not:
+   `vault_write` takes a `std::string`, and all three callers pass
+   `payload.dump()`, materialising a private key in unwiped heap.
+   `save_encrypted_file` must take a **span**, not a string — and
+   serialising JSON into locked storage is a real problem that needs
+   solving before step 4, not after. Wiping the temporary is not a fix
+   (small-string optimisation, reallocation).
+2. **Nothing constrains which file a caller may open.** The sandboxing
+   rule namespaces key *names*; both file operations take an arbitrary
+   *path*. Anything exposing these to scripts must own the directory and
+   accept an entry name, never a path.
+3. **`replace_key_from_password` can target any name**, including
+   `hub_identity`. Unreachable from untrusted input today, which is the
+   weakest guarantee available. Refusing the framework identity names
+   costs a few lines.
+
+**Not blocking, independent of this work:** the at-rest format has no
+self-describing header, so a vault written under different compile-time
+KDF parameters fails to open with an error indistinguishable from a wrong
+password. Recorded in HEP-CORE-0043 §8.
 
 ---
 
