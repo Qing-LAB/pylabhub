@@ -93,6 +93,73 @@ almost certainly re-deriving one of them.
 
 ## Open — security posture
 
+### 🔨 CARRY FORWARD — design and finish the file/dir vault for user scripts
+
+**Owner-requested 2026-08-08 as a standing follow-up. Task #136.** This
+entry is the durable record; the task list does not survive a context
+reset.
+
+**What it is.** A place a user script can persist a secret across role
+restarts — a token, a credential for some instrument the script talks to.
+The owner's framing is a **file/directory** store, held on disk the way
+the identity vault is, but as its own thing.
+
+**Why it is not a small feature, and why every prior attempt understated
+it.** The long-standing framing (HEP-0038, and #89 before the split) was
+"extend the `RoleVault` payload with a `scripts` map." That reads as a
+payload change. It is not. **`RoleVault` is write-once** — its whole
+surface is `create`, `open`, `public_key()`, `secret_key()`, `role_uid()`.
+There is no `save`, no setter (contrast `HubVault`, which has
+`set_known_roles` + `save`). Storing script data in the role's vault
+therefore needs a write path that does not exist, operating on the file
+that holds the role's CURVE identity key.
+
+**Design questions, none of them answered anywhere today:**
+
+1. **Re-encryption without the password.** The vault is Argon2id +
+   secretbox. Writing back means deriving the key again. Retain the
+   password in memory for the process lifetime (a new standing secret)?
+   Re-prompt (impossible for a daemon)? Or give the script store its own
+   key material?
+2. **Atomicity.** A torn write to `<uid>.vault` destroys the role's
+   identity, not just its script data.
+3. **Crash mid-save.** Same file, same blast radius.
+4. **Authority.** May user script code compel repeated rewrites of the
+   file holding its own identity key? That is a write-amplification and
+   DoS surface driven by user code.
+5. **Quota.** An unbounded script store is a disk-fill vector.
+6. **Naming.** Settled: see the ruling below.
+
+**Strong prior — a separate file, not the identity vault.** Its own
+failure domain, own key lifetime, own permissions. Removes questions 2,
+3 and 4 outright. The only argument for sharing the identity vault file
+is "one file to provision," which the CLI can solve. The owner's
+"file/dir vault" phrasing points the same way, but the shape is still
+the design's to settle.
+
+**Naming — ruled by the owner 2026-08-08.** The on-disk container keeps
+the word *vault*: 1,891 references across `src/`, `tests/`, configs and
+the operator CLI, and that meaning is load-bearing. The script-facing
+store needs its own name; `api.vault_save` / `api.vault_load` as drafted
+in HEP-0038 must not ship under those names. Nothing is built, so the
+rename is free now and expensive later.
+
+**Already settled — do not redesign.** Sandboxing lives in the LANGUAGE
+BINDING LAYER, not in `SecureSubsystem`. Bindings namespace a
+script-supplied name (`"mykey"` → `"script.<role_uid>.mykey"`) before
+calling `secure().keys().*`; the module sees fully-qualified names and
+applies no per-caller policy. Teaching the module about roles so it can
+sandbox centrally would put policy in a mechanism module and give it a
+reason to know who is calling it. Recorded in HEP-CORE-0043 §10.
+
+**When it ships:** three-engine parity — Python, Lua and Native each
+verified directly, no compile-only parity.
+
+**Document state.** HEP-CORE-0038 is a 200-line draft that ends at §5 and
+now carries a banner naming its two wrong premises (the name and the
+storage model); do not implement from it. HEP-CORE-0043 §10 records the
+open questions and marks the store not designed and not built.
+
 - ✅ **SEC-Fold closed 2026-08-08 — do not re-open the HEP fold.** The C++
   half was already done (6 `<sodium.h>` includes, all inside
   `src/*/security/`; `KeyStore` already a gated member) and is now guarded
