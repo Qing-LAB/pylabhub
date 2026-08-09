@@ -129,11 +129,28 @@ not open: no nonce parameter on the symmetric jobs (generated inside, so
 it cannot be reused); process-lifetime keys; `add_` throws on duplicate
 while `replace_` is explicit; no new guard types.
 
-**Five steps, in order, each leaving the tree green** — see the plan. The
-verification is *absence*, not a green suite: these changes are invisible
-to behaviour, so a passing test proves nothing. Step 4 (the vault) needs
-a committed fixture vault to prove the at-rest format did not move; a
-round-trip inside one build passes even if both sides changed together.
+**Six steps, in order, each leaving the tree green** — see the plan.
+
+**Step 6 is the one that decides whether any of it holds.** Steps 1-5
+move every caller off the fetch-a-key pattern; they do not remove the
+*ability*. The raw-key `secretbox_encrypt` / `secretbox_decrypt` stay
+public unless step 6 makes them private, and then the next person writes
+a new courier with the API inviting them to. The asymmetric side is the
+proof: it exposes **no** raw-key `box_encrypt`, only `box_*_using`, which
+is exactly why it never grew this problem. `lookup_raw` is the harder
+call in the same step — no production consumer afterwards, but retiring
+it is a contract handoff, not a deletion.
+
+**Verification is *absence*, not a green suite** — these changes are
+invisible to behaviour, so a passing test proves nothing about whether a
+secret stopped being copied. Each step must also *add* coverage for what
+it introduces; two assertions worth naming, because they are the ones
+that catch the dangerous bugs: two encryptions of the same plaintext must
+**differ** (the nonce is genuinely fresh), and the same password under a
+**different scope** must give a different key (one vault's password does
+not open another's). Step 4 additionally needs a committed fixture vault
+— a round-trip inside one build passes even if both sides changed
+together.
 
 ### 🔨 CARRY FORWARD — design and finish the file/dir vault for user scripts
 

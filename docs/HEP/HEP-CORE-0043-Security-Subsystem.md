@@ -947,6 +947,24 @@ is why `vault_crypto` derives a key onto the stack and the two config
 loaders pass a secret through a `string_view`.  Those are consequences of
 the gap, not independent defects.
 
+**The end state is that the raw-key door is shut, not merely unused.**
+There is no public raw-key `box_encrypt` — the asymmetric side only ever
+exposed `box_*_using`, and that is why it never grew a courier.  The
+symmetric side still exposes `secretbox_encrypt` / `secretbox_decrypt`
+taking a key span, and *that* is what made every symptom above possible.
+Once the `_using` variants exist and callers move, those two become
+private — implementation detail of the named form, mirroring `box_*`.
+
+This matters more than it sounds.  Migrating callers removes today's
+couriers; **removing the entry point is what stops tomorrow's.** An API
+that still offers the unsafe door has not consolidated anything — it has
+two ways to do one job, and the unsafe one is the shorter to type.
+
+`keys().lookup_raw` is in the same position and is the harder call: after
+the migration it has no production consumer, but it is also the only way
+to read a raw secret at all, and retiring it is a contract handoff rather
+than a deletion.  Decide it deliberately; do not let it drift.
+
 **A scope-bound key handle** (`ScopedKey` — removes its key on
 destruction) is a natural companion for keys that must not outlive a
 scope.  It is not needed for anything described above, all of which is

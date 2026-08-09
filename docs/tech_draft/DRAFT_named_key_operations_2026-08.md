@@ -144,6 +144,7 @@ Each step leaves the tree green and is independently reviewable.
 | 3 | `add_key_from_password` + `replace_key_from_password` | — (prerequisite for 4) |
 | 4 | the three file operations; migrate `vault_crypto` | **the stack key (§2.1)** |
 | 5 | `load_identity_into` on **both** vault types; drop the secret accessors | **the couriers (§2.3)** and the `std::string` copies (§2.2) |
+| 6 | make the raw-key `secretbox_*` private; decide `lookup_raw` | **the ability to reintroduce any of it** |
 
 Steps 1-2 are self-contained and prove the shape on a live consumer before
 the vault depends on it. Step 4 is the one with real risk — it touches the
@@ -180,6 +181,37 @@ rejects. It is to re-express each assertion:
 Do this re-expression as its own commit **before** deleting the accessors,
 so the deletion is mechanical and the test change is reviewable on its own.
 
+### Step 6 — close the doors, or none of the above sticks
+
+**Missed in the first draft of this plan and it is the step that decides
+whether the work holds.** Steps 1-5 migrate every *caller* off the
+fetch-a-key pattern. They do not remove the *ability*. Leave the raw-key
+entry points public and the next person writes a new courier, with the API
+inviting them to.
+
+The asymmetric side already shows the intended end state: there is **no
+public raw-key `box_encrypt`** — only `box_encrypt_using`. The symmetric
+side never got the same treatment, and that omission is the root of every
+symptom in §2.
+
+| Entry point | Production callers after step 5 | Disposition |
+|---|---|---|
+| `secretbox_encrypt` / `secretbox_decrypt` (raw key span) | none | **Make private.** The `_using` variants call them internally. Exactly what `box_*` already does. |
+| `keys().lookup_raw(name)` | none | **Needs a decision — see below.** |
+
+`lookup_raw` is the harder one and should not be decided in passing. Once
+the named operations exist it has no production consumer, which makes it
+surface that exists only for tests. But removing it also removes the only
+way to read a raw secret at all, and two `key_store` tests exercise it
+directly (`lookup_raw_on_missing_throws`,
+`add_raw_then_lookup_raw_roundtrip`). Retiring it is a contract handoff,
+not a deletion: the "a missing name throws" contract has to land somewhere
+before the accessor goes.
+
+**Do not skip step 6 and call the arc finished.** An API that still offers
+the unsafe door has not consolidated anything — it has two ways to do one
+job, which is the shape this whole plan exists to remove.
+
 ---
 
 ## 5. How each step gets verified
@@ -210,6 +242,7 @@ correct. Each step adds L2 coverage for what it introduces:
 | 3 | Same password and scope give the same key; **the same password with a different scope gives a different one** — that is the property protecting one vault from another's password. `add_` throws on an existing name, `replace_` succeeds and the new key is the one used afterwards. |
 | 4 | Save-then-load round-trips. Wrong password fails to open. File permissions are what §8's owners require. Plus the fixture-vault compatibility check above. |
 | 5 | After `load_identity_into`, the store holds the expected public key; the vault types no longer expose a secret accessor. |
+| 6 | Nothing to add — this step *removes* surface. The check is that the suite still passes with the raw-key entry points private, which proves no test was quietly depending on the door being open. |
 
 Derive these from what the design promises, not from what the new code
 happens to do — a test written by reading the implementation passes
