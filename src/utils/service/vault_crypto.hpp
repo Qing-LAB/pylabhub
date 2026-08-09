@@ -22,15 +22,22 @@
  *   High security (SENSITIVE, -DPYLABHUB_VAULT_HIGH_SECURITY):    1 GB RAM, ~5 s/hash
  *   Test mode (MIN,     -DPYLABHUB_VAULT_TEST_KDF):              ~8 KB RAM, ~1 ms/hash
  *
- * PYLABHUB_VAULT_TEST_KDF is set by tests/CMakeLists.txt ONLY when the
- * build is configured with BUILD_TESTS=ON AND a CI environment is
- * detected.  Note BUILD_TESTS DEFAULTS TO ON — a build that wants the
- * production KDF in a CI environment must set it OFF explicitly, which
- * is what the wheel build does (pyproject.toml).  The guard is there
- * because CI runners experience Argon2id
- * INTERACTIVE stretching to 60+ seconds under memory pressure; MIN
- * restores predictable sub-millisecond keygen for CI runs without
- * compromising the production security posture.
+ * PYLABHUB_VAULT_TEST_KDF is set by tests/CMakeLists.txt ONLY when TWO
+ * deliberate conditions hold together: the build is configured with
+ * BUILD_TESTS=ON, AND `CI` / `GITHUB_ACTIONS` is actually set in the
+ * environment.  Neither happens by accident — an ordinary local build,
+ * debug or release, does not set `CI`, so it cannot reach this branch.
+ * Choosing it means choosing a CI environment, which is by definition a
+ * test environment; that pairing IS the guard.  The release path is
+ * narrower still: the wheel build sets BUILD_TESTS=OFF outright
+ * (pyproject.toml).
+ *
+ * The reason it exists is a resource limit, not a security tradeoff:
+ * Argon2id INTERACTIVE wants 64 MiB per derivation and stretches to 60+
+ * seconds on a memory-pressured CI runner.  MIN restores predictable
+ * sub-millisecond keygen for the test vaults, which never leave the
+ * test directory.  CI's job is to exercise the library, so the flag
+ * lands on the library — that is the intent, not a leak.
  *
  * WARNING: Vaults encrypted with one KDF parameter set cannot be opened
  * with a different one.  Do NOT use test-mode-built binaries against a
