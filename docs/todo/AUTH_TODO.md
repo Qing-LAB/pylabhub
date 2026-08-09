@@ -117,10 +117,31 @@ that holds the role's CURVE identity key.
 **Design questions, none of them answered anywhere today:**
 
 1. **Re-encryption without the password.** The vault is Argon2id +
-   secretbox. Writing back means deriving the key again. Retain the
-   password in memory for the process lifetime (a new standing secret)?
-   Re-prompt (impossible for a daemon)? Or give the script store its own
-   key material?
+   secretbox. Writing back means having the key again. Retain the
+   password for the process lifetime (a new standing secret)? Re-prompt
+   (impossible for a daemon)? Or give the store its own key material?
+
+   **Owner input 2026-08-08 — the intended direction: keep the DERIVED
+   KEY in the security module's protected memory after the password is
+   validated once, rather than retaining the password at all.** SMS was
+   built for exactly this. `KeyStore` holds keys in `LockedKey`
+   (`sodium_malloc` — mlock, guard pages, canary) under the
+   use-not-export contract, and it already has a raw-symmetric-key path:
+   `add_raw` to store, `lookup_raw` to use the bytes in place without
+   copying them into an owning buffer.
+   **Working precedent to read first:** the admin console's session-seal
+   key (`admin.session.seal`) does precisely this shape — minted once,
+   held in `KeyStore`, and passed straight into `secretbox_encrypt` /
+   `_decrypt` within a single statement so the bytes never leave the
+   module. See `admin_session.cpp` and HEP-CORE-0033 §11.0.5.
+   **The difference that needs investigating, and it is the whole
+   question:** that key is *randomly minted per instance*; a vault key is
+   *derived from an operator password*. So: is `add_raw` the right home
+   for a KDF-derived key, what is its lifetime (process lifetime? until
+   first write? re-derive on password change?), and what happens on
+   rotation. **Owner direction: investigate when this item is picked up,
+   not before.** Recorded here so the investigation starts from the
+   existing facility instead of inventing a second one.
 2. **Atomicity.** A torn write to `<uid>.vault` destroys the role's
    identity, not just its script data.
 3. **Crash mid-save.** Same file, same blast radius.
