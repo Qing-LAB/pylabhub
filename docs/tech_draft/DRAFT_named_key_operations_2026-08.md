@@ -281,6 +281,17 @@ about whether a secret stopped being copied.
   old code must open under the new code, and the reverse. This needs a
   fixture vault committed as a test input, not a round-trip within one
   build — a round-trip passes even if both sides changed together.
+
+  ⚠ **This requirement contradicts one resolution of hole 0, and the
+  contradiction has to be settled before step 4 starts.** Hole 0's first
+  option — take the secret out of the JSON so it never becomes a string —
+  *changes the at-rest format*. Both cannot hold. If that option wins,
+  step 4's compatibility check becomes a **migration** check instead: an
+  old-format vault must still open (read path keeps the old shape), a new
+  one is written in the new shape, and the fixture set needs one of each.
+  If the second option wins — never let the secret reach the caller — the
+  format is untouched and the check stands as written. **Resolve hole 0
+  first; it determines what step 4 is even testing.**
 - **Whole arc:** the existing sodium-boundary guardrail keeps holding, and
   a new guardrail could assert that `secret_key()` has no callers once step
   5 lands.
@@ -313,6 +324,44 @@ no new surface. Doing this first means that work is a consumer rather than
 a designer of key handling.
 
 ---
+
+## 6a. A strategy question this plan should not dodge
+
+**This plan is a find-every-site strategy, and the evidence says finding
+every site is not reliable.** Four consecutive review passes each turned
+up one more copy: the stack key, then the `std::string` couriers, then
+the write-side payload, then the four-copy create chain. Each pass
+believed the previous one had finished. There is no reason to think the
+fifth would have been the last.
+
+There is a defence that does not depend on the audit being complete:
+`mlockall(MCL_CURRENT | MCL_FUTURE)` at startup locks **every** page the
+process ever allocates, including the copies nobody has found. One call.
+HEP-CORE-0035 §4.7.2's first measure asks for exactly this outcome —
+"lock secret pages into RAM… apply to in-memory copies of the role and
+hub secret" — and the current implementation delivers it only for
+KeyStore allocations, via `sodium_malloc` inside `LockedKey`. Nothing
+locks the process; `mlockall` appears nowhere in the tree.
+
+**But it is probably wrong for this system, and the reason is worth
+writing down so nobody re-derives it.** pylabhub is a data-acquisition
+framework whose whole point is large shared-memory data blocks.
+`MCL_FUTURE` locks every future mapping — including those blocks. That
+either exhausts `RLIMIT_MEMLOCK` and starts failing allocations, or pins
+gigabytes of sample data in RAM to protect a few dozen bytes of key. The
+data plane makes the blunt instrument unusable.
+
+A narrower variant — `mlock()` on specific regions — is what
+`sodium_malloc` already does, so that road leads back to "get the secrets
+into the KeyStore," which is this plan.
+
+So: **the strategy stands, but its weakness is now stated.** It depends
+on completeness, completeness has failed four times, and the cheap
+backstop is unavailable for a reason specific to this codebase. That
+argues for the parts of the plan that make a whole *class* of copy
+impossible — the private raw-key doors in step 6, and generating straight
+into the key store in step 5b — over the parts that fix known sites one
+at a time.
 
 ## 7. Open questions and risks
 

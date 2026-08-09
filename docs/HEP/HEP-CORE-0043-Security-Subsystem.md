@@ -960,7 +960,21 @@ same shape as arming a socket.  The second is preferable and is the one
 consistent with P3.
 
 Decide this before the file operations are written.  Every point below
-is downstream of it.
+is downstream of it — and so is the at-rest format: the first option
+changes the file layout, the second leaves it untouched, so the choice
+determines whether the migration is a compatibility exercise or a format
+change.
+
+*Why the blunt instrument is not available here.*  `mlockall(MCL_CURRENT
+| MCL_FUTURE)` would lock every page the process ever allocates and make
+this whole class of problem disappear without needing to find each copy.
+It is not viable in this system: the data plane maps large shared-memory
+blocks, and `MCL_FUTURE` locks those too — either exhausting
+`RLIMIT_MEMLOCK` or pinning gigabytes of sample data to protect a few
+dozen bytes of key.  Recorded so it is not proposed and re-rejected.
+Region-scoped `mlock` is what `sodium_malloc` already does inside
+`LockedKey`, which is why "get the secret into the key store" is the
+answer rather than a process-wide switch.
 
 **1. The output side is half-solved, and the unsolved half is the one
 the new API would enshrine.**
