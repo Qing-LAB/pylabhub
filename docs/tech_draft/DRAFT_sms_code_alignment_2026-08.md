@@ -17,9 +17,9 @@ is not done until its row says so and names the evidence.
 |---|---|---|---|
 | 0a | Resolve HEP-0040 ↔ HEP-0043 key-memory ownership | ⏳ **evidence complete, one decision left** | HEP-0040 read and checked against code — it is accurate and current, not stale. Recommendation + the one remaining edit in §1.1. |
 | 0b | Repoint `attach_channel.hpp`'s stale HEP citation | ✅ **done** | HEP-0043 §9.2 itself assigns the `IAttachChannel` seam to HEP-0044; header now says so, with the 0043 §6 and 0041 §9 D4 references kept as *consumer* references. |
-| 1 | Audit §1.5 rotation & lifetime | ⬜ not started | never checked against code |
-| 2 | Audit §1.6 cross-platform layering | ⬜ not started | never checked against code |
-| 3 | Audit §2.4 cross-platform stubs | ⬜ not started | never checked against code |
+| 1 | Audit §1.5 rotation & lifetime | ❌→✅ **three defects, all fixed** | See §2a. Named a CLI that does not exist; asserted a naming convention §7 explicitly denies; cited an example that cannot occur. |
+| 2 | Audit §1.6 cross-platform layering | ✅ **accurate** | Both named functions exist and are called from the ctor — `disable_core_dumps_or_panic` (`secure_subsystem.cpp:202`, called `:290`), `inspect_memlock_capability` (`:237`, called `:293`). |
+| 3 | Audit §2.4 cross-platform stubs | ✅ **accurate** | Windows mechanisms present as described: `SetErrorMode` (`:226`), `WerAddExcludedApplication` (`:232`). The `SeLockMemoryPrivilege` "(Windows follow-on)" annotation matches a real WARN-and-skip at `:303`. |
 | 4 | Spot-verify §1.2 gate policy, per method | ⬜ not started | — |
 | 5 | Spot-verify §1.3's remaining four mechanisms | ⬜ not started | one defect already found and fixed (`crypto()`) |
 | 6 | Spot-verify §2.1 facade, §2.3 lifecycle, §3-§6 signatures | ⬜ not started | — |
@@ -120,6 +120,52 @@ Its sibling `attach_channel_shm` cites HEP-0041 and `attach_protocol`
 cites HEP-0044. `attach_channel` citing 0043 is almost certainly a stale
 pointer from before HEP-0044 was split out of 0043 §9.2. Verify against
 0044's scope and repoint. Mechanical.
+
+---
+
+## 2a. Audit results — the three unaudited sections
+
+Read the section, then read the code. Outcome: **two of three were
+accurate; the third had three defects, all in the direction of promising
+something that is not there.**
+
+### §1.5 Rotation & lifetime — three defects, all fixed
+
+1. **It named a binary that does not exist.** Rotation was documented as
+   *"re-running `plh-cli keygen`"*. There is no `plh-cli` — no target, no
+   directory, nothing in any `CMakeLists.txt`. The real entry points are
+   `plh_hub --keygen` and `plh_role --keygen`. An operator following the
+   HEP to rotate a key would have run a command that isn't there, and
+   key rotation is not a path where you want the instructions wrong.
+2. **It asserted a naming convention the same HEP denies.** §1.5 said the
+   two key classes *"live in KeyStore under distinct name prefixes (see
+   §7 for naming convention)"*. §7 says the opposite in plain terms: *"No
+   naming rules enforced by KeyStore itself. Callers pick their own
+   names."* The names in use confirm §7 — `hub_identity` and
+   `role_identity` have no prefix at all, while `broker.observer` and
+   `admin.session.seal` are dotted. There is no scheme. Two sections of
+   one document disagreed, and the one making the promise was wrong.
+3. **It cited an example that cannot occur.** "Script-generated keypairs"
+   was listed as an ephemeral key class. The script API is neither
+   designed nor built (§10).
+
+Rewritten to say what is true: both classes live in the same store with
+no storage-level or naming-level distinction, the difference is only who
+owns the name, and if a real separation is ever wanted it has to be
+built rather than relied on.
+
+### §1.6 and §2.4 — accurate, no change
+
+Both name specific per-OS mechanisms, and all of them are present:
+`disable_core_dumps_or_panic` and `inspect_memlock_capability` exist and
+are called from the constructor; the Windows path really does use
+`SetErrorMode` and `WerAddExcludedApplication`; and §2.4's
+"(Windows follow-on)" note on `SeLockMemoryPrivilege` corresponds to a
+real WARN-and-skip rather than papering over a gap.
+
+Worth recording that two of three came back clean. The value of an audit
+is not only what it finds — "unaudited" and "audited, fine" are different
+states, and only one of them lets the next reader stop worrying.
 
 ---
 

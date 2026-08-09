@@ -522,20 +522,29 @@ enters the module via `KeyStore::add_raw` first.
 
 Two classes of keys with different lifetime semantics:
 
-- **Long-term identity keys.**  Loaded from vault at process
-  startup, live for the process's lifetime, never rotated during
-  a session.  Rotation happens by re-running `plh-cli keygen` +
-  redistributing vaults.  Examples: hub identity, role identity.
-- **Ephemeral keys.**  Generated on-the-fly at process startup or
-  during runtime, no vault persistence, wiped at process shutdown
-  or removal.  Examples: broker's observer keypair (regenerated
-  every broker restart), future ephemeral session keys, script-
-  generated keypairs.
+- **Long-term identity keys.**  Loaded from the vault at process
+  startup, live for the process's lifetime, never rotated during a
+  session.  Rotation means generating a new keypair and
+  redistributing vaults — `plh_hub --keygen` for the hub,
+  `plh_role --keygen` for a role.  Examples: hub identity, role
+  identity.
+- **Ephemeral keys.**  Generated on the fly at startup or during
+  runtime, no vault persistence, wiped at process shutdown or on
+  removal.  The broker observer keypair was the example; see below.
 
-Both live in `KeyStore` under distinct name prefixes (see §7 for
-naming convention).  The module doesn't distinguish at the storage
-level; the distinction is who OWNS the naming: framework
-(identity) vs runtime code (ephemeral).
+**Both live in `KeyStore` and the module does not distinguish them.**
+There is no storage-level difference and — stated plainly because an
+earlier revision of this section claimed otherwise — **there is no
+naming convention separating them.**  §7 is explicit: KeyStore enforces
+no naming rules and callers choose their own names.  The names in use
+bear that out and follow no scheme: `hub_identity` and `role_identity`
+carry no prefix at all, while `broker.observer` and
+`admin.session.seal` are dotted.
+
+The distinction between the two classes is therefore **who owns the
+name** — framework or runtime code — and nothing else.  If a real
+separation is ever wanted, it has to be built; it does not exist to be
+relied on today.
 
 The broker observer keypair was the original ephemeral key, per
 HEP-0041 §D1(d).  **Its consumer has since been retired (§9.3), but
