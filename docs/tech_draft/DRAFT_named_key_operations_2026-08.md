@@ -263,12 +263,12 @@ Seven steps, each leaving the tree green and independently reviewable.
 | Step | Change | Removes |
 |---|---|---|
 | 1 | `add_random_key` ✅ **DONE** | the mint-on-stack-then-`add_raw` pattern in the admin session seal |
-| 2 | `secretbox_*_using` ✅ **DONE** | the two `lookup_raw` spans in `admin_session.cpp` — **NOT yet migrated**; the operations exist and the vault uses them, but `admin_session` still hand-assembles the identical `[nonce ‖ MAC ‖ ct]` blob around the raw-key form.  Carried below. |
+| 2 | `secretbox_*_using` ✅ **DONE** | the two `lookup_raw` spans in `admin_session.cpp` — ✅ **migrated** (`2fbc54f7`).  Format-risk-free: the sealing key is minted per process and never persisted, so nothing on disk depends on the layout. |
 | 3 | `add_key_from_password` + `replace_key_from_password` ✅ **DONE** | — (prerequisite for 4) |
 | 4 | migrate `vault_crypto` ✅ **DONE** | **the stack key (§3.1) — CLOSED.**  The file operations did NOT need to become new SMS methods: `vault_write` / `vault_read_secure` already were the file layer, so they took a `key_name` instead of a password and the key left the file entirely.  Fewer new methods than the plan assumed. |
 | 5 | re-express the vault tests off the secret accessors | — (prerequisite for 6) |
 | 6 | `load_identity_into` on both vaults; restructure `create` onto `generate_and_add_identity` + `with_seckey`; delete the `secret_z85` members and the secret accessors | **the couriers (§3.3)**, the four-copy chain (§3.2), the unlocked member (§3.4) |
-| 7 | make the raw-key `secretbox_*` private; decide `lookup_raw` | **the ability to reintroduce any of it** |
+| 7 | make the raw-key `secretbox_*` private; decide `lookup_raw` | **the ability to reintroduce any of it**.  🟢 **Precondition met (`2fbc54f7`): both surfaces now have ZERO production callers.**  What remains is test-side — the L2 workers still exercise both directly, so step 5's re-expression has to land before the doors can close. |
 
 Steps 1-2 prove the shape on a live consumer before the vault depends on
 it. Step 4 carries the real risk — it touches the at-rest read and write

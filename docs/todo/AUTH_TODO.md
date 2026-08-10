@@ -152,12 +152,11 @@ HEP-CORE-0043 §2.5. Task #137. Prerequisite for the file/dir vault below.**
 > step that decides whether any of it holds**, since 1-6 move callers
 > without removing the ability.
 >
-> **Carried, found while doing step 2:** `admin_session.cpp` still
-> hand-assembles the identical `[nonce ‖ MAC ‖ ciphertext]` blob around
-> the raw-key form, and holds the last two production `lookup_raw`
-> spans. Migrating it is format-preserving and would leave `lookup_raw`
-> with no production callers, which is what makes step 7 cheap. Deferred
-> from `512fe1d5` deliberately to keep that commit to one concern.
+> **Step 2's carried item is closed (`2fbc54f7`).** `admin_session.cpp`
+> now seals by name. **`lookup_raw` and the raw-key `secretbox_*` have
+> ZERO production callers** — the precondition for step 7. What blocks
+> step 7 now is test-side only: the L2 workers still use both surfaces
+> directly, so step 5 has to land first.
 >
 > **Cost note for the remaining steps:** moving a secret into the
 > KeyStore makes its holder require SMS to be `Initialized`. That broke
