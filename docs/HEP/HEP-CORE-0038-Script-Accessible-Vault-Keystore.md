@@ -16,7 +16,7 @@
 >   Implementation scope, §5 Cross-references) for role-side,
 >   script-managed vault entries.  For the SHIPPED KeyStore storage
 >   and access API, HEP-CORE-0043 §2.2 + §7 is authoritative; the
->   vault-file/KDF/AEAD parameters live in HEP-CORE-0035 §4.6.  There
+>   vault-file/KDF/AEAD parameters live in HEP-CORE-0035 §4.6.6.  There
 >   are no authoritative §6-§9 subsections in this document.
 
 

@@ -163,14 +163,19 @@ HEP-CORE-0043 §2.5. Task #137. Prerequisite for the file/dir vault below.**
 > member, and `create` minting inside the module instead of building the
 > secret through four copies of the JSON payload.
 >
-> **Design: `tech_draft/DRAFT_vault_payload_format_2026-08.md`.** Owner
-> ruled 2026-08-09 that this is a framework redesign with NO backward
+> **Contract: `HEP-CORE-0035 §4.6.6 Vault file format`** — written
+> 2026-08-09, invariants VF-1..VF-8, with the layout diagram, the open
+> sequence, and a worked example. Implementation plan:
+> `tech_draft/DRAFT_vault_payload_format_2026-08.md`.
+>
+> Owner ruled this is a framework redesign with NO backward
 > compatibility — no converter, no dual-read path, dev vaults are
-> regenerated. The design also closes the HEP-0043 §8 gap by recording
-> the Argon2id profile in an authenticated cleartext header, which
-> forces the primitive from `secretbox` to XChaCha20-Poly1305 IETF (the
-> header must be readable BEFORE key derivation, and cleartext that
-> nothing authenticates is a new hole).
+> regenerated. The contract also closes the HEP-0043 §8 gap: the
+> Argon2id cost is recorded in the file and read from it (VF-2), so any
+> binary opens any vault. That forces the cipher from `secretbox` to
+> XChaCha20-Poly1305 IETF, because the header must be readable BEFORE
+> key derivation and cleartext that nothing authenticates would be a
+> new hole (VF-3).
 >
 > **Step 2's carried item is closed (`2fbc54f7`).** `admin_session.cpp`
 > now seals by name. **`lookup_raw` and the raw-key `secretbox_*` have

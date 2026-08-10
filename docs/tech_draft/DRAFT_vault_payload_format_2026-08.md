@@ -1,199 +1,112 @@
-# Vault file format — redesign
+# Bringing the vault code to the format contract
 
-**Status:** design, nothing implemented.
-**Task:** #137 step 6 remainder. **Design authority:** HEP-CORE-0043 §2.5.5 hole 0, §8.
-**Prerequisite work shipped:** `512fe1d5`, `2fbc54f7`, `ce8c67e3`, `072787e6`.
+**Status:** implementation plan. Nothing built.
+**Contract (authoritative): `HEP-CORE-0035 §4.6.6 Vault file format`.**
+Read that first — it holds the design, the diagram, the example, and
+invariants VF-1..VF-8. This document does not restate them and must not
+drift from them; if the two disagree, the HEP is right.
 
-> **Owner ruling 2026-08-09: this is a framework redesign. Backward
-> compatibility is NOT a consideration.** The format is chosen for
-> correct handling of secrets and for data integrity, not to remain
-> readable by anything that exists today. Development vaults are
-> regenerated with `--keygen`. No converter, no dual-read path, no
-> version negotiation with the past.
+Related: HEP-CORE-0043 §2.5 (named-key operations, shipped),
+HEP-CORE-0040 §8.5.2 (raw key storage form).
+Task: #137 final item. Tracker: `docs/todo/AUTH_TODO.md`.
+
+> **Owner ruling: this is a framework redesign. Backward compatibility
+> is NOT a consideration.** No converter, no dual-read path, no version
+> negotiation with the past. Development vaults are regenerated with
+> `--keygen`.
 
 ---
 
-## 1. The two defects this fixes
+## 1. The gap between the contract and the code
 
-### 1.1 The secret is a JSON value
+| Contract | Code today |
+|---|---|
+| VF-1 magic + version checked before deriving | no header exists at all — the file is nonce followed by ciphertext |
+| VF-2 derive at the file's recorded cost | derives at the reader's own compile-time profile; a vault written under another fails **indistinguishably from a wrong password** |
+| VF-3 header authenticated as associated data | nothing to authenticate; `crypto_secretbox` has no associated-data input |
+| VF-6 secret never in the metadata document | the secret **is** a JSON value — `"secret_key": "..."` |
+| VF-7 no unwiped copy on either path | `create` builds three unwiped `std::string`s before the one wiped array |
+| VF-8 secret section sized by compile-time assertion | no secret section exists |
 
-A role vault decrypts to this:
-
-```json
-{ "role_uid":   "prod.sensor1.uid3a7f2b1c",
-  "public_key": "rq:rM>}U?@Lns47E1%kR.o@%&BqW=Ib!r]Gv:{)}",
-  "secret_key": "JTKVSB%%)wK0E.X)V>+}o?pNmC{O&4W4b!Ni{Lh6" }
-```
-
-JSON libraries hold string values as ordinary strings. So getting the
-key in or out means it becomes ordinary heap memory — freed without
-wiping, and pageable to disk before then. Tracing a fresh key through
-`RoleVault::create` (`role_vault.cpp:88-128`):
+The VF-6 and VF-7 rows are the same defect seen twice. Tracing a fresh
+key through `RoleVault::create` (`role_vault.cpp:88-128`):
 
 ```
 generate_curve_keypair()
-        │
-  ① kp.secret_z85         std::string   ← freed WITHOUT zeroing
-        │  std::move  (same allocation)
-  ② payload["secret_key"] std::string   ← freed WITHOUT zeroing
-        │  .dump()
-  ③ dumped JSON text      std::string   ← freed WITHOUT zeroing
-        │  encrypt + write / memcpy
-  ④ pImpl->secret_z85     array         ← the ONLY one wiped
+  ① kp.secret_z85          std::string   ← freed WITHOUT zeroing
+       │ std::move (same allocation)
+  ② payload["secret_key"]  std::string   ← freed WITHOUT zeroing
+       │ .dump()
+  ③ dumped JSON text       std::string   ← freed WITHOUT zeroing
+       │ encrypt + write / memcpy
+  ④ pImpl->secret_z85      array         ← the ONLY one wiped
 ```
 
-No amount of care at the call site removes this while the key is a JSON
-value. That is why it is a format change and not another refactor.
+`open()` is better — `get_ref` plus a `wipe_on_exit` guard — but it is
+mitigation around the same shape. While the key is a document value, no
+call-site discipline removes the copies. That is why the contract
+changes the format rather than the code changing its habits.
 
-### 1.2 The file describes nothing about itself
+## 2. What stays
 
-A vault today is `[nonce(24)][MAC(16) ‖ ciphertext]`. There is no magic,
-no version, no record of how the key was derived — verified: no `version`
-or `magic` anywhere in `vault_crypto.hpp` or `vault_write`.
+Bounding the work, so the diff does not sprawl:
 
-Consequences, both real:
+- Argon2id from the password, salt from the uid. Unchanged.
+- The `0600` file / `0700` directory discipline of §4.6.1. Unchanged.
+- `known_roles` stays in the hub's metadata — it is not secret, and
+  §4.8 already owns its schema.
+- The nonce stays 24 bytes and the tag 16, so only the header is added
+  to the file's overhead.
 
-- A vault written under one Argon2id profile and read under another
-  fails **indistinguishably from a wrong password** (the HEP-0043 §8
-  gap). The reader derives with *its own* compile-time profile and has
-  no way to learn the file's.
-- A corrupt file, a truncated file, and a file that was never a vault
-  all fail the same way.
+## 3. Order of work
 
-## 2. What does NOT change
+1. **Header and layout constants**, with the VF-8 assertion, beside the
+   existing `kVault*` sizes in `vault_crypto.hpp`.
+2. **Swap the primitive** to `crypto_aead_xchacha20poly1305_ietf_*`
+   inside the security module, header passed as associated data.
+   Confirmed present in the vendored libsodium (NPUBBYTES 24,
+   ABYTES 16).
+3. **Write path** — assemble metadata with no secret in it; copy the
+   secret section directly out of the key store inside `with_seckey`.
+4. **Read path** — verify header (VF-1, VF-5), derive at the file's
+   profile (VF-2), decrypt with associated data (VF-3), validate
+   `metadata_len` (VF-4), deposit the secret section straight into the
+   key store (VF-7).
+5. **Delete** the old read/write path, the `secret_z85` members, and
+   every place that treats the build's KDF profile as a read input.
+6. Regenerate development vaults.
 
-Bounding the work:
+Steps 1-4 can land as one commit. Step 5 is the point of no return and
+should be its own.
 
-- **Argon2id from the password, salted with the uid.** Unchanged.
-- **Confidentiality at rest.** The payload was already inside the
-  ciphertext; this is about in-process memory hygiene and integrity, not
-  about what an attacker reads off the disk.
-- **The 0600 / 0700 file and directory discipline.** Unchanged.
+## 4. Tests
 
-## 3. The format
+The on-disk bytes move for the first time in this arc. A round-trip
+inside one process would pass even if the layout silently changed, so it
+proves almost nothing on its own.
 
-```
- cleartext, authenticated as AAD          encrypted
- ┌────────────────────────────────┐ ┌──────┐ ┌──────────────────────────┐
- │ magic   "PLHVAULT"    8 bytes  │ │nonce │ │ tag 16 │ ciphertext      │
- │ version               1 byte   │ │  24  │ └──────────────────────────┘
- │ kdf_profile           1 byte   │ └──────┘
- │ vault_kind            1 byte   │
- │ reserved (zero)       1 byte   │
- └────────────────────────────────┘
-        12 bytes
+- **A committed fixture vault**, opened by the test. This is the only
+  thing that catches an accidental layout change later.
+- **Tamper each header field in turn.** Each must fail, and VF-1 / VF-5
+  failures must be distinguishable from a wrong password.
+- **Cross-profile open** — a vault written at one KDF cost, opened by a
+  build configured for another, must succeed. This is the VF-2
+  assertion, and it is the one that proves the profile is read from the
+  file rather than assumed.
+- **Truncation** at each boundary: mid-header, mid-nonce, mid-tag,
+  mid-metadata.
+- The existing hygiene checks continue to apply: no field name and no
+  public key visible in the raw file bytes.
 
- plaintext inside the ciphertext:
- ┌──────────────┬────────────────────────┬─────────────────────┐
- │ metadata_len │ metadata (JSON, plain) │ raw secret section  │
- │ 2 bytes LE   │ metadata_len bytes     │ fixed by vault_kind │
- └──────────────┴────────────────────────┴─────────────────────┘
-```
+## 5. Consequences worth expecting
 
-Split by whether a field is secret:
-
-| Vault kind | Metadata JSON (non-secret) | Raw secret section |
-|---|---|---|
-| Role | `role_uid`, `public_key` | seckey — 32 raw bytes |
-| Hub | `broker.curve_public_key`, `known_roles` | broker seckey 32 ‖ admin token 32 |
-
-Secrets become **raw bytes, not Z85**. That is how the KeyStore already
-stores them (HEP-CORE-0040 §8.5.2), so it also removes an encode/decode
-step from the path.
-
-**Writing:** the security module copies the raw key from the KeyStore
-into the buffer inside a `with_seckey` callback. The JSON is assembled
-separately and never contains a secret.
-**Reading:** parse the metadata, hand the raw tail straight to
-`add_identity`. No `std::string` on the secret's path in either
-direction.
-
-## 4. Why the header forces an AEAD
-
-The chain is forced, not stylistic:
-
-1. We want the file to record which Argon2id profile wrote it, so a
-   reader stops guessing (§1.2).
-2. The reader needs that **before** it can derive the key — so it must
-   be cleartext.
-3. Cleartext that nothing authenticates is a new integrity hole: flip
-   the profile byte and you change what the reader computes.
-4. `crypto_secretbox` has no associated-data input, so it cannot
-   authenticate a header.
-5. Therefore: **XChaCha20-Poly1305 IETF** with the 12-byte header as
-   associated data. Same 24-byte nonce, same 16-byte tag, and the header
-   is covered.
-
-Confirmed available in our vendored libsodium —
-`crypto_aead_xchacha20poly1305_ietf_*`, NPUBBYTES 24, ABYTES 16
-(`third_party/libsodium/.../crypto_aead_xchacha20poly1305.h`).
-
-Note this makes an old comment true: `key_file_acl.hpp` used to call the
-vault layer "libsodium AEAD" when it was secretbox. It will be AEAD.
-
-### What the header buys
-
-- **`kdf_profile` read from the file, not from the build.** Any binary
-  can open any vault. The "do NOT use test-mode-built binaries against a
-  production vault" warning disappears, and the CI fast-KDF flag becomes
-  purely a *write-time* choice — a CI-built binary can still read a
-  production vault.
-- **Tampering is detected, not mistaken for a wrong password.** Flipping
-  any header byte fails the AAD check.
-- **`magic` separates "not a vault" from "wrong password."** Today they
-  are the same error.
-- **`vault_kind`** makes opening a hub vault as a role vault an explicit
-  refusal rather than a confusing parse failure.
-
-### Integrity details worth writing down
-
-- `metadata_len` is validated against the decrypted length before it is
-  used to slice — a length field is a parse primitive and gets checked.
-- The secret section is fixed-size per `vault_kind`, with a
-  `static_assert` tying it to the KeyStore's sizes, so a mismatch is a
-  build error.
-- `reserved` must be zero on read. A non-zero byte means a writer we do
-  not understand; refuse rather than guess.
-
-## 5. Work, in order
-
-1. Header + layout constants, with the static_asserts. One place, beside
-   the existing `kVault*` sizes.
-2. Swap the primitive to the AEAD form inside the security module, with
-   the header passed as associated data.
-3. Write path: build the buffer inside `with_seckey`; JSON never sees a
-   secret.
-4. Read path: verify magic/version/kind, derive using the file's
-   profile, decrypt, validate `metadata_len`, deposit the raw tail
-   directly.
-5. Delete the old read/write path, the `secret_z85` members, and the
-   compile-time-profile-as-read-input assumption.
-6. Regenerate development vaults (`--keygen`).
-
-Steps 1-4 can land together; 5 is the point of no return and should be
-its own commit.
-
-## 6. Tests
-
-The on-disk bytes move for the first time in this arc, so a round-trip
-inside one process proves almost nothing. Needed:
-
-- A **committed fixture vault** of the new format, opened by the test —
-  that is the only thing that catches an accidental layout change later.
-- Tamper each header field in turn; each must fail, and fail
-  *distinguishably* from a wrong password.
-- A vault written with one KDF profile, opened by a build configured for
-  another — must succeed. This is the §8 gap, and it is the assertion
-  that proves the profile is being read from the file.
-- Truncation at each boundary (mid-header, mid-nonce, mid-tag,
-  mid-metadata).
-- The existing memory-hygiene checks continue to apply: no plaintext
-  field name and no public key in the raw file bytes.
-
-## 7. What this does not buy
-
-Stated so it is not oversold: **an attacker who can already read process
-memory still wins.** This removes the secret from freed heap and from
-pages that could reach swap or a hibernation file. It does not make a
-live process's memory safe, and it is not a defence against a debugger
-attached to the running role.
+- The "do NOT use test-mode-built binaries against a production vault"
+  warning in `vault_crypto.hpp` stops being true and should go. Under
+  VF-2 any binary opens any vault.
+- The CI fast-KDF flag becomes purely a **write-time** choice. A
+  CI-built binary can still read a production vault.
+- `key_file_acl.hpp` describes the vault layer as "libsodium AEAD".
+  That was inaccurate for `secretbox`; after step 2 it is accurate.
+- Moving a secret into the key store makes its holder require the
+  security module to be up. That pattern has already cost one round of
+  test fallout in this arc; budget for it again on the `create` path.

@@ -824,9 +824,10 @@ VERIFIES modes and refuses to start with a clear, actionable error.
 
 The pylabhub vault is the canonical home for encrypted-at-rest
 secrets — it adds password-derived encryption on top of the file-mode
-discipline below.  The vault format and `vault/` directory are
-designed for extension (see §4.8 for known-roles allowlist storage
-inside the vault; HEP-CORE-0038 for script-managed per-role secrets).
+discipline below.  The file format itself is specified in §4.6.6.  The
+vault format and `vault/` directory are designed for extension (see
+§4.8 for known-roles allowlist storage inside the vault;
+HEP-CORE-0038 for script-managed per-role secrets).
 The `0700` mode on `vault/` therefore applies to the whole vault
 scope, not just current contents.
 
@@ -1206,6 +1207,148 @@ L2 against the relevant subsystem (metrics aggregator + handcrafted
 in `docs/README/README_testing.md` § "Choosing a test pattern".
 "At L3 because we already had a broker handy" is not a layering
 justification.
+
+---
+
+### 4.6.6 Vault file format
+
+A vault file is one encrypted file holding one identity's secrets.  A
+hub keeps its broker keypair and admin token in one; a role keeps its
+CurveZMQ keypair in one.  A password opens it; nothing else does.
+
+#### What the format promises
+
+**V1 — Confidentiality.**  Without the password, the file yields
+nothing.  The password is stretched with Argon2id, salted from the
+owning uid, so the same password on two vaults produces two unrelated
+encryption keys and cracking one buys nothing on the other.
+
+**V2 — Integrity, including the parts that are not encrypted.**  Any
+edit to any byte of the file is detected on open.  This covers the
+cleartext header as well as the ciphertext: a header that steered the
+reader without being authenticated would be a way to change what the
+reader computes.
+
+**V3 — A vault says what it is.**  A reader learns the file's kind and
+the exact key-derivation cost *from the file*, before deriving anything.
+It never assumes its own build settings match the writer's.  A file that
+is not a vault, a file from an unknown writer, and a wrong password are
+three distinguishable outcomes.
+
+**V4 — A secret is never a string.**  Secrets travel as raw bytes
+between locked memory and the file.  They are never a value in a
+structured document, because a document's string node is ordinary heap
+memory that is freed without being wiped.
+
+#### Layout
+
+```
+  ┌─────────────────────────────────────────┐
+  │ HEADER — cleartext, authenticated       │   12 bytes
+  │   magic        "PLHVAULT"      8 bytes  │
+  │   version      format number   1 byte   │
+  │   kdf_profile  cost selector   1 byte   │
+  │   vault_kind   hub | role      1 byte   │
+  │   reserved     zero            1 byte   │
+  ├─────────────────────────────────────────┤
+  │ NONCE — cleartext              24 bytes │
+  ├─────────────────────────────────────────┤
+  │ TAG                            16 bytes │
+  ├─────────────────────────────────────────┤
+  │ CIPHERTEXT                              │
+  │   ┌───────────────────────────────────┐ │
+  │   │ metadata_len       2 bytes, LE    │ │
+  │   │ metadata           JSON, no secret│ │
+  │   │ secret section     raw bytes      │ │
+  │   └───────────────────────────────────┘ │
+  └─────────────────────────────────────────┘
+```
+
+The header is not encrypted — a reader must act on it before it has a
+key — but it **is** covered by the authentication tag as associated
+data.  That pairing is what makes V3 possible without giving up V2.
+
+The cipher is XChaCha20-Poly1305 (IETF), chosen because it accepts
+associated data.  `crypto_secretbox` cannot authenticate a header, so a
+design that needs a readable-before-decryption header cannot use it.
+
+#### Secret sections
+
+| `vault_kind` | Metadata (JSON) | Secret section |
+|---|---|---|
+| `role` | `role_uid`, `public_key` | secret key — 32 raw bytes |
+| `hub` | `broker.curve_public_key`, `known_roles` | broker secret key 32 ‖ admin token 32 |
+
+Secrets are raw bytes, not Z85 text.  That is the form the key store
+holds (HEP-CORE-0040 §8.5.2), so the secret crosses the file boundary
+without an encoding step that would materialise it as text.
+
+Public keys stay in the metadata deliberately: they are not secret, and
+keeping them addressable there means an operator or a tool can read a
+vault's public half without the secret section being touched.
+
+#### Example — a role vault
+
+Metadata, the only part that is a document:
+
+```json
+{ "role_uid":   "prod.sensor1.uid3a7f2b1c",
+  "public_key": "rq:rM>}U?@Lns47E1%kR.o@%&BqW=Ib!r]Gv:{)}" }
+```
+
+The secret key is not in that document.  It is the 32 raw bytes that
+follow it, written straight from locked memory.
+
+#### How a vault is opened
+
+```mermaid
+sequenceDiagram
+    participant R as Role startup
+    participant V as Vault reader
+    participant S as Security module
+    participant D as Disk
+
+    R->>V: open(path, uid, password)
+    V->>D: read file
+    V->>V: check magic, version, kind
+    Note over V: not a vault → distinct refusal,<br/>never "wrong password"
+    V->>S: derive key (Argon2id at the file's kdf_profile, salt from uid)
+    V->>S: decrypt, header as associated data
+    alt tag fails
+        S-->>V: rejected
+        Note over V: wrong password OR tampering —<br/>indistinguishable by design
+    else tag verifies
+        S-->>V: plaintext
+        V->>V: validate metadata_len, parse metadata
+        V->>S: deposit raw secret section under a key name
+        Note over V,S: secret goes locked-memory → locked-memory;<br/>no string is ever built
+        V-->>R: metadata only
+    end
+```
+
+The role receives metadata.  It never receives the secret, and never
+needs to: everything that uses the key names it (HEP-CORE-0043 §2.5).
+
+#### Contract
+
+| | Invariant |
+|---|---|
+| **VF-1** | A reader MUST verify `magic` and `version` before deriving a key.  An unknown value is refused with an error naming the mismatch. |
+| **VF-2** | A reader MUST derive using the `kdf_profile` recorded in the file, never its own build-time setting.  A binary built for any profile can open a vault written under any other. |
+| **VF-3** | The header MUST be passed as associated data.  A file whose header has been altered MUST fail to open. |
+| **VF-4** | `metadata_len` MUST be validated against the decrypted length before it is used to slice.  A length that does not fit is a corrupt file, not a parse to attempt. |
+| **VF-5** | `reserved` MUST be zero on read.  A non-zero byte means a writer this reader does not understand; refuse rather than guess. |
+| **VF-6** | The secret section MUST NOT appear in the metadata document, in any form or encoding. |
+| **VF-7** | Writing MUST take the secret directly from the key store; reading MUST deposit it directly into the key store.  Neither path may construct a string, an owning container, or any copy the security module does not wipe. |
+| **VF-8** | The secret section length is fixed by `vault_kind` and MUST be tied to the key store's sizes by a compile-time assertion. |
+
+#### What this does not defend against
+
+An attacker who can read the memory of a live role process still
+obtains the key.  The format removes the secret from freed heap and from
+pages that may reach swap or a hibernation image; it is not a defence
+against a debugger attached to a running process, and it does not
+survive an operator who leaks the password.
 
 ---
 
