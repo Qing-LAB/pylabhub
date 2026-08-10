@@ -14,6 +14,11 @@
 #include "utils/module_def.hpp"
 #include "utils/security/key_store.hpp"
 
+// Vault format constants live with the vault (HEP-CORE-0035 §4.6.6);
+// included here only so the VF-8 assertions can see them alongside
+// the sodium constants they must agree with.
+#include "../service/vault_crypto.hpp"
+
 #include <sodium.h>
 
 // ── ABI static asserts: sodium constants we've hardcoded in headers
@@ -46,6 +51,29 @@ static_assert(pylabhub::utils::security::SecureSubsystem::kSealedOverheadBytes =
                   crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES,
               "SMS kSealedOverheadBytes must equal the nonce + MAC that "
               "secretbox_encrypt_using prepends");
+
+// ── Vault file format (HEP-CORE-0035 §4.6.6) ─────────────────────────
+// VF-8: the secret section's length is fixed by vault kind and MUST be
+// tied to the KeyStore's sizes, so a drift is a build error rather than
+// a file that silently holds the wrong number of bytes.
+static_assert(pylabhub::utils::detail::kVaultRoleSecretBytes ==
+                  pylabhub::utils::security::SecureSubsystem::kBoxSeckeyBytes,
+              "role vault secret section must be exactly one CURVE secret key");
+static_assert(pylabhub::utils::detail::kVaultHubSecretBytes ==
+                  pylabhub::utils::security::SecureSubsystem::kBoxSeckeyBytes + 32U,
+              "hub vault secret section must be a CURVE secret key followed by a "
+              "32-byte admin token");
+static_assert(pylabhub::utils::detail::kVaultHeaderBytes == 12U,
+              "vault header is 12 bytes: magic(8) + version + kdf_profile + kind + reserved");
+static_assert(pylabhub::utils::detail::kVaultHdrReservedOffset + 1U ==
+                  pylabhub::utils::detail::kVaultHeaderBytes,
+              "vault header offsets must exactly fill the header");
+// The AEAD that carries the header as associated data must agree with
+// the nonce and tag sizes the format reserves.
+static_assert(crypto_aead_xchacha20poly1305_ietf_NPUBBYTES == 24,
+              "sodium ABI drift: XChaCha20-Poly1305 IETF nonce");
+static_assert(crypto_aead_xchacha20poly1305_ietf_ABYTES == 16,
+              "sodium ABI drift: XChaCha20-Poly1305 IETF tag");
 
 #ifndef _WIN32
 #include <unistd.h> // getpid — used in the SodiumInit event log line

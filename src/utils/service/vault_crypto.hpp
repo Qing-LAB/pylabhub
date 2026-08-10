@@ -83,10 +83,110 @@ constexpr unsigned long long kVaultOpsLimit = 2ULL;
 constexpr std::size_t kVaultMemLimit = 67108864U; // 64 MiB
 #endif
 
+// ── File format — HEP-CORE-0035 §4.6.6 ───────────────────────────────────────
+//
+// A vault file is:
+//
+//   [ header 12 ][ nonce 24 ][ ciphertext ][ tag 16 ]
+//
+// The header is cleartext because a reader must act on it before it has
+// a key, and it is passed to the AEAD as ASSOCIATED DATA so that editing
+// it is still detected (VF-3).  The tag follows the ciphertext because
+// that is where the AEAD's combined mode writes it.
+//
+// The plaintext inside is:
+//
+//   [ secret section, fixed length by kind ][ metadata JSON ]
+//
+// The secret sits at offset 0 so that no variable-length field can move
+// it, and there is no stored length: the secret's size is fixed by
+// `vault_kind`, so the metadata is simply the remainder (VF-4).
+
+constexpr std::size_t kVaultHeaderBytes = 12U;
+
+/// Byte offsets within the header.  Every field is a single byte or a
+/// byte string, so there is no endianness to get wrong.
+constexpr std::size_t kVaultHdrMagicOffset = 0U;  ///< 8 bytes
+constexpr std::size_t kVaultHdrMagicBytes = 8U;
+constexpr std::size_t kVaultHdrVersionOffset = 8U;
+constexpr std::size_t kVaultHdrKdfProfileOffset = 9U;
+constexpr std::size_t kVaultHdrKindOffset = 10U;
+constexpr std::size_t kVaultHdrReservedOffset = 11U;
+
+constexpr char kVaultMagic[kVaultHdrMagicBytes] = {'P', 'L', 'H', 'V', 'A', 'U', 'L', 'T'};
+
+/// Bumped only when the layout changes.  A reader refuses anything it
+/// does not recognise rather than guessing (VF-1).
+constexpr std::uint8_t kVaultFormatVersion = 1U;
+
+/// Which secrets a file carries, and therefore how long its secret
+/// section is.  Also stops a hub vault being parsed as a role vault.
+enum class VaultKind : std::uint8_t
+{
+    Hub = 1,
+    Role = 2,
+};
+
+/// Argon2id cost, recorded in the file and honoured on read (VF-2).
+/// A reader NEVER substitutes its own build-time choice, which is what
+/// makes a vault portable between builds.
+enum class VaultKdfProfile : std::uint8_t
+{
+    Interactive = 1, ///< 2 ops, 64 MiB  — the default
+    Sensitive = 2,   ///< 4 ops, 1 GiB   — high security
+    Minimal = 3,     ///< 1 op,  8 KiB   — throwaway test vaults ONLY
+};
+
+struct VaultKdfCost
+{
+    unsigned long long opslimit;
+    std::size_t memlimit;
+};
+
+/// Maps the recorded profile byte to its cost.  Returns false for an
+/// unrecognised value — refused, not defaulted (VF-2).
+[[nodiscard]] constexpr bool vault_kdf_cost(VaultKdfProfile profile, VaultKdfCost &out) noexcept
+{
+    switch (profile)
+    {
+    case VaultKdfProfile::Interactive:
+        out = {2ULL, 67108864U};
+        return true;
+    case VaultKdfProfile::Sensitive:
+        out = {4ULL, 1073741824U};
+        return true;
+    case VaultKdfProfile::Minimal:
+        out = {1ULL, 8192U};
+        return true;
+    }
+    return false;
+}
+
 constexpr std::size_t kVaultKeyBytes = 32U;   // crypto_secretbox_KEYBYTES
 constexpr std::size_t kVaultNonceBytes = 24U; // crypto_secretbox_NONCEBYTES
 constexpr std::size_t kVaultMacBytes = 16U;   // crypto_secretbox_MACBYTES
 constexpr std::size_t kVaultSaltBytes = 16U;  // crypto_pwhash_SALTBYTES
+
+/// Secret-section length per kind (VF-8).  A role carries its CurveZMQ
+/// secret key; a hub carries the broker secret key followed by the
+/// admin token.  Both are RAW bytes — the form the KeyStore holds
+/// (HEP-CORE-0040 §8.5.2) — so the secret crosses the file boundary
+/// without an encoding step that would materialise it as text.
+constexpr std::size_t kVaultRoleSecretBytes = 32U;      ///< seckey
+constexpr std::size_t kVaultHubSecretBytes = 32U + 32U; ///< seckey ‖ admin token
+
+/// Length of the secret section for a kind, or 0 for an unknown kind.
+[[nodiscard]] constexpr std::size_t vault_secret_section_bytes(VaultKind kind) noexcept
+{
+    switch (kind)
+    {
+    case VaultKind::Role:
+        return kVaultRoleSecretBytes;
+    case VaultKind::Hub:
+        return kVaultHubSecretBytes;
+    }
+    return 0U;
+}
 
 // ── Function declarations ─────────────────────────────────────────────────────
 
