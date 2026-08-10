@@ -717,6 +717,59 @@ void KeyStore::with_raw_key(std::string_view name,
     use(it->second.key->bytes());
 }
 
+bool KeyStore::raw_key_matches_hex(std::string_view name, std::string_view hex_candidate) const
+{
+    // Odd-length hex cannot decode; rejecting here avoids allocating.
+    // Length is not the secret, so short-circuiting on it is safe.
+    if (hex_candidate.empty() || (hex_candidate.size() % 2U) != 0U)
+    {
+        return false;
+    }
+    const std::size_t decoded_len = hex_candidate.size() / 2U;
+
+    // The candidate is decoded into locked memory, not a stack array.
+    // On a correct guess these bytes ARE the credential, and the whole
+    // point of taking hex rather than bytes is that they exist only
+    // here, under `sodium_malloc`'s protections, and are wiped by
+    // `sodium_free` on the way out.
+    auto *const buf = static_cast<unsigned char *>(::sodium_malloc(decoded_len));
+    if (buf == nullptr)
+    {
+        throw std::runtime_error("KeyStore::raw_key_matches_hex: sodium_malloc failed");
+    }
+    struct FreeLocked
+    {
+        unsigned char *p;
+        ~FreeLocked() noexcept { ::sodium_free(p); } // zeroes before releasing
+    } free_locked{buf};
+
+    std::size_t bin_len = 0;
+    if (::sodium_hex2bin(buf, decoded_len, hex_candidate.data(), hex_candidate.size(), nullptr,
+                         &bin_len, nullptr) != 0 ||
+        bin_len != decoded_len)
+    {
+        return false; // malformed hex — same answer as a wrong value
+    }
+
+    bool equal = false;
+    {
+        std::shared_lock<std::shared_mutex> rlk(pImpl->mu);
+        const auto it = pImpl->store.find(std::string(name));
+        // An absent name and an identity entry both answer "no".  A
+        // caller presenting a guess learns whether it was right, and
+        // nothing about how our side is arranged.
+        if (it != pImpl->store.end() && !it->second.is_identity)
+        {
+            const auto stored = it->second.key->bytes();
+            if (stored.size() == decoded_len)
+            {
+                equal = ::sodium_memcmp(stored.data(), buf, decoded_len) == 0;
+            }
+        }
+    }
+    return equal;
+}
+
 void KeyStore::remove(std::string_view name)
 {
     std::unique_lock<std::shared_mutex> wlk(pImpl->mu);

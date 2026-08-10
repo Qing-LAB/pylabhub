@@ -125,11 +125,36 @@ class HubVaultTest : public ::testing::Test
 
     void SetUp() override
     {
+        test_tag_ = ::testing::UnitTest::GetInstance()->current_test_info()->name();
         hub_uid_ = generate_uuid4();
         hub_dir_ = fs::temp_directory_path() / ("pylabhub_vault_test_" + hub_uid_.substr(0, 8));
         vault_path_ = hub_dir_ / "vault" / "hub.vault";
         fs::create_directories(hub_dir_);
     }
+
+    /// Unique KeyStore names for this TEST_F, suffixed for call sites
+    /// that open more than one vault.
+    ///
+    /// These have to be per-test because the KeyStore is a PROCESS
+    /// singleton shared by every test in this binary, and `add_identity`
+    /// refuses to replace an existing name — deliberately, since an
+    /// identity being silently overwritten is a security event.  Reusing
+    /// one name across tests would make the second create fail with
+    /// "already present" instead of testing what it means to test.
+    ///
+    /// Generated rather than hand-written: 25 call sites needing two
+    /// names each is 50 string literals to keep unique by eye, and a
+    /// duplicate would surface as a confusing unrelated failure.
+    [[nodiscard]] std::string id_(std::string_view suffix = "") const
+    {
+        return "hv:" + test_tag_ + ":id" + std::string(suffix);
+    }
+    [[nodiscard]] std::string tok_(std::string_view suffix = "") const
+    {
+        return "hv:" + test_tag_ + ":tok" + std::string(suffix);
+    }
+
+    std::string test_tag_;
 
     void TearDown() override
     {
@@ -150,7 +175,7 @@ class HubVaultTest : public ::testing::Test
 
 TEST_F(HubVaultTest, CreateWritesVaultFile)
 {
-    HubVault::create(vault_path_, hub_uid_, kPassword);
+    HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
 
     const fs::path vault_path = hub_dir_ / "vault" / "hub.vault";
     ASSERT_TRUE(fs::exists(vault_path)) << "hub.vault not created";
@@ -159,7 +184,7 @@ TEST_F(HubVaultTest, CreateWritesVaultFile)
 
 TEST_F(HubVaultTest, CreateVaultFileHasRestrictedPermissions)
 {
-    HubVault::create(vault_path_, hub_uid_, kPassword);
+    HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
 
     const fs::path vault_path = hub_dir_ / "vault" / "hub.vault";
 #if defined(PYLABHUB_PLATFORM_WIN64)
@@ -208,6 +233,34 @@ std::array<std::uint8_t, 32> seckey_fingerprint(std::string_view key_name)
     return h;
 }
 
+/// BLAKE2b of the raw admin token, computed INSIDE `with_raw_key`.
+///
+/// There is no `admin_token()` accessor to compare against any more —
+/// the token is 32 raw bytes in locked memory and the design keeps it
+/// there (HEP-CORE-0043 §2.5.3.2).  A fingerprint answers every question
+/// these tests actually ask — "is it the same token?", "did two vaults
+/// mint different ones?" — without the token being handled.
+std::array<std::uint8_t, 32> token_fingerprint(std::string_view key_name)
+{
+    std::array<std::uint8_t, 32> h{};
+    bool hashed = false;
+    vsec::secure().keys().with_raw_key(
+        key_name,
+        [&](std::span<const std::byte> raw)
+        { hashed = vsec::secure().compute_blake2b(h.data(), raw.data(), raw.size()); });
+    EXPECT_TRUE(hashed) << "no raw token yielded for KeyStore entry '" << key_name << "'";
+    return h;
+}
+
+/// Length of the raw secret behind `key_name`, or 0 if absent.
+std::size_t raw_key_size(std::string_view key_name)
+{
+    std::size_t n = 0;
+    vsec::secure().keys().with_raw_key(key_name,
+                                       [&](std::span<const std::byte> raw) { n = raw.size(); });
+    return n;
+}
+
 bool deposited_seckey_is_valid_z85(std::string_view key_name)
 {
     bool ok = false;
@@ -219,28 +272,61 @@ bool deposited_seckey_is_valid_z85(std::string_view key_name)
 
 TEST_F(HubVaultTest, CreateReturnsValidZ85Keypair)
 {
-    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
 
     EXPECT_TRUE(is_valid_z85_key(v.broker_curve_public_key()))
         << "broker_curve_public_key is not a valid 40-char Z85 key: '"
         << v.broker_curve_public_key() << "'";
-    v.load_identity_into("hv:create");
-    EXPECT_TRUE(deposited_seckey_is_valid_z85("hv:create"))
+    // No hand-off step: `create` deposited the identity itself.
+    EXPECT_TRUE(deposited_seckey_is_valid_z85(id_()))
         << "broker_curve_secret_key is not a valid 40-char Z85 key";
 }
 
-TEST_F(HubVaultTest, CreateReturnsValid64CharHexAdminToken)
+TEST_F(HubVaultTest, CreateMintsA32ByteAdminTokenIntoLockedMemory)
 {
-    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
+    // RENAMED, because what it checks changed.  The token used to be a
+    // 64-char hex `std::string` handed back by `admin_token()`; under
+    // HEP-CORE-0035 §4.6.6 it is 32 RAW bytes deposited straight into
+    // the key store, and hex is only a wire encoding.  Asserting "is it
+    // 64 hex chars" would now be asserting the wrong shape.
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
 
-    EXPECT_TRUE(is_valid_hex_token(v.admin_token()))
-        << "admin_token is not a 64-char hex string: '" << v.admin_token() << "'";
+    EXPECT_EQ(raw_key_size(tok_()), 32u)
+        << "admin token must be 32 raw bytes in the key store";
+
+    // And it must be usable as a credential: the verification path
+    // accepts the real token and rejects a near-miss.  This is the
+    // assertion that proves the whole named-token scheme works
+    // end-to-end, and it needs no accessor — the hex form is built here
+    // only to present it, exactly as an operator would.
+    std::string presented;
+    vsec::secure().keys().with_raw_key(
+        tok_(),
+        [&](std::span<const std::byte> raw)
+        {
+            presented.resize(raw.size() * 2 + 1);
+            vsec::secure().bin2hex(presented.data(), presented.size(),
+                                   reinterpret_cast<const std::uint8_t *>(raw.data()), raw.size());
+            presented.resize(raw.size() * 2);
+        });
+    ASSERT_EQ(presented.size(), 64u);
+    EXPECT_TRUE(vsec::secure().keys().raw_key_matches_hex(tok_(), presented))
+        << "the correct token was rejected";
+
+    std::string wrong = presented;
+    wrong[0] = (wrong[0] == 'a') ? 'b' : 'a';
+    EXPECT_FALSE(vsec::secure().keys().raw_key_matches_hex(tok_(), wrong))
+        << "a token differing in one character was accepted";
+    EXPECT_FALSE(vsec::secure().keys().raw_key_matches_hex(tok_(), presented.substr(0, 62)))
+        << "a truncated token was accepted";
+    EXPECT_FALSE(vsec::secure().keys().raw_key_matches_hex("hv:no.such.name", presented))
+        << "an absent key name accepted a token";
 }
 
 TEST_F(HubVaultTest, EmptyPasswordCreatesVaultSuccessfully)
 {
     // Dev-mode: empty password is allowed (weak but functional).
-    EXPECT_NO_THROW(HubVault::create(vault_path_, hub_uid_, ""));
+    EXPECT_NO_THROW(HubVault::create(vault_path_, hub_uid_, "", id_(), tok_()));
     EXPECT_TRUE(fs::exists(hub_dir_ / "vault" / "hub.vault"));
 }
 
@@ -254,12 +340,12 @@ TEST_F(HubVaultTest, TwoCreatesProduceDifferentKeypairs)
     fs::create_directories(dir_a);
     fs::create_directories(dir_b);
 
-    HubVault va = HubVault::create(dir_a / "vault" / "hub.vault", uid_a, kPassword);
-    HubVault vb = HubVault::create(dir_b / "vault" / "hub.vault", uid_b, kPassword);
+    HubVault va = HubVault::create(dir_a / "vault" / "hub.vault", uid_a, kPassword, id_("a"), tok_("a"));
+    HubVault vb = HubVault::create(dir_b / "vault" / "hub.vault", uid_b, kPassword, id_("b"), tok_("b"));
 
     EXPECT_NE(va.broker_curve_public_key(), vb.broker_curve_public_key())
         << "Two vaults produced the same public key — RNG failure?";
-    EXPECT_NE(va.admin_token(), vb.admin_token())
+    EXPECT_NE(token_fingerprint(tok_("a")), token_fingerprint(tok_("b")))
         << "Two vaults produced the same admin token — RNG failure?";
 }
 
@@ -269,27 +355,26 @@ TEST_F(HubVaultTest, TwoCreatesProduceDifferentKeypairs)
 
 TEST_F(HubVaultTest, OpenWithCorrectPasswordReturnsMatchingSecrets)
 {
-    HubVault created = HubVault::create(vault_path_, hub_uid_, kPassword);
-    HubVault opened = HubVault::open(vault_path_, hub_uid_, kPassword);
+    HubVault created = HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
+    HubVault opened = HubVault::open(vault_path_, hub_uid_, kPassword, id_("o"), tok_("o"));
 
     EXPECT_EQ(created.broker_curve_public_key(), opened.broker_curve_public_key());
-    created.load_identity_into("hv:created");
-    opened.load_identity_into("hv:opened");
-    EXPECT_EQ(seckey_fingerprint("hv:created"), seckey_fingerprint("hv:opened"))
+    EXPECT_EQ(seckey_fingerprint(id_()), seckey_fingerprint(id_("o")))
         << "reopening the vault yielded a different broker secret half";
-    EXPECT_EQ(created.admin_token(), opened.admin_token());
+    EXPECT_EQ(token_fingerprint(tok_()), token_fingerprint(tok_("o")))
+        << "reopening the vault yielded a different admin token";
 }
 
 TEST_F(HubVaultTest, OpenWithWrongPasswordThrows)
 {
-    HubVault::create(vault_path_, hub_uid_, kPassword);
+    HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
 
-    EXPECT_THROW(HubVault::open(vault_path_, hub_uid_, kWrongPassword), std::runtime_error);
+    EXPECT_THROW(HubVault::open(vault_path_, hub_uid_, kWrongPassword, id_("o"), tok_("o")), std::runtime_error);
 }
 
 TEST_F(HubVaultTest, OpenCorruptedVaultThrows)
 {
-    HubVault::create(vault_path_, hub_uid_, kPassword);
+    HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
 
     // Flip bytes in the middle of the ciphertext (after the 24-byte nonce).
     const fs::path vault_path = hub_dir_ / "vault" / "hub.vault";
@@ -306,13 +391,13 @@ TEST_F(HubVaultTest, OpenCorruptedVaultThrows)
                   vault_path, pylabhub::utils::security::KeyFileRole::VaultFile),
               pylabhub::utils::security::SetModeResult::Applied);
 
-    EXPECT_THROW(HubVault::open(vault_path_, hub_uid_, kPassword), std::runtime_error);
+    EXPECT_THROW(HubVault::open(vault_path_, hub_uid_, kPassword, id_("o"), tok_("o")), std::runtime_error);
 }
 
 TEST_F(HubVaultTest, OpenMissingVaultThrows)
 {
     // No create() call — vault file does not exist.
-    EXPECT_THROW(HubVault::open(vault_path_, hub_uid_, kPassword), std::runtime_error);
+    EXPECT_THROW(HubVault::open(vault_path_, hub_uid_, kPassword, id_("o"), tok_("o")), std::runtime_error);
 }
 
 TEST_F(HubVaultTest, OpenTruncatedVaultThrows)
@@ -323,7 +408,7 @@ TEST_F(HubVaultTest, OpenTruncatedVaultThrows)
     // garbage.  libsodium's secretbox_open fails MAC verification on any
     // truncation, but we pin the behaviour here to catch a regression
     // that added a "partial-read is fine" path.
-    HubVault::create(vault_path_, hub_uid_, kPassword);
+    HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
 
     const fs::path vault_path = hub_dir_ / "vault" / "hub.vault";
     const auto original_size = fs::file_size(vault_path);
@@ -339,7 +424,7 @@ TEST_F(HubVaultTest, OpenTruncatedVaultThrows)
               pylabhub::utils::security::SetModeResult::Applied);
     ASSERT_EQ(fs::file_size(vault_path), 16u);
 
-    EXPECT_THROW(HubVault::open(vault_path_, hub_uid_, kPassword), std::runtime_error);
+    EXPECT_THROW(HubVault::open(vault_path_, hub_uid_, kPassword, id_("o"), tok_("o")), std::runtime_error);
 }
 
 // ============================================================================
@@ -350,25 +435,55 @@ TEST_F(HubVaultTest, VaultFileDoesNotContainPlaintextSecrets)
 {
     // The vault must actually encrypt its payload — raw bytes in the file should
     // not contain the Z85 keys or the admin token as printable substrings.
-    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
 
     std::ifstream ifs(hub_dir_ / "vault" / "hub.vault", std::ios::binary);
     const std::string raw_bytes((std::istreambuf_iterator<char>(ifs)),
                                 std::istreambuf_iterator<char>());
 
-    // The PUBLIC key search is the sufficient check and needs no secret:
-    // both keys are values in the same JSON payload, so an unencrypted
-    // file exposes both.  Finding neither means the payload is not on
-    // disk in the clear.  The secret-key search this replaces required
-    // an accessor that is going away.
+    // Scope, stated precisely: these searches prove the payload was
+    // ENCRYPTED AT ALL.  They cannot prove a secret is absent from the
+    // METADATA, because the metadata lives inside the ciphertext — a
+    // secret smuggled into the JSON would be encrypted along with
+    // everything else and every search here would still pass.  That was
+    // mutation-verified on the role vault (2026-08-10) and holds
+    // identically here.  What pins the secret out of the metadata is the
+    // format itself: the secret section is raw bytes at a fixed offset
+    // and no code path writes it into the document.
     EXPECT_EQ(raw_bytes.find(v.broker_curve_public_key()), std::string::npos)
         << "Broker public key appears in plaintext in hub.vault — the payload is NOT encrypted, "
            "which means the broker secret key is sitting there too";
-    EXPECT_EQ(raw_bytes.find(std::string_view{"curve_secret_key"}), std::string::npos)
-        << "the JSON field name 'curve_secret_key' is on disk in the clear — the payload was "
-           "written unencrypted, so the key beside it is exposed";
-    EXPECT_EQ(raw_bytes.find(v.admin_token()), std::string::npos)
-        << "Admin token appears in plaintext in hub.vault — encryption is not working!";
+    EXPECT_EQ(raw_bytes.find(std::string_view{"curve_public_key"}), std::string::npos)
+        << "a metadata field name is on disk in the clear — the payload was written unencrypted";
+
+    // The real secrets, checked without either being copied out.
+    bool checked_seckey = false;
+    vsec::secure().keys().with_seckey(id_(),
+                                      [&](std::string_view raw)
+                                      {
+                                          checked_seckey = true;
+                                          EXPECT_EQ(raw_bytes.find(raw), std::string::npos)
+                                              << "the raw broker secret key is in hub.vault";
+                                      });
+    EXPECT_TRUE(checked_seckey) << "no broker secret yielded — the check never ran";
+
+    bool checked_token = false;
+    vsec::secure().keys().with_raw_key(
+        tok_(),
+        [&](std::span<const std::byte> raw)
+        {
+            checked_token = true;
+            EXPECT_EQ(raw_bytes.find(std::string_view(reinterpret_cast<const char *>(raw.data()),
+                                                      raw.size())),
+                      std::string::npos)
+                << "the raw admin token is in hub.vault — encryption is not working";
+        });
+    EXPECT_TRUE(checked_token) << "no admin token yielded — the check never ran";
+
+    // The header IS cleartext by design (VF-1).
+    ASSERT_GE(raw_bytes.size(), 8u);
+    EXPECT_EQ(raw_bytes.compare(0, 8, "PLHVAULT"), 0)
+        << "vault file must start with the cleartext magic (HEP-CORE-0035 §4.6.6)";
 }
 
 TEST_F(HubVaultTest, EncryptDecryptRoundTrip)
@@ -376,22 +491,20 @@ TEST_F(HubVaultTest, EncryptDecryptRoundTrip)
     // Full roundtrip: the secrets written by create() must come back unchanged
     // after open(). This verifies the encrypt → file → decrypt pipeline
     // end-to-end with known values.
-    HubVault created = HubVault::create(vault_path_, hub_uid_, kPassword);
+    HubVault created = HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
 
     const std::string expected_pubkey{created.broker_curve_public_key()};
-    created.load_identity_into("hv:roundtrip_before");
-    const auto expected_fp = seckey_fingerprint("hv:roundtrip_before");
-    const std::string expected_token{created.admin_token()};
+    const auto expected_fp = seckey_fingerprint(id_());
+    const auto expected_token_fp = token_fingerprint(tok_());
 
     // Simulate a new process opening the vault (discard the in-memory object).
-    HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword);
+    HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword, id_("o"), tok_("o"));
 
     EXPECT_EQ(reopened.broker_curve_public_key(), expected_pubkey)
         << "Public key changed after encrypt/decrypt roundtrip";
-    reopened.load_identity_into("hv:roundtrip_after");
-    EXPECT_EQ(seckey_fingerprint("hv:roundtrip_after"), expected_fp)
+    EXPECT_EQ(seckey_fingerprint(id_("o")), expected_fp)
         << "Secret key changed after encrypt/decrypt roundtrip";
-    EXPECT_EQ(reopened.admin_token(), expected_token)
+    EXPECT_EQ(token_fingerprint(tok_("o")), expected_token_fp)
         << "Admin token changed after encrypt/decrypt roundtrip";
 }
 
@@ -407,16 +520,16 @@ TEST_F(HubVaultTest, DifferentHubUidProducesDifferentCiphertext)
     fs::create_directories(dir_a);
     fs::create_directories(dir_b);
 
-    HubVault::create(dir_a / "vault" / "hub.vault", uid_a, kPassword);
-    HubVault::create(dir_b / "vault" / "hub.vault", uid_b, kPassword);
+    HubVault::create(dir_a / "vault" / "hub.vault", uid_a, kPassword, id_("a"), tok_("a"));
+    HubVault::create(dir_b / "vault" / "hub.vault", uid_b, kPassword, id_("b"), tok_("b"));
 
     // Opening vault A with uid_b (wrong salt) must fail.
-    EXPECT_THROW(HubVault::open(dir_a / "vault" / "hub.vault", uid_b, kPassword),
+    EXPECT_THROW(HubVault::open(dir_a / "vault" / "hub.vault", uid_b, kPassword, id_("xa"), tok_("xa")),
                  std::runtime_error)
         << "Cross-uid open should fail (wrong KDF salt)";
 
     // Opening vault B with uid_a must also fail.
-    EXPECT_THROW(HubVault::open(dir_b / "vault" / "hub.vault", uid_a, kPassword),
+    EXPECT_THROW(HubVault::open(dir_b / "vault" / "hub.vault", uid_a, kPassword, id_("xb"), tok_("xb")),
                  std::runtime_error)
         << "Cross-uid open should fail (wrong KDF salt)";
 }
@@ -456,7 +569,7 @@ TEST_F(HubVaultTest, FreshVault_HasEmptyKnownRoles_DenyAllBootstrap)
     // §4.8.4: a newly created vault admits nobody.  If create() ever seeded a
     // non-empty roster, a hub would boot already trusting keys the operator
     // never added.
-    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
 
     EXPECT_TRUE(v.known_roles().is_object())
         << "known_roles must be a JSON object on a fresh vault";
@@ -466,7 +579,7 @@ TEST_F(HubVaultTest, FreshVault_HasEmptyKnownRoles_DenyAllBootstrap)
     // The same must hold after a round trip through the file — the bootstrap
     // state is what a hub actually reads on its first start, not merely what
     // create() returned in memory.
-    HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword);
+    HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword, id_("o"), tok_("o"));
     EXPECT_TRUE(reopened.known_roles().empty())
         << "deny-all bootstrap did not survive create → open";
 }
@@ -477,12 +590,12 @@ TEST_F(HubVaultTest, SetKnownRoles_WithoutSave_DoesNotReachDisk)
     // because the CLI flow is open → set → save: if set() silently persisted,
     // a command that failed validation after mutating would still have
     // changed the allowlist on disk.
-    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
     v.set_known_roles(sample_roster());
 
     EXPECT_FALSE(v.known_roles().empty()) << "set_known_roles did not update memory";
 
-    HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword);
+    HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword, id_("o"), tok_("o"));
     EXPECT_TRUE(reopened.known_roles().empty())
         << "set_known_roles reached disk without save() — a mutation that was "
            "never committed is now live in the allowlist";
@@ -490,13 +603,13 @@ TEST_F(HubVaultTest, SetKnownRoles_WithoutSave_DoesNotReachDisk)
 
 TEST_F(HubVaultTest, KnownRoles_SurvivesSaveAndReopen)
 {
-    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
     const nlohmann::json roster = sample_roster();
     v.set_known_roles(roster);
     v.save(vault_path_);
 
     // Simulate the hub starting in a new process against the saved vault.
-    HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword);
+    HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword, id_("o"), tok_("o"));
     EXPECT_EQ(reopened.known_roles(), roster)
         << "the roster came back different from the one saved";
 }
@@ -507,22 +620,21 @@ TEST_F(HubVaultTest, Save_PreservesKeypairAndAdminToken)
     // keypair and token must ride through untouched — regenerating them would
     // silently invalidate every role's pinned server key and the admin's
     // token on an unrelated allowlist edit.
-    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
     const std::string expected_pubkey{v.broker_curve_public_key()};
-    v.load_identity_into("hv:save_before");
-    const auto expected_fp = seckey_fingerprint("hv:save_before");
-    const std::string expected_token{v.admin_token()};
+    const auto expected_fp = seckey_fingerprint(id_());
+    const auto expected_token_fp = token_fingerprint(tok_());
 
     v.set_known_roles(sample_roster());
     v.save(vault_path_);
 
-    HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword);
+    HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword, id_("o"), tok_("o"));
     EXPECT_EQ(reopened.broker_curve_public_key(), expected_pubkey)
         << "save() changed the broker public key";
-    reopened.load_identity_into("hv:save_after");
-    EXPECT_EQ(seckey_fingerprint("hv:save_after"), expected_fp)
+    EXPECT_EQ(seckey_fingerprint(id_("o")), expected_fp)
         << "save() changed the broker secret key";
-    EXPECT_EQ(reopened.admin_token(), expected_token) << "save() changed the admin token";
+    EXPECT_EQ(token_fingerprint(tok_("o")), expected_token_fp)
+        << "save() changed the admin token";
 }
 
 TEST_F(HubVaultTest, KnownRoles_IsStoredInsideTheEncryptedPayload)
@@ -532,7 +644,7 @@ TEST_F(HubVaultTest, KnownRoles_IsStoredInsideTheEncryptedPayload)
     // written beside the vault in plaintext, so this is the test that pins
     // WHERE it lives: after save(), the roster's contents must not be
     // readable in the vault file, and no plaintext sidecar may appear.
-    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
     v.set_known_roles(sample_roster());
     v.save(vault_path_);
 
@@ -567,7 +679,7 @@ TEST_F(HubVaultTest, Create_OverExistingVault_Throws_AtomicNoOverwrite)
     // admin token, invalidating any federation peer that pinned the
     // old pubkey.  Mutation-sweep against the prior (pre-2026-06-01)
     // contract which allowed silent overwrite.
-    HubVault v1 = HubVault::create(vault_path_, hub_uid_, kPassword);
+    HubVault v1 = HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
     const std::string pk1{v1.broker_curve_public_key()};
     const std::string sentinel_pk = pk1;
 
@@ -578,7 +690,7 @@ TEST_F(HubVaultTest, Create_OverExistingVault_Throws_AtomicNoOverwrite)
     // refuse; both messages must continue to reference the contract.
     try
     {
-        (void)HubVault::create(vault_path_, hub_uid_, kPassword);
+        (void)HubVault::create(vault_path_, hub_uid_, kPassword, id_("2"), tok_("2"));
         FAIL() << "Second create against existing vault must refuse atomically";
     }
     catch (const std::runtime_error &ex)
@@ -593,7 +705,7 @@ TEST_F(HubVaultTest, Create_OverExistingVault_Throws_AtomicNoOverwrite)
     // Original vault content survives — the failed create did not
     // even open the file (O_EXCL refused before any write).  Pubkey
     // remains accessible by opening with the original password.
-    HubVault still = HubVault::open(vault_path_, hub_uid_, kPassword);
+    HubVault still = HubVault::open(vault_path_, hub_uid_, kPassword, id_("r"), tok_("r"));
     EXPECT_EQ(still.broker_curve_public_key(), sentinel_pk)
         << "Failed atomic-no-overwrite create must NOT mutate the existing "
            "vault — original pubkey should still decrypt";
@@ -617,7 +729,8 @@ TEST_F(HubVaultTest, Create_OverSymlinkAtVaultPath_Throws_AtomicNoFollow)
     fs::create_symlink(target, vault_path_);
     ASSERT_TRUE(fs::is_symlink(vault_path_));
 
-    EXPECT_THROW(HubVault::create(vault_path_, hub_uid_, kPassword), std::runtime_error)
+    EXPECT_THROW(HubVault::create(vault_path_, hub_uid_, kPassword, id_("s"), tok_("s")),
+                 std::runtime_error)
         << "Create against a symlink at vault_path must refuse atomically";
 
     // Symlink and target both untouched — the refusal happened at
@@ -636,7 +749,7 @@ TEST_F(HubVaultTest, Create_VaultFileIsMode0600_AndParentDirIs0700)
     // ALONG WITH a sentinel `umask(0)` to prove the modes are NOT
     // dependent on the process umask.
     const ::mode_t prev_umask = ::umask(0);
-    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
     ::umask(prev_umask);
 
     namespace fs = std::filesystem;
@@ -652,18 +765,35 @@ TEST_F(HubVaultTest, Create_VaultFileIsMode0600_AndParentDirIs0700)
 }
 #endif
 
-TEST_F(HubVaultTest, MoveConstructor_TransfersOwnership)
+TEST_F(HubVaultTest, MoveConstructor_TransfersMetadata_SecretsAreUnaffected)
 {
-    HubVault v1 = HubVault::create(vault_path_, hub_uid_, kPassword);
-    const std::string pk{v1.broker_curve_public_key()};
-    v1.load_identity_into("hv:before_move");
-    const auto fp_before = seckey_fingerprint("hv:before_move");
+    // CONTRACT CHANGED, deliberately — same reasoning as the RoleVault
+    // twin.  The vault no longer owns either secret, so "move carried
+    // the secret across" is not a property it can have.  What replaced
+    // it: the secrets' lifetime is the KEY STORE's, and neither moving
+    // nor destroying the vault object disturbs them.
+    const auto fps = [&]
+    {
+        HubVault v1 = HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
+        const std::string pk{v1.broker_curve_public_key()};
+        const auto id_fp = seckey_fingerprint(id_());
+        const auto tok_fp = token_fingerprint(tok_());
 
-    HubVault v2(std::move(v1));
-    EXPECT_EQ(v2.broker_curve_public_key(), pk);
-    v2.load_identity_into("hv:after_move");
-    EXPECT_EQ(seckey_fingerprint("hv:after_move"), fp_before)
-        << "move did not carry the broker secret half across";
+        HubVault v2(std::move(v1));
+        EXPECT_EQ(v2.broker_curve_public_key(), pk) << "move lost the broker public key";
+        EXPECT_EQ(seckey_fingerprint(id_()), id_fp)
+            << "moving the vault object disturbed the deposited broker key";
+        EXPECT_EQ(token_fingerprint(tok_()), tok_fp)
+            << "moving the vault object disturbed the deposited admin token";
+        return std::pair{id_fp, tok_fp};
+    }();
+
+    EXPECT_TRUE(vsec::secure().keys().has(id_()))
+        << "destroying the vault removed the broker identity";
+    EXPECT_TRUE(vsec::secure().keys().has(tok_()))
+        << "destroying the vault removed the admin token";
+    EXPECT_EQ(seckey_fingerprint(id_()), fps.first);
+    EXPECT_EQ(token_fingerprint(tok_()), fps.second);
 }
 
 // ============================================================================
@@ -672,7 +802,7 @@ TEST_F(HubVaultTest, MoveConstructor_TransfersOwnership)
 
 TEST_F(HubVaultTest, PublishPublicKeyWritesCorrectContent)
 {
-    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
     v.publish_public_key(hub_dir_);
 
     const fs::path pubkey_path = hub_dir_ / "hub.pubkey";
@@ -686,7 +816,7 @@ TEST_F(HubVaultTest, PublishPublicKeyWritesCorrectContent)
 
 TEST_F(HubVaultTest, PublishPublicKeyHasWorldReadablePermissions)
 {
-    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
+    HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword, id_(), tok_());
     v.publish_public_key(hub_dir_);
 
     const fs::path pubkey_path = hub_dir_ / "hub.pubkey";

@@ -150,6 +150,14 @@ namespace pylabhub::utils::security
 inline constexpr std::string_view kHubIdentityName = "hub_identity";
 inline constexpr std::string_view kRoleIdentityName = "role_identity";
 
+/// The hub's admin token — a raw 32-byte secret, not an identity, so it
+/// is reached with `with_raw_key` / `raw_key_matches_hex` rather than
+/// `with_seckey`.  It is half the hub vault's secret section
+/// (HEP-CORE-0035 §4.6.6), and naming it here is what lets the admin
+/// service verify a presented token without anyone holding the real
+/// one: config carries this name, not the bytes.
+inline constexpr std::string_view kHubAdminTokenName = "hub.admin.token";
+
 class PYLABHUB_UTILS_EXPORT KeyStore
 {
   public:
@@ -406,6 +414,32 @@ class PYLABHUB_UTILS_EXPORT KeyStore
     /// the 32-byte secret half rather than the whole 64-byte pack).
     void with_raw_key(std::string_view name,
                       std::function<void(std::span<const std::byte>)> use) const;
+
+    /// Constant-time check that the raw key under `name` is the value
+    /// presented as `hex_candidate`.  Returns the answer and nothing
+    /// else — the credential never crosses this boundary in either
+    /// direction.
+    ///
+    /// **Hex, not bytes, and that is deliberate.**  If the caller
+    /// decoded first, then on a SUCCESSFUL check the caller would be
+    /// holding the real secret in a buffer it owns — the exact copy
+    /// this class exists to prevent, appearing precisely when the guess
+    /// was right.  Decoding happens inside, into a locked allocation
+    /// that is freed before return.
+    ///
+    /// Constant-time because a timing-visible early exit leaks the
+    /// secret one byte per guess.  The LENGTH check may short-circuit;
+    /// the length is not the secret.
+    ///
+    /// Returns false — indistinguishably — if `name` is absent, names
+    /// an identity rather than a raw key, the hex is malformed, the
+    /// decoded length differs, or the value is simply wrong.  Which of
+    /// those it was is a fact about our side that a caller presenting a
+    /// guess has no business learning.
+    ///
+    /// See HEP-CORE-0043 §2.5.3.2.
+    [[nodiscard]] bool raw_key_matches_hex(std::string_view name,
+                                           std::string_view hex_candidate) const;
 
 
     /// Existence check (tests; production uses `pubkey()` /

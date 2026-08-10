@@ -493,7 +493,8 @@ void HubHost::startup()
         if (impl_->cfg.admin().enabled)
         {
             impl_->admin_svc = std::make_unique<admin::AdminService>(
-                hub::get_zmq_context(), impl_->cfg.admin(), impl_->cfg.admin().admin_token, *this);
+                hub::get_zmq_context(), impl_->cfg.admin(), impl_->cfg.admin().admin_token_name,
+                *this);
 
             auto *admin_ptr = impl_->admin_svc.get();
             if (!impl_->thread_mgr->spawn("admin", [admin_ptr] { admin_ptr->run(); }))

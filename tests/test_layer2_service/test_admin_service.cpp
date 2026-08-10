@@ -21,6 +21,7 @@
  */
 
 #include "utils/admin_service.hpp"
+#include "utils/format_tools.hpp"
 #include "utils/security/key_store.hpp"
 #include "utils/security/secure_subsystem.hpp"
 #include "utils/wire_bodies.hpp"
@@ -76,6 +77,31 @@ namespace
 {
 
 constexpr auto kTestToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+/// KeyStore name this suite files the admin token under.
+constexpr auto kTestTokenName = "admin.test.token";
+
+/// Deposit `kTestToken` as the raw 32 bytes it encodes, and hand back
+/// the NAME for the config.
+///
+/// The config used to carry the token string itself; under
+/// HEP-CORE-0043 §2.5.3.2 it carries a name and the key store holds the
+/// bytes.  `kTestToken` stays hex because that is the WIRE form — it is
+/// still exactly what `console.establish(...)` presents, unchanged.
+std::string seed_admin_token()
+{
+    namespace vsec = pylabhub::utils::security;
+    if (!vsec::secure().keys().has(kTestTokenName))
+    {
+        const auto raw = pylabhub::format_tools::bytes_from_hex_array<32>(kTestToken);
+        if (!raw)
+            throw std::runtime_error("test setup: kTestToken is not 64 hex chars");
+        std::array<std::byte, 32> bytes{};
+        std::memcpy(bytes.data(), raw->data(), bytes.size());
+        vsec::secure().keys().add_raw(kTestTokenName, std::span<std::byte>(bytes));
+    }
+    return std::string(kTestTokenName);
+}
 
 /// Seed the hub broker identity (`kHubIdentityName`) once via the designed
 /// facility so the admin ROUTER can arm its curve_server (§11.1) and the
@@ -160,7 +186,7 @@ class AdminServiceTest : public ::testing::Test, public pylabhub::tests::LogCapt
         }
 
         auto cfg = HubConfig::load_from_directory(dir.string());
-        const_cast<HubAdminConfig &>(cfg.admin()).admin_token = kTestToken;
+        const_cast<HubAdminConfig &>(cfg.admin()).admin_token_name = seed_admin_token();
 
         host_.emplace(std::move(cfg));
         host_->startup();
@@ -429,7 +455,7 @@ TEST_F(AdminServiceTest, Console_AdminDisabled_NoAdmin)
         f << j.dump(2);
     }
     auto cfg = HubConfig::load_from_directory(dir.string());
-    const_cast<HubAdminConfig &>(cfg.admin()).admin_token = kTestToken;
+    const_cast<HubAdminConfig &>(cfg.admin()).admin_token_name = seed_admin_token();
 
     host_.emplace(std::move(cfg));
     host_->startup();

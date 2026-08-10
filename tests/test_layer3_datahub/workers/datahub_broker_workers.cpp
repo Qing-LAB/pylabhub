@@ -243,11 +243,11 @@ BrokerHandle start_broker_in_thread(BrokerService::Config cfg,
 }
 
 // setup_broker_test — single-call helper that collapses the 5-line test
-// preamble (`Config cfg; make_curve_setup; seed_curve_identities;
+// preamble (`Config cfg; make_curve_setup; seed_role_identities;
 // start_broker_in_thread`) into one line.  Returns the broker handle
 // plus the seeded fixture; the fixture is heap-allocated so it can be
 // returned through a move-only carrier and stays alive for the
-// caller's stack frame (seed_curve_identities itself is non-movable).
+// caller's stack frame (the CurveSetup itself is non-movable).
 //
 // `schema_search_dirs` lets a test seed hub-global schema files
 // (HEP-CORE-0034 §12) at broker startup time — the 4 hub-globals
@@ -2619,7 +2619,16 @@ int broker_sch_path_c_unknown_global()
             // so the broker's Layer-1 ZAP gate (HEP-CORE-0035 §4.8)
             // admits each role uid we'll register below.
             auto curve = pylabhub::tests::make_curve_setup({"prod.broker.unk.uid00000001"});
-            pylabhub::tests::seed_curve_identities(curve);
+            // `seed_role_identities`, NOT `seed_curve_identities`:
+            // `start_broker_in_thread` is a vault flow, and the hub's own
+            // identity comes from the vault via `load_keypair`.  This was
+            // the last site still pre-seeding `hub_identity` against that
+            // contract; it survived only because the eviction inside
+            // `load_hub_keypair_fresh` silently replaced the pre-seeded
+            // key with the vault's, so the pre-seed was doing nothing but
+            // hiding the mismatch.  Every other worker here goes through
+            // `setup_broker_test`, which has always done it this way.
+            pylabhub::tests::seed_role_identities(curve);
             auto broker = start_broker_in_thread(std::move(cfg), curve);
 
             const std::string blds = "v:f32:1:0";

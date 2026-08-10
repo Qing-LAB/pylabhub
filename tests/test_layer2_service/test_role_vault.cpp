@@ -18,6 +18,7 @@
 #include "utils/security/key_store.hpp"
 #include <array>
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <cctype>
 #include <filesystem>
@@ -102,7 +103,7 @@ class RoleVaultTest : public ::testing::Test
 
 TEST_F(RoleVaultTest, Create_WritesFile)
 {
-    RoleVault::create(vault_path_, role_uid_, kPassword);
+    RoleVault::create(vault_path_, role_uid_, kPassword, "rv:writes_file");
     ASSERT_TRUE(fs::exists(vault_path_)) << "Vault file not created";
     EXPECT_GT(fs::file_size(vault_path_), 40u) << "Vault file suspiciously small";
 }
@@ -111,7 +112,7 @@ TEST_F(RoleVaultTest, Create_RestrictedPerms)
 {
 #if !defined(PYLABHUB_PLATFORM_WIN64)
     // Windows has no POSIX file modes; skip permission check.
-    RoleVault::create(vault_path_, role_uid_, kPassword);
+    RoleVault::create(vault_path_, role_uid_, kPassword, "rv:perms");
 
     // Mode discipline owned by HEP-CORE-0035 §4.6 utility (single
     // source of truth for the verdict matrix; see
@@ -163,10 +164,10 @@ bool deposited_seckey_is_valid_z85(std::string_view key_name)
 
 TEST_F(RoleVaultTest, Create_ValidZ85Keypair)
 {
-    RoleVault v = RoleVault::create(vault_path_, role_uid_, kPassword);
+    RoleVault v = RoleVault::create(vault_path_, role_uid_, kPassword, "rv:create");
     EXPECT_TRUE(is_valid_z85_key(v.public_key()))
         << "public_key is not a valid 40-char Z85 key: '" << v.public_key() << "'";
-    v.load_identity_into("rv:create");
+    // No hand-off step: `create` deposited the identity itself.
     EXPECT_TRUE(deposited_seckey_is_valid_z85("rv:create"))
         << "secret half is not a valid 40-char Z85 key";
 }
@@ -174,7 +175,7 @@ TEST_F(RoleVaultTest, Create_ValidZ85Keypair)
 TEST_F(RoleVaultTest, Create_EmptyPassword)
 {
     // Dev-mode: empty password is allowed.
-    EXPECT_NO_THROW(RoleVault::create(vault_path_, role_uid_, ""));
+    EXPECT_NO_THROW(RoleVault::create(vault_path_, role_uid_, "", "rv:empty_pw"));
     EXPECT_TRUE(fs::exists(vault_path_));
 }
 
@@ -184,12 +185,10 @@ TEST_F(RoleVaultTest, Create_EmptyPassword)
 
 TEST_F(RoleVaultTest, Open_CorrectPassword)
 {
-    RoleVault created = RoleVault::create(vault_path_, role_uid_, kPassword);
-    RoleVault opened = RoleVault::open(vault_path_, role_uid_, kPassword);
+    RoleVault created = RoleVault::create(vault_path_, role_uid_, kPassword, "rv:created");
+    RoleVault opened = RoleVault::open(vault_path_, role_uid_, kPassword, "rv:opened");
 
     EXPECT_EQ(created.public_key(), opened.public_key());
-    created.load_identity_into("rv:created");
-    opened.load_identity_into("rv:opened");
     EXPECT_EQ(seckey_fingerprint("rv:created"), seckey_fingerprint("rv:opened"))
         << "reopening the vault yielded a different secret half";
     EXPECT_EQ(created.role_uid(), opened.role_uid());
@@ -197,15 +196,18 @@ TEST_F(RoleVaultTest, Open_CorrectPassword)
 
 TEST_F(RoleVaultTest, Open_WrongPassword_Throws)
 {
-    RoleVault::create(vault_path_, role_uid_, kPassword);
-    EXPECT_THROW(RoleVault::open(vault_path_, role_uid_, kWrongPassword), std::runtime_error);
+    RoleVault::create(vault_path_, role_uid_, kPassword, "rv:wrong_pw");
+    EXPECT_THROW(RoleVault::open(vault_path_, role_uid_, kWrongPassword, "rv:wrong_pw_open"),
+                 std::runtime_error);
 }
 
 TEST_F(RoleVaultTest, Open_CorruptedFile_Throws)
 {
-    RoleVault::create(vault_path_, role_uid_, kPassword);
+    RoleVault::create(vault_path_, role_uid_, kPassword, "rv:corrupt");
 
-    // Flip bytes in the ciphertext (after the 24-byte nonce).
+    // Flip bytes inside the ciphertext.  Offset 30 lands past the
+    // 12-byte header and inside the 24-byte nonce, so this now also
+    // exercises nonce corruption — still a tag failure, still refused.
     {
         std::fstream f(vault_path_, std::ios::in | std::ios::out | std::ios::binary);
         ASSERT_TRUE(f.is_open());
@@ -221,12 +223,14 @@ TEST_F(RoleVaultTest, Open_CorruptedFile_Throws)
               pylabhub::utils::security::SetModeResult::Applied);
 #endif
 
-    EXPECT_THROW(RoleVault::open(vault_path_, role_uid_, kPassword), std::runtime_error);
+    EXPECT_THROW(RoleVault::open(vault_path_, role_uid_, kPassword, "rv:corrupt_open"),
+                 std::runtime_error);
 }
 
 TEST_F(RoleVaultTest, Open_MissingFile_Throws)
 {
-    EXPECT_THROW(RoleVault::open(vault_path_, role_uid_, kPassword), std::runtime_error);
+    EXPECT_THROW(RoleVault::open(vault_path_, role_uid_, kPassword, "rv:missing"),
+                 std::runtime_error);
 }
 
 // ============================================================================
@@ -235,24 +239,73 @@ TEST_F(RoleVaultTest, Open_MissingFile_Throws)
 
 TEST_F(RoleVaultTest, Encrypt_SecretsNotInPlaintext)
 {
-    RoleVault v = RoleVault::create(vault_path_, role_uid_, kPassword);
+    RoleVault v = RoleVault::create(vault_path_, role_uid_, kPassword, "rv:plaintext");
 
     std::ifstream ifs(vault_path_, std::ios::binary);
     const std::string raw_bytes((std::istreambuf_iterator<char>(ifs)),
                                 std::istreambuf_iterator<char>());
 
-    // Searching for the PUBLIC key is the sufficient check, and it needs
-    // no secret.  Both keys are values in the same JSON payload, so an
-    // unencrypted file exposes both — finding neither means the payload
-    // is not on disk in the clear.  The public key is not secret, so
-    // this test can hold it; the secret-key search this replaces
-    // required an accessor that is going away.
+    // The public key is not secret, so the test may hold it.  Finding it
+    // would mean the metadata is on disk in the clear.
     EXPECT_EQ(raw_bytes.find(v.public_key()), std::string::npos)
-        << "Public key appears in plaintext in vault file — the payload is NOT encrypted, "
-           "which means the secret key is sitting there too";
-    EXPECT_EQ(raw_bytes.find(std::string_view{"secret_key"}), std::string::npos)
-        << "the JSON field name 'secret_key' is on disk in the clear — the payload was written "
-           "unencrypted, so the key beside it is exposed";
+        << "Public key appears in plaintext in vault file — the payload is NOT encrypted";
+    EXPECT_EQ(raw_bytes.find(std::string_view{"role_uid"}), std::string::npos)
+        << "the metadata field name 'role_uid' is on disk in the clear — the payload was written "
+           "unencrypted";
+
+    // The actual secret bytes must not appear in the file, raw or Z85.
+    //
+    // Scope, stated precisely because it is narrower than it looks:
+    // these two searches prove the payload was ENCRYPTED AT ALL.  They
+    // cannot prove the secret is absent from the metadata, because the
+    // metadata lives inside the ciphertext — a secret smuggled into the
+    // JSON would be encrypted along with everything else and these
+    // searches would still pass.  That is not a guess: putting the Z85
+    // secret back into the metadata document was mutation-tested on
+    // 2026-08-10 and both searches passed.  The size assertion below is
+    // what actually pins VF-6.
+    bool checked_raw = false;
+    vsec::secure().keys().with_seckey("rv:plaintext",
+                                      [&](std::string_view raw)
+                                      {
+                                          checked_raw = true;
+                                          EXPECT_EQ(raw_bytes.find(raw), std::string::npos)
+                                              << "the raw secret key is present in the vault file";
+                                      });
+    EXPECT_TRUE(checked_raw) << "no raw secret yielded — the check above never ran";
+
+    bool checked_z85 = false;
+    vsec::secure().keys().with_seckey_z85("rv:plaintext",
+                                          [&](std::string_view z85)
+                                          {
+                                              checked_z85 = true;
+                                              EXPECT_EQ(raw_bytes.find(z85), std::string::npos)
+                                                  << "the Z85-encoded secret key is present in "
+                                                     "the vault file";
+                                          });
+    EXPECT_TRUE(checked_z85) << "no Z85 secret yielded — the check above never ran";
+
+    // The header IS cleartext by design (VF-1) — a reader must act on it
+    // before it has a key.  Assert it is there, so that "nothing is
+    // readable" never gets over-tightened into breaking the format.
+    ASSERT_GE(raw_bytes.size(), 8u);
+    EXPECT_EQ(raw_bytes.compare(0, 8, "PLHVAULT"), 0)
+        << "vault file must start with the cleartext magic (HEP-CORE-0035 §4.6.6)";
+
+    // VF-6, pinned by the one thing an outsider CAN measure: the exact
+    // file length.  The format is fully determined — header 12, nonce
+    // 24, secret section 32, metadata, tag 16 — so the total fixes the
+    // metadata byte for byte.  Build the metadata the DESIGN specifies
+    // (§4.6.6: role_uid and public_key, nothing else) and require the
+    // file to be exactly that long.  Any additional field moves the
+    // number, whether or not it happens to be a secret.
+    const nlohmann::json expected_metadata = {{"role_uid", role_uid_},
+                                              {"public_key", std::string{v.public_key()}}};
+    const std::size_t expected_size = 12U + 24U + 32U + expected_metadata.dump().size() + 16U;
+    EXPECT_EQ(raw_bytes.size(), expected_size)
+        << "vault file is not the exact size the format specifies — the metadata carries "
+           "something beyond role_uid and public_key (a secret smuggled back into the document "
+           "looks exactly like this)";
 }
 
 TEST_F(RoleVaultTest, Encrypt_DifferentUid_DifferentCiphertext)
@@ -262,12 +315,12 @@ TEST_F(RoleVaultTest, Encrypt_DifferentUid_DifferentCiphertext)
     const fs::path path_a = vault_dir_ / "a.key";
     const fs::path path_b = vault_dir_ / "b.key";
 
-    RoleVault::create(path_a, uid_a, kPassword);
-    RoleVault::create(path_b, uid_b, kPassword);
+    RoleVault::create(path_a, uid_a, kPassword, "rv:ct_a");
+    RoleVault::create(path_b, uid_b, kPassword, "rv:ct_b");
 
     // Cross-uid open should fail (different KDF salt).
-    EXPECT_THROW(RoleVault::open(path_a, uid_b, kPassword), std::runtime_error);
-    EXPECT_THROW(RoleVault::open(path_b, uid_a, kPassword), std::runtime_error);
+    EXPECT_THROW(RoleVault::open(path_a, uid_b, kPassword, "rv:ct_x1"), std::runtime_error);
+    EXPECT_THROW(RoleVault::open(path_b, uid_a, kPassword, "rv:ct_x2"), std::runtime_error);
 }
 
 // ============================================================================
@@ -276,10 +329,10 @@ TEST_F(RoleVaultTest, Encrypt_DifferentUid_DifferentCiphertext)
 
 TEST_F(RoleVaultTest, RoleUid_Roundtrip)
 {
-    RoleVault created = RoleVault::create(vault_path_, role_uid_, kPassword);
+    RoleVault created = RoleVault::create(vault_path_, role_uid_, kPassword, "rv:uidrt_c");
     EXPECT_EQ(created.role_uid(), role_uid_);
 
-    RoleVault opened = RoleVault::open(vault_path_, role_uid_, kPassword);
+    RoleVault opened = RoleVault::open(vault_path_, role_uid_, kPassword, "rv:uidrt_o");
     EXPECT_EQ(opened.role_uid(), role_uid_);
 }
 
@@ -290,7 +343,7 @@ TEST_F(RoleVaultTest, Create_OverExistingVault_Throws_AtomicNoOverwrite)
     // overwrite would invalidate any hub-side allowlist entry pinned
     // to the old pubkey, stranding the role.  Mutation-sweep against
     // the prior (pre-2026-06-01) contract.
-    RoleVault v1 = RoleVault::create(vault_path_, role_uid_, kPassword);
+    RoleVault v1 = RoleVault::create(vault_path_, role_uid_, kPassword, "rv:overwrite_1");
     const std::string sentinel_pk{v1.public_key()};
 
     // Pin the atomic-layer message — distinct from the operator-
@@ -298,7 +351,7 @@ TEST_F(RoleVaultTest, Create_OverExistingVault_Throws_AtomicNoOverwrite)
     // in --keygen.  Both must continue to refuse + cite the contract.
     try
     {
-        (void)RoleVault::create(vault_path_, role_uid_, kPassword);
+        (void)RoleVault::create(vault_path_, role_uid_, kPassword, "rv:overwrite_2");
         FAIL() << "Second create against existing role vault must refuse atomically";
     }
     catch (const std::runtime_error &ex)
@@ -311,7 +364,13 @@ TEST_F(RoleVaultTest, Create_OverExistingVault_Throws_AtomicNoOverwrite)
     }
 
     // Original vault content survives — verify by re-opening.
-    RoleVault still = RoleVault::open(vault_path_, role_uid_, kPassword);
+    // The refused create must also leave no identity behind: a partial
+    // create that banked a key would make the NEXT create fail with
+    // "already present" instead of the real reason.
+    EXPECT_FALSE(vsec::secure().keys().has("rv:overwrite_2"))
+        << "a refused create left its minted identity in the key store";
+
+    RoleVault still = RoleVault::open(vault_path_, role_uid_, kPassword, "rv:overwrite_reopen");
     EXPECT_EQ(still.public_key(), sentinel_pk)
         << "Failed atomic-no-overwrite create must NOT mutate the existing "
            "role vault — original pubkey should still decrypt";
@@ -330,8 +389,11 @@ TEST_F(RoleVaultTest, Create_OverSymlinkAtVaultPath_Throws_AtomicNoFollow)
     fs::create_symlink(target, vault_path_);
     ASSERT_TRUE(fs::is_symlink(vault_path_));
 
-    EXPECT_THROW(RoleVault::create(vault_path_, role_uid_, kPassword), std::runtime_error)
+    EXPECT_THROW(RoleVault::create(vault_path_, role_uid_, kPassword, "rv:symlink"),
+                 std::runtime_error)
         << "Create against a symlink at vault_path must refuse atomically";
+    EXPECT_FALSE(vsec::secure().keys().has("rv:symlink"))
+        << "a refused create left its minted identity in the key store";
 
     EXPECT_TRUE(fs::is_symlink(vault_path_));
     std::ifstream check(target);
@@ -343,7 +405,7 @@ TEST_F(RoleVaultTest, Create_OverSymlinkAtVaultPath_Throws_AtomicNoFollow)
 TEST_F(RoleVaultTest, Create_VaultFileIsMode0600_AndParentDirIs0700)
 {
     const ::mode_t prev_umask = ::umask(0);
-    RoleVault v = RoleVault::create(vault_path_, role_uid_, kPassword);
+    RoleVault v = RoleVault::create(vault_path_, role_uid_, kPassword, "rv:mode");
     ::umask(prev_umask);
 
     namespace fs = std::filesystem;
@@ -357,20 +419,40 @@ TEST_F(RoleVaultTest, Create_VaultFileIsMode0600_AndParentDirIs0700)
 }
 #endif
 
-TEST_F(RoleVaultTest, MoveConstructor_TransfersOwnership)
+TEST_F(RoleVaultTest, MoveConstructor_TransfersMetadata_KeyIsUnaffected)
 {
-    RoleVault v1 = RoleVault::create(vault_path_, role_uid_, kPassword);
-    const std::string pk{v1.public_key()};
-    const std::string uid{v1.role_uid()};
-    v1.load_identity_into("rv:before_move");
-    const auto fp_before = seckey_fingerprint("rv:before_move");
+    // CONTRACT CHANGED, deliberately.  This test used to assert that
+    // moving a RoleVault "carried the secret half across", because the
+    // vault owned the secret.  Under HEP-CORE-0035 §4.6.6 it does not
+    // own one — `open`/`create` deposit the identity in the key store
+    // and the vault keeps only public metadata.  Asserting the old
+    // property would now be asserting nothing.
+    //
+    // What replaced it is a stronger statement worth pinning: the
+    // identity's lifetime is the KEY STORE's, not the vault object's.
+    // A moved-from — or destroyed — vault leaves the key exactly where
+    // it was.
+    const auto fp_before = [&]
+    {
+        RoleVault v1 = RoleVault::create(vault_path_, role_uid_, kPassword, "rv:move");
+        const std::string pk{v1.public_key()};
+        const std::string uid{v1.role_uid()};
+        const auto fp = seckey_fingerprint("rv:move");
 
-    RoleVault v2(std::move(v1));
-    EXPECT_EQ(v2.public_key(), pk);
-    EXPECT_EQ(v2.role_uid(), uid);
-    v2.load_identity_into("rv:after_move");
-    EXPECT_EQ(seckey_fingerprint("rv:after_move"), fp_before)
-        << "move did not carry the secret half across";
+        RoleVault v2(std::move(v1));
+        EXPECT_EQ(v2.public_key(), pk) << "move lost the public key";
+        EXPECT_EQ(v2.role_uid(), uid) << "move lost the role uid";
+        EXPECT_EQ(seckey_fingerprint("rv:move"), fp)
+            << "moving the vault object disturbed the deposited identity";
+        return fp;
+        // both v1 and v2 destruct here
+    }();
+
+    EXPECT_TRUE(vsec::secure().keys().has("rv:move"))
+        << "destroying the vault removed the identity — the key's lifetime must be the key "
+           "store's, not the vault object's";
+    EXPECT_EQ(seckey_fingerprint("rv:move"), fp_before)
+        << "the identity changed after the vault that deposited it was destroyed";
 }
 
 TEST_F(RoleVaultTest, DifferentUids_DifferentKeys)
@@ -380,8 +462,8 @@ TEST_F(RoleVaultTest, DifferentUids_DifferentKeys)
     const fs::path path_a = vault_dir_ / "a.key";
     const fs::path path_b = vault_dir_ / "b.key";
 
-    RoleVault va = RoleVault::create(path_a, uid_a, kPassword);
-    RoleVault vb = RoleVault::create(path_b, uid_b, kPassword);
+    RoleVault va = RoleVault::create(path_a, uid_a, kPassword, "rv:diff_a");
+    RoleVault vb = RoleVault::create(path_b, uid_b, kPassword, "rv:diff_b");
 
     EXPECT_NE(va.public_key(), vb.public_key())
         << "Two vaults with different UIDs produced the same public key";

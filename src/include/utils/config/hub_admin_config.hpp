@@ -38,12 +38,19 @@ struct HubAdminConfig
     std::string endpoint{"tcp://127.0.0.1:5600"}; ///< ZMQ endpoint (CURVE-server, §11.1)
     ConsoleOutputBufferConfig output_buffer;      ///< §11.0.4 pull-buffer caps
 
-    /// Runtime-only: 64-char hex admin token.  Populated by
-    /// `HubConfig::load_keypair()` from the unlocked `HubVault`; NOT
-    /// parsed from JSON (the token is a vault secret, never on disk
-    /// in plaintext).  Empty until the vault is unlocked.  Mirrors
-    /// the `AuthConfig::client_pubkey/seckey` runtime-only pattern.
-    std::string admin_token;
+    /// Runtime-only: the KeyStore NAME under which the admin token was
+    /// deposited when the vault was unlocked — not the token.
+    /// Populated by `HubConfig::load_keypair()`; never parsed from JSON.
+    /// Empty until the vault is unlocked, which is still the "admin is
+    /// not configured" signal `AdminService` checks for.
+    ///
+    /// This field used to hold the 64-char hex token itself, which put
+    /// the hub's admin credential in unwiped heap for the life of the
+    /// process. Holding the name costs nothing and reveals nothing:
+    /// verification goes through
+    /// `keys().raw_key_matches_hex(name, presented)`, so the bytes stay
+    /// in locked memory and only the yes/no comes back.
+    std::string admin_token_name;
 };
 
 inline HubAdminConfig parse_hub_admin_config(const nlohmann::json &j)

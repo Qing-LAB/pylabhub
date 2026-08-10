@@ -80,7 +80,7 @@ struct AdminService::Impl
     zmq::context_t &ctx;
     hub_host::HubHost &host;
     std::string endpoint;
-    std::string admin_token;
+    std::string admin_token_name; ///< KeyStore name, not the token.
 
     std::atomic<bool> stop_requested{false};
     std::string bound_endpoint;
@@ -127,20 +127,26 @@ struct AdminService::Impl
 // ============================================================================
 
 AdminService::AdminService(zmq::context_t &zmq_ctx, const config::HubAdminConfig &cfg,
-                           std::string_view admin_token, hub_host::HubHost &host)
+                           std::string_view admin_token_name, hub_host::HubHost &host)
     : impl_(std::make_unique<Impl>(zmq_ctx, host))
 {
     impl_->endpoint = cfg.endpoint;
-    impl_->admin_token = std::string(admin_token);
+    impl_->admin_token_name = std::string(admin_token_name);
 
     // §11.3 invariant: the admin token is MANDATORY — there is no
     // token-less admin path (the CURVE transport in run() encrypts it, so
     // a non-loopback bind is no longer a hazard, but the token is still
-    // the sole authority).  An empty token would silently authenticate
-    // every request.
-    if (admin_token.empty())
+    // the sole authority).
+    //
+    // An empty NAME is the "vault not unlocked" signal, exactly as an
+    // empty token was.  The check is stronger than it looks: an unknown
+    // name makes `raw_key_matches_hex` answer false for every candidate,
+    // so a misconfigured admin plane refuses everyone rather than
+    // admitting everyone — which is what an empty token would have done
+    // before this check existed.
+    if (admin_token_name.empty())
     {
-        throw std::invalid_argument("AdminService: admin_token is empty — the admin token is "
+        throw std::invalid_argument("AdminService: admin_token_name is empty — the admin token is "
                                     "mandatory (HEP-CORE-0033 §11.3).  Vault not unlocked? "
                                     "HubConfig::load_keypair must run before AdminService "
                                     "construction.");
@@ -277,14 +283,28 @@ const std::string &AdminService::bound_endpoint() const noexcept
 bool AdminService::Impl::token_ok(std::string_view token) const noexcept
 {
     // §11.3 — the admin token authorizes session establishment (checked
-    // once, at HELLO).  Size-gated constant-time-equal-length compare; the
-    // vault token is fixed-length (64 hex).
-    if (token.size() != admin_token.size())
+    // once, at HELLO).
+    //
+    // This used to hand-roll a constant-time compare against a
+    // `std::string` copy of the real token held on this object.  Two
+    // things were wrong with that: the credential sat in unwiped heap
+    // for the life of the process, and the comparison was a
+    // reimplementation of `sodium_memcmp`, which the security module
+    // already exposes.  Now the token lives in locked memory under a
+    // name and the key store answers the question — see HEP-CORE-0043
+    // §2.5.3.2 for why the presented value crosses as hex.
+    try
+    {
+        return pylabhub::utils::security::secure().keys().raw_key_matches_hex(admin_token_name,
+                                                                             token);
+    }
+    catch (...)
+    {
+        // `noexcept`, and a failed check must never be reported as a
+        // pass.  Any throw here (SMS not up, allocation failure) is a
+        // refusal.
         return false;
-    bool eq = true;
-    for (std::size_t i = 0; i < token.size(); ++i)
-        eq &= (token[i] == admin_token[i]);
-    return eq;
+    }
 }
 
 namespace

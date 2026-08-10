@@ -6,7 +6,16 @@
  * outside src/utils/service/.
  *
  * Vault binary format — specified in HEP-CORE-0035 §4.6.6, which is
- * authoritative.  Written by vault_write, read by vault_read_secure.
+ * authoritative.  Written by `vault_write`, read by `vault_read`:
+ *
+ *   [ header 12 ][ nonce 24 ][ ciphertext ][ tag 16 ]
+ *
+ * The header is cleartext because a reader must act on it before it has
+ * a key, and it is passed to the AEAD as associated data so that editing
+ * it is still detected (VF-3).  Inside the ciphertext the secret comes
+ * first at a fixed offset, with the metadata JSON filling the remainder
+ * (VF-4) — no length field, because the secret's size is fixed by the
+ * vault kind and a stored length could disagree with reality.
  *
  * NOTE the tag is at the END: the AEAD's combined mode appends it,
  * unlike `crypto_secretbox_easy` which prepended its MAC.  A reader
@@ -17,7 +26,7 @@
  *
  * The derived key is held in the process KeyStore under a caller-chosen
  * name and never appears in this file: `vault_add_key_from_password`
- * puts it there, and `vault_write` / `vault_read_secure` cite it by
+ * puts it there, and `vault_write` / `vault_read` cite it by
  * name.  Naming it is what lets the caller reuse it — a save after an
  * open needs no password and no second derivation.
  *
@@ -43,9 +52,13 @@
  * test directory.  CI's job is to exercise the library, so the flag
  * lands on the library — that is the intent, not a leak.
  *
- * WARNING: Vaults encrypted with one KDF parameter set cannot be opened
- * with a different one.  Do NOT use test-mode-built binaries against a
- * production vault or vice versa.
+ * The profile above is a WRITE-time choice only.  The file records
+ * which one it was written under, and a reader derives at the file's
+ * profile rather than its own (HEP-CORE-0035 §4.6.6 VF-2), so any
+ * binary opens any vault.  This header used to warn against pointing a
+ * test-mode binary at a production vault; that hazard was real when the
+ * cost was implied by the build, and does not exist now that it is
+ * recorded in the file.
  */
 #pragma once
 
@@ -60,32 +73,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <span>
 #include <string>
 #include <string_view>
 
 namespace pylabhub::utils::detail
 {
-
-// ── KDF parameters ────────────────────────────────────────────────────────────
-// Selected at compile time.  Both create and open sites must be
-// compiled with the same setting; a vault written at one level cannot
-// be opened at another.
-//
-// Values hardcoded from libsodium 1.0.18+ constants:
-//   INTERACTIVE: opslimit=2, memlimit=64 MiB     (default; ~100 ms/hash)
-//   SENSITIVE:   opslimit=4, memlimit=1024 MiB   (high-sec; ~5 s/hash)
-//   MIN:         opslimit=1, memlimit=8192       (test; ~1 ms/hash)
-#if defined(PYLABHUB_VAULT_TEST_KDF)
-constexpr unsigned long long kVaultOpsLimit = 1ULL;
-constexpr std::size_t kVaultMemLimit = 8192U;
-#elif defined(PYLABHUB_VAULT_HIGH_SECURITY)
-constexpr unsigned long long kVaultOpsLimit = 4ULL;
-constexpr std::size_t kVaultMemLimit = 1073741824U; // 1 GiB
-#else
-constexpr unsigned long long kVaultOpsLimit = 2ULL;
-constexpr std::size_t kVaultMemLimit = 67108864U; // 64 MiB
-#endif
 
 // ── File format — HEP-CORE-0035 §4.6.6 ───────────────────────────────────────
 //
@@ -166,6 +160,40 @@ struct VaultKdfCost
     return false;
 }
 
+// ── KDF cost this build WRITES with ──────────────────────────────────────────
+//
+// The build chooses only what it writes.  What it reads comes from the
+// file (VF-2), so there is no such thing as a binary that can open only
+// its own vaults — the warning that used to sit at the top of this
+// header, telling operators not to mix test-mode and production
+// binaries, described a hazard the format no longer has.
+//
+// The ops/mem numbers are DERIVED from the profile rather than being a
+// second `#if` ladder beside it.  Two ladders can disagree; one cannot.
+#if defined(PYLABHUB_VAULT_TEST_KDF)
+constexpr VaultKdfProfile kVaultWriteProfile = VaultKdfProfile::Minimal;
+#elif defined(PYLABHUB_VAULT_HIGH_SECURITY)
+constexpr VaultKdfProfile kVaultWriteProfile = VaultKdfProfile::Sensitive;
+#else
+constexpr VaultKdfProfile kVaultWriteProfile = VaultKdfProfile::Interactive;
+#endif
+
+/// Cost for `kVaultWriteProfile`, resolved at compile time.
+constexpr VaultKdfCost vault_write_cost() noexcept
+{
+    VaultKdfCost c{0ULL, 0U};
+    // The profile is one of the three enumerators by construction
+    // above, so this never returns the zero-initialised value.
+    (void)vault_kdf_cost(kVaultWriteProfile, c);
+    return c;
+}
+
+constexpr unsigned long long kVaultOpsLimit = vault_write_cost().opslimit;
+constexpr std::size_t kVaultMemLimit = vault_write_cost().memlimit;
+
+static_assert(kVaultOpsLimit != 0ULL && kVaultMemLimit != 0U,
+              "vault write profile must map to a known Argon2id cost");
+
 constexpr std::size_t kVaultKeyBytes = 32U;   // symmetric key
 constexpr std::size_t kVaultNonceBytes = 24U; // AEAD nonce
 constexpr std::size_t kVaultMacBytes = 16U;   // AEAD tag (APPENDED, not prefixed)
@@ -214,40 +242,64 @@ constexpr std::size_t kVaultHubSecretBytes = 32U + 32U; ///< seckey ‖ admin to
 void vault_add_key_from_password(std::string_view key_name, const std::string &password,
                                  const std::string &uid);
 
-/// Encrypt json_payload under the KeyStore key `key_name` and write to
-/// path as [nonce(24)][MAC(16)||ciphertext].  The nonce is generated
-/// inside the security module, so no caller can reuse one.
-/// File permissions are set to 0600 (owner read/write only).
-/// Throws std::runtime_error on crypto or I/O failure, and
+/// Write a vault file at `path` in the §4.6.6 v1 format.
+///
+/// `fill_secret` is invoked with a span of exactly
+/// `vault_secret_section_bytes(kind)` bytes and MUST fill all of it.
+/// It is a callback rather than a parameter because the secret must
+/// come straight out of the key store (VF-7): the vault kind knows
+/// which named keys make up its secret section, and this layer does
+/// not need to.
+///
+/// The span it receives points INTO the output buffer, at the offset
+/// where the ciphertext will be written.  Encryption is in place, so
+/// the secret is overwritten by its own ciphertext rather than left
+/// behind for someone to remember to wipe.  On any failure path the
+/// buffer is zeroed before the throw.
+///
+/// The header is authenticated as associated data (VF-3) and the nonce
+/// is generated inside the security module, so no caller can reuse one.
+/// The file is written 0600 and refuses to clobber an existing path.
+///
+/// Throws `std::runtime_error` on crypto or I/O failure, and
 /// `std::out_of_range` if `key_name` is not in the KeyStore.
-void vault_write(const std::filesystem::path &path, const std::string &json_payload,
-                 std::string_view key_name);
+void vault_write(const std::filesystem::path &path, VaultKind kind,
+                 std::string_view metadata_json, std::string_view key_name,
+                 const std::function<void(std::span<std::uint8_t>)> &fill_secret);
 
-/// Decrypt the vault at `path` and write the plaintext JSON bytes
-/// directly into `out_buf`.  Returns the number of bytes written.
+/// Open a vault file written by `vault_write`.
 ///
-/// `out_buf` MUST be large enough to hold the plaintext; throws
-/// `std::runtime_error` if the plaintext does not fit (the caller's
-/// span is zeroed before the throw to avoid leaving a partial leak).
-/// Also throws `std::runtime_error` on MAC failure, I/O error, or a
-/// file too short to hold a nonce and a MAC.
+/// Verifies the header before deriving anything (VF-1, VF-5), derives
+/// at the profile the FILE records rather than this build's (VF-2),
+/// decrypts with the header as associated data (VF-3), and checks the
+/// plaintext covers the secret section before slicing it (VF-4).  On
+/// success the derived vault key is left in the KeyStore under
+/// `key_name`, so a later save needs neither the password nor a second
+/// derivation.
 ///
-/// No `std::string` materializes on this path — the plaintext never
-/// lives in a heap-allocated container whose destructor cannot be
-/// trusted to zero (HEP-CORE-0040 §175).  Callers typically pair this
-/// with `pylabhub::utils::security::SecureBuffer<N>` whose destructor
-/// `sodium_memzero`'s the bytes:
+/// `on_plaintext` receives the raw secret section and the JSON
+/// remainder TOGETHER, while the plaintext is still live.  One callback
+/// rather than two, because depositing the secret can require a value
+/// from the metadata — a role identity is filed as a keypair, and only
+/// the secret half is in the secret section — and two callbacks would
+/// impose an ordering the caller has to know about.
 ///
-///     vault_add_key_from_password(kName, pw, uid);
-///     SecureBuffer<4096> json_buf;
-///     auto n = vault_read_secure(path, kName, json_buf.span());
-///     // parse JSON from json_buf.span().first(n) ...
-///     // json_buf dtor zeros the plaintext when this scope exits.
+/// The plaintext buffer is zeroed before this function returns, on
+/// every path including one taken by a throwing callback — so the
+/// callback must copy what it needs (into the key store, for a secret)
+/// rather than retaining the span.
 ///
-/// A wrong password is not distinguishable from a corrupted file, and
-/// deliberately so: the Poly1305 tag verifying IS the password check.
-/// Throws `std::out_of_range` if `key_name` is not in the KeyStore.
-std::size_t vault_read_secure(const std::filesystem::path &path, std::string_view key_name,
-                              std::span<std::byte> out_buf);
+/// A wrong password, a tampered header, and a tampered ciphertext are
+/// deliberately one outcome: the tag verifying IS the password check.
+/// A file that is not a vault at all, or is a version or kind this
+/// reader does not handle, is a DIFFERENT and distinguishable failure —
+/// that distinction is the point of the header.
+///
+/// Throws `std::runtime_error` on any of the above.
+void vault_read(const std::filesystem::path &path, VaultKind expected_kind,
+                const std::string &uid, const std::string &password,
+                std::string_view key_name,
+                const std::function<void(std::span<const std::uint8_t> secret,
+                                         std::string_view metadata_json)> &on_plaintext);
 
 } // namespace pylabhub::utils::detail

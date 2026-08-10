@@ -3,18 +3,18 @@
  * @brief RoleVault: encrypted CurveZMQ keypair store for a role instance.
  *
  * Used by all three role types (producer, consumer, processor) to store their
- * CurveZMQ keypair encrypted at rest, using the same Argon2id KDF +
- * XSalsa20-Poly1305 scheme as HubVault.
+ * CurveZMQ keypair encrypted at rest, in the same file format as HubVault
+ * (HEP-CORE-0035 §4.6.6, which is authoritative).
  *
- * Vault file format (binary):
- *   [nonce (24 bytes)] [MAC (16 bytes) || ciphertext]
+ * The secret key is NOT a field in a document.  It is raw bytes at a
+ * fixed offset inside the ciphertext, and it travels locked-memory to
+ * locked-memory in both directions — so it never becomes a `std::string`
+ * that gets freed without being wiped.  Only the metadata is JSON:
  *
- * Decrypted payload is UTF-8 JSON:
  * @code{.json}
  * {
  *   "role_uid":   "prod.sensor1.uid3a7f2b1c",
- *   "public_key": "<Z85 40-char>",
- *   "secret_key": "<Z85 40-char>"
+ *   "public_key": "<Z85 40-char>"
  * }
  * @endcode
  *
@@ -22,8 +22,9 @@
  * is used as the per-vault KDF domain separator so two roles using the same
  * password produce independent encryption keys.
  *
- * Key derivation: Argon2id(password, salt=BLAKE2b-16(role_uid),
- *                           kVaultOpsLimit, kVaultMemLimit)
+ * Key derivation: Argon2id(password, salt=BLAKE2b-16(role_uid)) at the
+ * cost profile RECORDED IN THE FILE, so a vault written by one build
+ * opens under any other.
  *
  * Password sources (checked in order by caller):
  *   1. PYLABHUB_ROLE_PASSWORD environment variable (service / CI)
@@ -37,6 +38,8 @@
 #pragma once
 
 #include "pylabhub_utils_export.h"
+
+#include "utils/security/key_store.hpp" // kRoleIdentityName
 
 #include <filesystem>
 #include <memory>
@@ -87,6 +90,7 @@ class PYLABHUB_UTILS_EXPORT RoleVault
      */
     static RoleVault create(const std::filesystem::path &vault_path, const std::string &role_uid,
                             const std::string &password,
+                            std::string_view identity_name = security::kRoleIdentityName,
                             std::string_view key_name = kRoleVaultKeyName);
 
     /**
@@ -104,30 +108,13 @@ class PYLABHUB_UTILS_EXPORT RoleVault
      */
     static RoleVault open(const std::filesystem::path &vault_path, const std::string &role_uid,
                           const std::string &password,
+                          std::string_view identity_name = security::kRoleIdentityName,
                           std::string_view key_name = kRoleVaultKeyName);
 
     /// CurveZMQ public key (Z85, 40 chars).  View points into the
     /// vault's internal zero-on-destruct storage (HEP-CORE-0040 §175);
     /// valid until this RoleVault is destroyed.  Safe to distribute.
     std::string_view public_key() const noexcept;
-
-    /// Deposit this vault's identity keypair into the process KeyStore
-    /// under `key_name`, without the secret passing through the caller.
-    ///
-    /// This exists so a caller stops being a courier.  The pattern it
-    /// replaces — read `secret_key()`, hand the view to
-    /// `add_identity_from_z85` — made every caller responsible for a
-    /// secret it had no reason to hold, and it is the only reason that
-    /// accessor is still public.
-    ///
-    /// Use `secure().keys()` afterwards: `pubkey(key_name)` for the
-    /// public half, `with_seckey(key_name, ...)` / `with_seckey_z85`
-    /// for the secret one.  Those are the use-not-export accessors
-    /// (HEP-CORE-0040 §5.2); this method is what gets the key to them.
-    ///
-    /// Throws `std::runtime_error` if `key_name` is already present —
-    /// an identity is never silently replaced.
-    void load_identity_into(std::string_view key_name) const;
 
     /// Role UID stored in the vault payload (matches the role_uid used
     /// at create time).  Same view-lifetime contract.

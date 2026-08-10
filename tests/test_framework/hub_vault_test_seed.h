@@ -41,10 +41,26 @@ namespace pylabhub::tests
 /// `known_roles` allowlist built from `setup.role_keys`, encrypted and
 /// persisted.  `password` defaults to empty (test/dev vault).
 ///
-/// This ONLY writes the vault file; it does not touch the process
-/// `KeyStore` or the in-memory config.  The caller reads it back with
-/// the production `cfg.load_keypair(password)` — mirroring a real hub
-/// boot exactly: `--keygen` writes the vault, `load_keypair` reads it.
+/// This ONLY writes the vault file; it leaves the process `KeyStore`
+/// and the in-memory config as it found them.  The caller reads it back
+/// with the production `cfg.load_keypair(password)` — mirroring a real
+/// hub boot exactly: `--keygen` writes the vault, `load_keypair` reads
+/// it.
+///
+/// **Keeping that true now takes explicit work.**  `HubVault::create`
+/// mints the broker keypair and the admin token INTO the key store —
+/// it has to, because under HEP-CORE-0035 §4.6.6 the secrets go to disk
+/// straight from locked memory and never exist as values it could hold.
+/// In production that is invisible: `--keygen` is its own process and
+/// exits.  Here it is the same process, so the entries would still be
+/// sitting there when `load_keypair` ran, and both `add_identity` and
+/// `add_raw` refuse to replace — correctly, since silently overwriting
+/// an identity is a security event.
+///
+/// So this helper evicts what `create` deposited, which is precisely
+/// what makes it behave like the separate process it is standing in
+/// for.  `load_keypair` remains the sole seeder of `"hub_identity"`,
+/// exactly as the paragraph above promises.
 inline void provision_hub_vault(pylabhub::config::HubConfig &cfg, const CurveSetup &setup,
                                 const std::string &password = "")
 {
@@ -57,9 +73,18 @@ inline void provision_hub_vault(pylabhub::config::HubConfig &cfg, const CurveSet
     const std::filesystem::path vault_path =
         security::resolve_keyfile_path(cfg.auth().keyfile, cfg.base_dir());
 
-    auto vault = pylabhub::utils::HubVault::create(vault_path, cfg.identity().uid, password);
-    vault.set_known_roles(store.to_json());
-    vault.save(vault_path);
+    {
+        auto vault = pylabhub::utils::HubVault::create(vault_path, cfg.identity().uid, password);
+        vault.set_known_roles(store.to_json());
+        vault.save(vault_path);
+        // `save` reads both secrets back out of the key store, so the
+        // eviction below must happen after it, not before.
+    }
+    for (const auto name : {security::kHubIdentityName, security::kHubAdminTokenName})
+    {
+        if (security::secure().keys().has(name))
+            security::secure().keys().remove(name);
+    }
 }
 
 /// Read the provisioned vault back through the PRODUCTION
@@ -80,8 +105,21 @@ inline void load_hub_keypair_fresh(pylabhub::config::HubConfig &cfg,
                                    const std::string &password = "")
 {
     namespace sec = pylabhub::utils::security;
-    if (sec::secure().keys().has(sec::kHubIdentityName))
-        sec::secure().keys().remove(sec::kHubIdentityName);
+    // BOTH hub secrets have to be evicted, not just the identity.
+    //
+    // The vault's secret section is broker seckey ‖ admin token
+    // (HEP-CORE-0035 §4.6.6), so opening it deposits two named keys, and
+    // both `add_identity` and `add_raw` throw on a duplicate — by design,
+    // since silently replacing either is a security event.  This helper
+    // evicted only `hub_identity`, which was complete when the token was
+    // still a plain string on the config; it is not any more.  A fixture
+    // that provisions a vault and then loads it in the same subprocess
+    // hits the token first.
+    for (const auto name : {sec::kHubIdentityName, sec::kHubAdminTokenName})
+    {
+        if (sec::secure().keys().has(name))
+            sec::secure().keys().remove(name);
+    }
     cfg.load_keypair(password);
 }
 

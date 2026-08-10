@@ -530,14 +530,13 @@ bool RoleConfig::load_keypair(const std::string &password)
     }
 
     {
-        const auto vault = utils::RoleVault::open(vault_path, uid, password);
-
         // HEP-CORE-0040 §171: the identity keypair lives in
-        // `secure().keys()` (LockedKey storage).  The vault deposits it
-        // directly — this function used to read `secret_key()` and
-        // forward the view, which made it a courier for a secret it had
-        // no other use for.
-        vault.load_identity_into(pylabhub::utils::security::kRoleIdentityName);
+        // `secure().keys()` (LockedKey storage).  Opening the vault is
+        // what puts it there — the secret goes disk → locked memory
+        // without ever being a value this function could hold, so there
+        // is no separate deposit step and nothing here to forward.
+        const auto vault = utils::RoleVault::open(vault_path, uid, password,
+                                                  pylabhub::utils::security::kRoleIdentityName);
 
         const auto pub =
             pylabhub::utils::security::secure().keys().pubkey(

@@ -28,8 +28,11 @@
  *     the server is authenticated to the operator.  No ZAP `zap_domain` —
  *     client identity is not key-gated; the token is the authority.
  *   - The admin token is MANDATORY (no token-less path): every request's
- *     `"token"` must equal the vault admin token (`HubVault::admin_token()`,
- *     plumbed via `HubAdminConfig::admin_token`), compared constant-time.
+ *     `"token"` must equal the hub's admin token.  The token itself is
+ *     never held here — it lives in the key store under the name on
+ *     `HubAdminConfig::admin_token_name`, and the check is
+ *     `keys().raw_key_matches_hex(name, presented)`, constant-time
+ *     (HEP-CORE-0043 §2.5.3.2).
  *     Mismatch/missing → `{"status":"error","error":{"code":"unauthorized"}}`.
  *   - Because the transport is encrypted, the token never crosses the wire
  *     in cleartext; loopback is the default bind (defense-in-depth) but a
@@ -76,7 +79,7 @@ class PYLABHUB_UTILS_EXPORT AdminService
 {
   public:
     /// Construct around an already-loaded HubAdminConfig.  Requires a
-    /// non-empty `admin_token` (mandatory per §11.3); throws
+    /// non-empty `admin_token_name` (mandatory per §11.3); throws
     /// `std::invalid_argument` if empty.  Does NOT bind the socket — the
     /// CURVE arm + bind happen at the head of `run()` so failures are
     /// reported on the admin worker thread (consistent with
@@ -88,13 +91,14 @@ class PYLABHUB_UTILS_EXPORT AdminService
     ///                      values it needs (endpoint, token, gates)
     ///                      at construction; subsequent edits to
     ///                      `cfg` are not observed.
-    /// @param admin_token   64-hex admin token from the unlocked
-    ///                      `HubVault` (already plumbed via
-    ///                      `HubAdminConfig::admin_token`; passed
+    /// @param admin_token_name  KeyStore name the unlocked `HubVault`
+    ///                      filed the admin token under (plumbed via
+    ///                      `HubAdminConfig::admin_token_name`; passed
     ///                      explicitly for clarity at the boundary).
+    ///                      A NAME, never the credential.
     /// @param host          Backref for method dispatchers.  Borrowed.
     AdminService(zmq::context_t &zmq_ctx, const config::HubAdminConfig &cfg,
-                 std::string_view admin_token, hub_host::HubHost &host);
+                 std::string_view admin_token_name, hub_host::HubHost &host);
 
     ~AdminService();
 

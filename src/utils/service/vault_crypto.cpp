@@ -125,71 +125,195 @@ void vault_add_key_from_password(std::string_view key_name, const std::string &p
                                                    kVaultOpsLimit, kVaultMemLimit);
 }
 
-void vault_write(const fs::path &path, const std::string &json_payload, std::string_view key_name)
+void vault_write(const fs::path &path, VaultKind kind, std::string_view metadata_json,
+                 std::string_view key_name,
+                 const std::function<void(std::span<std::uint8_t>)> &fill_secret)
 {
     namespace sec = pylabhub::utils::security;
-    // No key appears in this function.  `aead_encrypt_using` generates
-    // the nonce internally and emits `[nonce(24) || ciphertext || tag(16)]`.
-    //
-    // THE TAG MOVED.  It used to be a 16-byte MAC in FRONT of the
-    // ciphertext, because `crypto_secretbox_easy` prepends it; the AEAD
-    // appends instead.  Vaults written before that switch do not open —
-    // intended, and the reason the format is versioned (HEP-CORE-0035
-    // §4.6.6).
-    std::vector<uint8_t> vault_bytes(json_payload.size() +
-                                     sec::SecureSubsystem::kSealedOverheadBytes);
+
+    const std::size_t secret_len = vault_secret_section_bytes(kind);
+    if (secret_len == 0)
+    {
+        throw std::runtime_error("vault_write: unknown vault kind");
+    }
+    const std::size_t plain_len = secret_len + metadata_json.size();
+
+    //   [ header 12 ][ nonce 24 ][ ciphertext = plain_len ][ tag 16 ]
+    std::vector<uint8_t> file_bytes(kVaultHeaderBytes + kVaultNonceBytes + plain_len +
+                                    kVaultMacBytes);
+
+    // Anything that leaves this function early leaves a buffer that has
+    // held the secret in the clear.  Zero it on every path rather than
+    // at each `throw` — there are four of them, and the one that gets
+    // forgotten is the one that matters.
+    struct WipeOnExit
+    {
+        std::vector<uint8_t> &b;
+        bool armed = true;
+        ~WipeOnExit() noexcept
+        {
+            if (armed)
+                pylabhub::utils::security::secure().memzero(std::span<std::uint8_t>(b));
+        }
+    } wipe{file_bytes};
+
+    std::uint8_t *const hdr = file_bytes.data();
+    std::memcpy(hdr + kVaultHdrMagicOffset, kVaultMagic, kVaultHdrMagicBytes);
+    hdr[kVaultHdrVersionOffset] = kVaultFormatVersion;
+    hdr[kVaultHdrKdfProfileOffset] = static_cast<std::uint8_t>(kVaultWriteProfile);
+    hdr[kVaultHdrKindOffset] = static_cast<std::uint8_t>(kind);
+    hdr[kVaultHdrReservedOffset] = 0U;
+
+    // Assemble the plaintext WHERE THE CIPHERTEXT WILL GO, so the AEAD
+    // encrypts over it in place and the secret is destroyed by the very
+    // operation that protects it.  Nothing has to remember to wipe the
+    // secret afterwards, because after the call those bytes ARE the
+    // ciphertext.  Ordering is fixed by §4.6.6: secret at offset 0 so no
+    // variable-length field can move it, metadata filling the rest.
+    const std::size_t pt_off = kVaultHeaderBytes + kVaultNonceBytes;
+    if (!metadata_json.empty())
+    {
+        std::memcpy(file_bytes.data() + pt_off + secret_len, metadata_json.data(),
+                    metadata_json.size());
+    }
+    fill_secret(std::span<std::uint8_t>(file_bytes.data() + pt_off, secret_len));
+
+    // `aead_encrypt_using` writes the nonce at the head of the span it
+    // is given and the ciphertext immediately after — which is exactly
+    // where the plaintext already sits, so `c == m` and libsodium
+    // encrypts in place.  The header goes in as associated data, so
+    // editing it fails the open (VF-3).
     const std::size_t written = sec::secure().aead_encrypt_using(
-        key_name,
-        std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(json_payload.data()),
-                                      json_payload.size()),
-        std::span<std::uint8_t>(vault_bytes.data(), vault_bytes.size()));
-    if (written != vault_bytes.size())
+        key_name, std::span<const std::uint8_t>(file_bytes.data() + pt_off, plain_len),
+        std::span<std::uint8_t>(file_bytes.data() + kVaultHeaderBytes,
+                                file_bytes.size() - kVaultHeaderBytes),
+        std::span<const std::uint8_t>(file_bytes.data(), kVaultHeaderBytes));
+    if (written != kVaultNonceBytes + plain_len + kVaultMacBytes)
     {
         throw std::runtime_error("vault: encryption failed for key '" + std::string(key_name) +
                                  "'");
     }
 
-    write_secure_file(path, vault_bytes);
+    // Past this point the buffer holds ciphertext, not the secret.
+    wipe.armed = false;
+    write_secure_file(path, file_bytes);
 }
 
-std::size_t vault_read_secure(const fs::path &path, std::string_view key_name,
-                              std::span<std::byte> out_buf)
+void vault_read(const fs::path &path, VaultKind expected_kind, const std::string &uid,
+                const std::string &password, std::string_view key_name,
+                const std::function<void(std::span<const std::uint8_t> secret,
+                                         std::string_view metadata_json)> &on_plaintext)
 {
     namespace sec = pylabhub::utils::security;
-    const auto vault_bytes = read_file(path);
 
-    constexpr std::size_t kMinSize = kVaultNonceBytes + kVaultMacBytes + 1;
-    if (vault_bytes.size() < kMinSize)
+    const std::size_t secret_len = vault_secret_section_bytes(expected_kind);
+    if (secret_len == 0)
     {
-        throw std::runtime_error("vault: file too small or corrupted: " + path.string());
+        throw std::runtime_error("vault_read: unknown vault kind");
     }
 
-    const std::size_t plain_len = vault_bytes.size() - sec::SecureSubsystem::kSealedOverheadBytes;
+    auto file_bytes = read_file(path);
 
-    auto span_as_u8 = std::span<std::uint8_t>(reinterpret_cast<std::uint8_t *>(out_buf.data()),
-                                              out_buf.size_bytes());
-    if (plain_len > out_buf.size_bytes())
+    const std::size_t min_size =
+        kVaultHeaderBytes + kVaultNonceBytes + secret_len + kVaultMacBytes;
+    if (file_bytes.size() < min_size)
     {
-        sec::secure().memzero(span_as_u8);
-        throw std::runtime_error("vault_read_secure: out_buf too small (need " +
-                                 std::to_string(plain_len) + " bytes, got " +
-                                 std::to_string(out_buf.size_bytes()) + "): " + path.string());
+        throw std::runtime_error("vault: file too small to be a v" +
+                                 std::to_string(static_cast<int>(kVaultFormatVersion)) +
+                                 " vault of this kind (" + std::to_string(file_bytes.size()) +
+                                 " bytes, need at least " + std::to_string(min_size) +
+                                 "): " + path.string());
     }
 
-    // No key here either — the whole file, nonce included, goes to the
-    // named-key operation.  A 0 return IS the password check: the
-    // Poly1305 tag either verifies or it does not.
+    // ── Header first, before a key is derived (VF-1, VF-5) ───────────
+    //
+    // Each of these is a DIFFERENT failure from a wrong password, and
+    // says so.  Collapsing them into "could not open" would tell an
+    // operator holding a correct password to go looking for a typo.
+    const std::uint8_t *const hdr = file_bytes.data();
+    if (std::memcmp(hdr + kVaultHdrMagicOffset, kVaultMagic, kVaultHdrMagicBytes) != 0)
+    {
+        throw std::runtime_error("vault: '" + path.string() +
+                                 "' is not a vault file (bad magic)");
+    }
+    if (hdr[kVaultHdrVersionOffset] != kVaultFormatVersion)
+    {
+        throw std::runtime_error(
+            "vault: '" + path.string() + "' is format version " +
+            std::to_string(static_cast<int>(hdr[kVaultHdrVersionOffset])) + ", this build reads v" +
+            std::to_string(static_cast<int>(kVaultFormatVersion)));
+    }
+    if (hdr[kVaultHdrKindOffset] != static_cast<std::uint8_t>(expected_kind))
+    {
+        throw std::runtime_error("vault: '" + path.string() + "' is a " +
+                                 (hdr[kVaultHdrKindOffset] ==
+                                          static_cast<std::uint8_t>(VaultKind::Hub)
+                                      ? "hub"
+                                      : "role") +
+                                 " vault, opened as the other kind");
+    }
+    // VF-5: a non-zero reserved byte means a writer this reader does not
+    // understand.  Refusing costs nothing; guessing forfeits the whole
+    // point of having a version field.
+    if (hdr[kVaultHdrReservedOffset] != 0U)
+    {
+        throw std::runtime_error("vault: '" + path.string() +
+                                 "' has a non-zero reserved header byte — written by a newer "
+                                 "format than this build understands");
+    }
+
+    // VF-2: derive at the cost THE FILE records, never this build's.
+    VaultKdfCost cost{};
+    const auto profile = static_cast<VaultKdfProfile>(hdr[kVaultHdrKdfProfileOffset]);
+    if (!vault_kdf_cost(profile, cost))
+    {
+        throw std::runtime_error("vault: '" + path.string() + "' records KDF profile " +
+                                 std::to_string(static_cast<int>(hdr[kVaultHdrKdfProfileOffset])) +
+                                 ", which this build does not recognise");
+    }
+    sec::secure().keys().replace_key_from_password(key_name, password, uid, kVaultKeyBytes,
+                                                   cost.opslimit, cost.memlimit);
+
+    // Decrypt in place: the plaintext lands where the ciphertext was.
+    // The secret is unavoidably in the clear here — decryption has to
+    // produce it somewhere — so the buffer is zeroed on every exit,
+    // including one taken by a throwing callback.
+    struct WipeOnExit
+    {
+        std::vector<uint8_t> &b;
+        ~WipeOnExit() noexcept
+        {
+            pylabhub::utils::security::secure().memzero(std::span<std::uint8_t>(b));
+        }
+    } wipe{file_bytes};
+
+    const std::size_t sealed_len = file_bytes.size() - kVaultHeaderBytes;
     const std::size_t decoded = sec::secure().aead_decrypt_using(
-        key_name, std::span<const std::uint8_t>(vault_bytes.data(), vault_bytes.size()),
-        span_as_u8);
+        key_name, std::span<const std::uint8_t>(file_bytes.data() + kVaultHeaderBytes, sealed_len),
+        std::span<std::uint8_t>(file_bytes.data() + kVaultHeaderBytes + kVaultNonceBytes,
+                                sealed_len - kVaultNonceBytes),
+        std::span<const std::uint8_t>(file_bytes.data(), kVaultHeaderBytes));
     if (decoded == 0)
     {
-        sec::secure().memzero(span_as_u8);
-        throw std::runtime_error("vault: decryption failed — wrong password or corrupted file: " +
+        throw std::runtime_error("vault: decryption failed — wrong password, tampered header, or "
+                                 "corrupted file: " +
                                  path.string());
     }
 
-    return decoded;
+    // VF-4: the plaintext must cover the secret section before anything
+    // is sliced out of it.  A shorter plaintext is a corrupt file, not a
+    // parse to attempt.
+    if (decoded < secret_len)
+    {
+        throw std::runtime_error("vault: '" + path.string() + "' decrypted to " +
+                                 std::to_string(decoded) + " bytes, too short for its " +
+                                 std::to_string(secret_len) + "-byte secret section");
+    }
+
+    const std::uint8_t *const plain = file_bytes.data() + kVaultHeaderBytes + kVaultNonceBytes;
+    on_plaintext(std::span<const std::uint8_t>(plain, secret_len),
+                 std::string_view(reinterpret_cast<const char *>(plain + secret_len),
+                                  decoded - secret_len));
 }
 
 } // namespace pylabhub::utils::detail

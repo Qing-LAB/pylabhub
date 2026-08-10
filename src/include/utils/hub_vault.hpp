@@ -27,7 +27,8 @@
 
 #include "pylabhub_utils_export.h"
 
-#include "utils/json_fwd.hpp" // nlohmann::json (fwd)
+#include "utils/json_fwd.hpp"            // nlohmann::json (fwd)
+#include "utils/security/key_store.hpp" // kHubIdentityName, kHubAdminTokenName
 
 #include <filesystem>
 #include <memory>
@@ -87,6 +88,8 @@ class PYLABHUB_UTILS_EXPORT HubVault
      */
     static HubVault create(const std::filesystem::path &vault_path, const std::string &hub_uid,
                            const std::string &password,
+                           std::string_view identity_name = security::kHubIdentityName,
+                           std::string_view token_name = security::kHubAdminTokenName,
                            std::string_view key_name = kHubVaultKeyName);
 
     /**
@@ -105,35 +108,25 @@ class PYLABHUB_UTILS_EXPORT HubVault
      */
     static HubVault open(const std::filesystem::path &vault_path, const std::string &hub_uid,
                          const std::string &password,
+                         std::string_view identity_name = security::kHubIdentityName,
+                         std::string_view token_name = security::kHubAdminTokenName,
                          std::string_view key_name = kHubVaultKeyName);
-
-    /// Deposit this vault's identity keypair into the process KeyStore
-    /// under `key_name`, without the secret passing through the caller.
-    ///
-    /// This exists so a caller stops being a courier.  The pattern it
-    /// replaces — read `broker_curve_secret_key()`, hand the view to
-    /// `add_identity_from_z85` — made every caller responsible for a
-    /// secret it had no reason to hold, and it is the only reason that
-    /// accessor is still public.
-    ///
-    /// Use `secure().keys()` afterwards: `pubkey(key_name)` for the
-    /// public half, `with_seckey(key_name, ...)` / `with_seckey_z85`
-    /// for the secret one.  Those are the use-not-export accessors
-    /// (HEP-CORE-0040 §5.2); this method is what gets the key to them.
-    ///
-    /// Throws `std::runtime_error` if `key_name` is already present —
-    /// an identity is never silently replaced.
-    void load_identity_into(std::string_view key_name) const;
 
 
     /// Broker CurveZMQ public key (Z85, 40 chars). Safe to distribute —
-    /// see publish_public_key().  Same view-lifetime contract as
-    /// `broker_curve_secret_key()`.
+    /// see publish_public_key().  The view points into this object's
+    /// storage and is valid until it is destroyed.
     std::string_view broker_curve_public_key() const noexcept;
 
-    /// Admin authentication token (64-char hex string).  Same
-    /// view-lifetime contract as `broker_curve_secret_key()`.
-    std::string_view admin_token() const noexcept;
+    // There is no `admin_token()` accessor, and its absence is the
+    // point.  The token is a secret: it lands in the key store under
+    // `token_name` when the vault is opened, and the admin service
+    // verifies a presented token with
+    // `keys().raw_key_matches_hex(token_name, presented)` — one bit
+    // crosses the boundary, never the credential.  The accessor that
+    // used to be here handed out a 64-char hex view that its one caller
+    // copied into a `std::string` on the config, where it sat unwiped
+    // for the life of the process.
 
     /// The `known_roles` allowlist document held inside the encrypted
     /// payload (HEP-CORE-0035 §4.8).  This is PUBLIC-key data — CURVE

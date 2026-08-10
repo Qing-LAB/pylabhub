@@ -1132,8 +1132,8 @@ Shipped: `generate_and_add_identity`, `add_identity_from_z85`,
 helpers.
 
 Also shipped since: `add_random_key`, `add_key_from_password`,
-`replace_key_from_password`, `with_raw_key`, `aead_encrypt_using`,
-`aead_decrypt_using`, and `load_identity_into` on both vault types.
+`replace_key_from_password`, `with_raw_key`, `raw_key_matches_hex`,
+`aead_encrypt_using`, and `aead_decrypt_using`.
 
 **The raw-key door is shut, not merely unused.**  The raw-key
 `secretbox_encrypt` / `secretbox_decrypt` and the span-returning
@@ -1152,19 +1152,19 @@ No caller fetches a key in order to use it any more.  The two config
 loaders were the last, each reading a secret out of a vault and passing
 it onward through a `string_view`; both now name the key instead.
 
-Designed here, not yet built: `save_encrypted_file`,
-`load_encrypted_file`, `open_file_with_password`, and
-`raw_key_matches_hex`.  The file operations turned out to need less than
-this section assumed — `vault_write` / `vault_read_secure` already were
-the file layer, so they took a key NAME instead of a password rather
-than being replaced.
+Designed here, not built: `save_encrypted_file`,
+`load_encrypted_file`, `open_file_with_password`.  The file operations
+turned out to need less than this section assumed — `vault_write` /
+`vault_read` already were the file layer, so they took a key NAME
+instead of a password rather than being replaced.
 
-`load_identity_into` is shipped and scheduled to go.  Once a vault
-deposits its identity during `open()` itself (HEP-CORE-0035 §4.6.6) the
-vault object holds no secret afterwards, so a separate hand-off step has
-nothing left to move; §2.5.2 records the shape that replaces it.  This
-is a retirement, not a deletion — the capability moves, and the row
-above is where it lands.
+`load_identity_into` is **gone**.  A vault deposits its identity
+during `open()` / `create()` (HEP-CORE-0035 §4.6.6) and holds no secret
+afterwards, so the separate hand-off step had nothing left to move — the
+capability moved into the row above rather than being deleted.  Both
+vault types lost their secret MEMBERS with it: there is no longer any
+window in which a `RoleVault` or `HubVault` object holds key material,
+which is a stronger position than wiping one carefully.
 
 **A scope-bound key handle** (`ScopedKey` — removes its key on
 destruction) is a natural companion for keys that must not outlive a

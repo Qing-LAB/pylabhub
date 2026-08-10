@@ -334,25 +334,26 @@ bool HubConfig::load_keypair(const std::string &password)
                                      v.diagnostic);
     }
 
-    const auto vault = utils::HubVault::open(vault_path, uid, password);
+    // HEP-CORE-0040 §171: both hub secrets live in
+    // `pylabhub::utils::security::secure().keys()` (LockedKey storage,
+    // mlock'd + zero-on-destruct).  Opening the vault is what puts them
+    // there — the broker keypair under `kHubIdentityName` and the admin
+    // token under `kHubAdminTokenName` — so this function never holds
+    // either, and there is no separate deposit step.
+    const auto vault =
+        utils::HubVault::open(vault_path, uid, password, pylabhub::utils::security::kHubIdentityName,
+                              pylabhub::utils::security::kHubAdminTokenName);
     {
-        const auto adm = vault.admin_token(); // string_view
-
-        // HEP-CORE-0040 §171: the identity keypair lives in
-        // `pylabhub::utils::security::secure().keys()` (LockedKey
-        // storage, mlock'd + zero-on-destruct).  The vault deposits it
-        // directly — this function used to read
-        // `broker_curve_secret_key()` and forward the view, which made
-        // it a courier for a secret it had no other use for.
-        vault.load_identity_into(pylabhub::utils::security::kHubIdentityName);
-
         const auto pub = pylabhub::utils::security::secure().keys().pubkey(
             pylabhub::utils::security::kHubIdentityName);
 
-        // Admin token is a separate secret; for now it continues as a
-        // std::string on AdminConfig (HEP-CORE-0040 §175 deferred —
-        // admin-token hardening tracked as a follow-on).
-        impl_->admin.admin_token = std::string(adm);
+        // The admin token is now a NAME on the config, not the token.
+        // It was a `std::string` holding the credential for the life of
+        // the process, never wiped; the config records where the bytes
+        // are instead, and `AdminService` verifies a presented token
+        // against them without either of them holding the real one
+        // (HEP-CORE-0043 §2.5.3.2).
+        impl_->admin.admin_token_name = std::string(pylabhub::utils::security::kHubAdminTokenName);
 
         // known_roles allowlist (HEP-CORE-0035 §4.8) rides the SAME
         // encrypted vault — extracted here from the already-decrypted

@@ -5,10 +5,11 @@
  * Crypto layer delegated to vault_crypto.hpp (shared with HubVault).
  * This file handles only role-specific payload (CurveZMQ keypair).
  */
+// `curve_keypair.hpp` and `secure_buffer.hpp` are gone from this file:
+// the keypair is minted inside the key store now, and there is no
+// plaintext buffer here to wipe because the vault layer owns it.
 #include "utils/role_vault.hpp"
-#include "utils/security/curve_keypair.hpp"
 #include "utils/security/key_file_acl.hpp"
-#include "utils/security/secure_buffer.hpp"
 #include "utils/security/key_store.hpp"
 #include "utils/security/secure_subsystem.hpp"
 
@@ -38,26 +39,18 @@ namespace pylabhub::utils
 
 struct RoleVault::Impl
 {
-    /// HEP-CORE-0040 §175: secrets stored in fixed-size buffers + zeroed
-    /// in dtor via `sodium_memzero`.  Replaces the pre-#175
-    /// `std::string` members whose destructors are not guaranteed to
-    /// zero heap memory.
+    /// Nothing in here is secret any more.
+    ///
+    /// The secret key used to live beside the public one as a 40-char
+    /// Z85 array, zeroed in this destructor.  Under HEP-CORE-0035
+    /// §4.6.6 the vault deposits it straight into the key store and
+    /// hands the caller metadata only, so there is no secret member to
+    /// zero and no window in which this object holds one.  That is
+    /// strictly better than wiping carefully: the bytes are never here.
     std::array<char, 40> public_z85{};
-    std::array<char, 40> secret_z85{};
-    std::string role_uid_; ///< Role UID is not secret; std::string OK.
+    std::string role_uid_;
 
     static constexpr std::size_t kKeyLen = 40;
-
-    ~Impl() noexcept
-    {
-        namespace sec = pylabhub::utils::security;
-        sec::secure().memzero(std::span<std::uint8_t>(
-            reinterpret_cast<std::uint8_t *>(public_z85.data()), public_z85.size()));
-        sec::secure().memzero(std::span<std::uint8_t>(
-            reinterpret_cast<std::uint8_t *>(secret_z85.data()), secret_z85.size()));
-        // role_uid_ is not secret — no zero needed, std::string dtor
-        // releases the heap memory normally.
-    }
 };
 
 // ============================================================================
@@ -82,12 +75,44 @@ RoleVault &RoleVault::operator=(RoleVault &&) noexcept = default;
 // ============================================================================
 
 RoleVault RoleVault::create(const fs::path &vault_path, const std::string &role_uid,
-                            const std::string &password, std::string_view key_name)
+                            const std::string &password, std::string_view identity_name,
+                            std::string_view key_name)
 {
-    // Generate CurveZMQ keypair (Z85).
-    auto kp = pylabhub::utils::security::generate_curve_keypair();
-    const std::string pub_str = std::move(kp.public_z85);
-    const std::string sec_str = std::move(kp.secret_z85);
+    namespace sec = pylabhub::utils::security;
+
+    // Mint the keypair INSIDE the key store.  `generate_and_add_identity`
+    // returns the public half and nothing else, so the secret has no
+    // representation out here to leak — the previous shape pulled both
+    // halves out as `std::string`s and relied on remembering to wipe
+    // them, which it did not do.
+    const std::string pub_str = sec::secure().keys().generate_and_add_identity(identity_name);
+
+    // Minting comes first because the secret must exist before it can be
+    // written, but everything after this point can fail — the parent
+    // directory, the 0700 chmod, and the O_EXCL write that refuses an
+    // existing vault.  A create that fails must not leave a half-made
+    // identity in the key store: the next attempt would then fail with
+    // "name already present" instead of the real reason, and a caller
+    // would be holding a key for a vault that does not exist.
+    struct DropIdentityOnFailure
+    {
+        std::string_view name;
+        bool armed = true;
+        ~DropIdentityOnFailure() noexcept
+        {
+            if (!armed)
+                return;
+            try
+            {
+                pylabhub::utils::security::secure().keys().remove(name);
+            }
+            catch (...)
+            {
+                // Already gone, or the store is unusable.  Either way
+                // there is nothing useful to do while unwinding.
+            }
+        }
+    } drop_identity{identity_name};
 
     // Ensure parent directory exists.
     if (vault_path.has_parent_path())
@@ -113,19 +138,44 @@ RoleVault RoleVault::create(const fs::path &vault_path, const std::string &role_
                                      "': " + std::strerror(chmod_err));
     }
 
-    // Serialize and encrypt payload.
-    const json payload = {{"role_uid", role_uid}, {"public_key", pub_str}, {"secret_key", sec_str}};
+    if (pub_str.size() != Impl::kKeyLen)
+    {
+        throw std::runtime_error("RoleVault::create: generated key has unexpected length");
+    }
+
+    // The metadata carries the PUBLIC half only (VF-6).  The secret is
+    // not a field here in any encoding — it is copied raw out of the key
+    // store by the callback below, straight into the buffer the AEAD
+    // encrypts over.
+    const json metadata = {{"role_uid", role_uid}, {"public_key", pub_str}};
+
     detail::vault_add_key_from_password(key_name, password, role_uid);
-    detail::vault_write(vault_path, payload.dump(), key_name);
+    detail::vault_write(vault_path, detail::VaultKind::Role, metadata.dump(), key_name,
+                        [&](std::span<std::uint8_t> secret_section)
+                        {
+                            sec::secure().keys().with_seckey(
+                                identity_name,
+                                [&](std::string_view raw_seckey)
+                                {
+                                    if (raw_seckey.size() != secret_section.size())
+                                    {
+                                        throw std::runtime_error(
+                                            "RoleVault::create: key store returned a " +
+                                            std::to_string(raw_seckey.size()) +
+                                            "-byte secret for a " +
+                                            std::to_string(secret_section.size()) +
+                                            "-byte secret section");
+                                    }
+                                    std::memcpy(secret_section.data(), raw_seckey.data(),
+                                                secret_section.size());
+                                });
+                        });
+
+    drop_identity.armed = false; // the vault exists; the identity belongs to it
 
     RoleVault v;
-    if (pub_str.size() != Impl::kKeyLen || sec_str.size() != Impl::kKeyLen)
-    {
-        throw std::runtime_error("RoleVault::create: generated keys have unexpected length");
-    }
     v.pImpl->role_uid_ = role_uid;
     std::memcpy(v.pImpl->public_z85.data(), pub_str.data(), Impl::kKeyLen);
-    std::memcpy(v.pImpl->secret_z85.data(), sec_str.data(), Impl::kKeyLen);
     return v;
 }
 
@@ -134,79 +184,65 @@ RoleVault RoleVault::create(const fs::path &vault_path, const std::string &role_
 // ============================================================================
 
 RoleVault RoleVault::open(const fs::path &vault_path, const std::string &role_uid,
-                          const std::string &password, std::string_view key_name)
+                          const std::string &password, std::string_view identity_name,
+                          std::string_view key_name)
 {
-    // HEP-CORE-0040 §175: decrypt into a stack buffer whose destructor
-    // zeroes the plaintext when this scope exits.
-    pylabhub::utils::security::SecureBuffer<4096> json_buf;
-    detail::vault_add_key_from_password(key_name, password, role_uid);
-    const std::size_t n = detail::vault_read_secure(vault_path, key_name, json_buf.span());
+    namespace sec = pylabhub::utils::security;
 
     RoleVault v;
-    try
-    {
-        const auto bytes = json_buf.span().first(n);
-        // Parse into a NON-const json so we can hand the internal key
-        // strings back to `sodium_memzero` via `get_ref<std::string&>`
-        // before this scope ends.  See HEP-CORE-0040 §175 post-#175
-        // hardening note below.
-        json j = json::parse(reinterpret_cast<const char *>(bytes.data()),
-                             reinterpret_cast<const char *>(bytes.data() + bytes.size()));
-
-        // role_uid is not secret — std::string copy is fine.
-        v.pImpl->role_uid_ = j.at("role_uid").get<std::string>();
-
-        // HEP-CORE-0040 §175 (post-#175 hardening — task #187).
-        //
-        // Use `get_ref` to take REFERENCES into the json's own internal
-        // string storage instead of `get<std::string>()` copies.  This
-        // eliminates one of the two non-mlocked seckey copies in the
-        // load path (the `.get<std::string>()` temporary) and lets us
-        // wipe the remaining json-internal copy before the json object
-        // is destroyed.  Without this, the seckey bytes live in a
-        // freed-but-not-zeroed heap allocation between json dtor and
-        // the next allocator reuse.
-        //
-        // Identity bytes continue to live in the process KeyStore
-        // (LockedKey, mlocked) from `RoleConfig::load_keypair` onward
-        // per HEP-CORE-0040 §172.  The `pImpl->{public,secret}_z85`
-        // fixed-size arrays are NOT mlocked (§175 accepted compromise)
-        // but ARE zeroed at `RoleVault` destruction (line 53).
-        auto &pub_ref = j.at("public_key").get_ref<std::string &>();
-        auto &sec_ref = j.at("secret_key").get_ref<std::string &>();
-
-        // RAII guard: wipe the json-internal copies on EVERY exit path
-        // (normal return AND throw from the size-check below).  Without
-        // the guard, an exception would skip the manual memzero and
-        // leave the bytes recoverable from freed heap until the
-        // allocator reuses the slot.  Public-key wipe is for
-        // hygiene/discipline — the pubkey itself is non-secret.
-        struct WipeGuard
+    detail::vault_read(
+        vault_path, detail::VaultKind::Role, role_uid, password, key_name,
+        [&](std::span<const std::uint8_t> secret, std::string_view metadata_json)
         {
-            std::string &p;
-            std::string &s;
-            ~WipeGuard() noexcept
+            std::string pub_z85;
+            try
             {
-                namespace sec = pylabhub::utils::security;
-                sec::secure().memzero(
-                    std::span<std::uint8_t>(reinterpret_cast<std::uint8_t *>(p.data()), p.size()));
-                sec::secure().memzero(
-                    std::span<std::uint8_t>(reinterpret_cast<std::uint8_t *>(s.data()), s.size()));
+                const json j = json::parse(metadata_json.begin(), metadata_json.end());
+                v.pImpl->role_uid_ = j.at("role_uid").get<std::string>();
+                pub_z85 = j.at("public_key").get<std::string>();
             }
-        } wipe_on_exit{pub_ref, sec_ref};
+            catch (const json::exception &e)
+            {
+                throw std::runtime_error(std::string("RoleVault: vault metadata invalid: ") +
+                                         e.what());
+            }
 
-        if (pub_ref.size() != Impl::kKeyLen || sec_ref.size() != Impl::kKeyLen)
-        {
-            throw std::runtime_error(
-                "RoleVault: vault contains invalid key lengths (expected 40-char Z85)");
-        }
-        std::memcpy(v.pImpl->public_z85.data(), pub_ref.data(), Impl::kKeyLen);
-        std::memcpy(v.pImpl->secret_z85.data(), sec_ref.data(), Impl::kKeyLen);
-    }
-    catch (const json::exception &e)
-    {
-        throw std::runtime_error(std::string("RoleVault: vault payload invalid: ") + e.what());
-    }
+            // Nothing above touched a secret — the metadata has none
+            // (VF-6), so ordinary `std::string` handling of it is fine
+            // and no wipe guard is needed.  That is the whole point of
+            // moving the secret out of the document.
+            if (pub_z85.size() != Impl::kKeyLen)
+            {
+                throw std::runtime_error(
+                    "RoleVault: vault metadata has an invalid public key length (expected "
+                    "40-char Z85)");
+            }
+            std::memcpy(v.pImpl->public_z85.data(), pub_z85.data(), Impl::kKeyLen);
+
+            // Deposit the identity: public half decoded from the
+            // metadata's Z85, secret half copied raw from the plaintext
+            // (VF-7).  `add_identity` wants them packed pub‖sec, and
+            // zeroes the buffer we hand it.
+            std::array<std::byte, 64> packed{};
+            struct WipePacked
+            {
+                std::array<std::byte, 64> &b;
+                ~WipePacked() noexcept
+                {
+                    pylabhub::utils::security::secure().memzero(std::span<std::uint8_t>(
+                        reinterpret_cast<std::uint8_t *>(b.data()), b.size()));
+                }
+            } wipe_packed{packed};
+
+            std::uint8_t pub_raw[32]{};
+            if (::zmq_z85_decode(pub_raw, pub_z85.c_str()) == nullptr)
+            {
+                throw std::runtime_error("RoleVault: vault metadata public key is not valid Z85");
+            }
+            std::memcpy(packed.data(), pub_raw, sizeof(pub_raw));
+            std::memcpy(packed.data() + sizeof(pub_raw), secret.data(), secret.size());
+            sec::secure().keys().add_identity(identity_name, std::span<std::byte>(packed));
+        });
 
     return v;
 }
@@ -219,18 +255,6 @@ std::string_view RoleVault::public_key() const noexcept
 {
     return std::string_view(pImpl->public_z85.data(), Impl::kKeyLen);
 }
-void RoleVault::load_identity_into(std::string_view key_name) const
-{
-    namespace sec = pylabhub::utils::security;
-    // The secret goes straight from this vault's storage into the
-    // KeyStore's locked allocation.  No caller sees it, and no new
-    // copy is made beyond the one `add_identity_from_z85` needs to
-    // build the packed 64-byte form.
-    sec::secure().keys().add_identity_from_z85(
-        key_name, std::string_view(pImpl->public_z85.data(), Impl::kKeyLen),
-        std::string_view(pImpl->secret_z85.data(), Impl::kKeyLen));
-}
-
 std::string_view RoleVault::role_uid() const noexcept
 {
     return pImpl->role_uid_;
