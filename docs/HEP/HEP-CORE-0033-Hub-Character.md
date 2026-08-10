@@ -1900,13 +1900,13 @@ and returns it to the operator. The session id:
   - *Key home + use-not-export.* The sealing key is a 32-byte symmetric
     secret minted at admin-console startup via `secure().random_bytes` and
     stored in the KeyStore under the canonical name **`admin.session.seal`**
-    (`add_raw`). Because `secretbox` takes a raw key (unlike the
-    name-citing `box_*_using`), the seal/unseal paths obtain the key with
-    `KeyStore::lookup_raw` and pass the span **directly** into
-    `secretbox_encrypt`/`_decrypt` within the same statement — the bytes are
-    never copied into an owning buffer, logged, or retained past the call, so
-    the use-not-export contract (HEP-CORE-0043 §1.4) holds even for this
-    raw-key path.
+    (`add_raw`). The seal/unseal paths cite that name — they call
+    `secure().aead_encrypt_using` / `aead_decrypt_using` (HEP-CORE-0043
+    §2.5) and never see the key at all. There is no raw-key path here to
+    excuse: the earlier shape fetched a span and drove the primitive by
+    hand, and both the span accessor and the raw-key primitive have since
+    been deleted, so the use-not-export contract (HEP-CORE-0043 §1.4)
+    holds by construction rather than by call-site discipline.
 - **Replaces the token on every subsequent message** — the raw admin token
   crosses the wire exactly once, at establishment; thereafter the operator
   presents only the opaque sealed session id.

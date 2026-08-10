@@ -340,8 +340,8 @@ symptom in §3.
 
 | Entry point | Production callers after step 6 | Disposition |
 |---|---|---|
-| `secretbox_encrypt` / `secretbox_decrypt` (raw key span) | none | **Make private.** The `_using` variants call them internally, exactly as `box_*` already does. |
-| `keys().lookup_raw(name)` | none | **Needs a decision.** No production consumer, which makes it surface existing only for tests — but removing it removes the only way to read a raw secret, and two `key_store` tests drive it directly. Retiring it is a contract handoff, not a deletion. |
+| `secretbox_encrypt` / `secretbox_decrypt` (raw key span) | none | ✅ **DELETED**, not privatised. Making them private would have kept a nonce-choosing, key-holding shape alive as an implementation detail; the `_using` variants call libsodium directly instead. |
+| `keys().lookup_raw(name)` | none | ✅ **DELETED.** Resolved as a contract handoff, not a bare removal: `with_raw_key(name, cb)` took over the job — same access, scoped to a callback, with the shared lock held for its duration — and the two `key_store` tests that drove `lookup_raw` were re-expressed against it. |
 
 **Do not skip step 7 and call the arc finished.** An API that still offers
 the unsafe door has two ways to do one job, and the unsafe one is shorter

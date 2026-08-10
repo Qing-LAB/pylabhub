@@ -564,7 +564,7 @@ int add_random_key_mints_into_locked_memory(const char * /*tmpdir*/)
 /// plaintext twice must give different bytes.  A roundtrip test alone
 /// passes just as happily with a fixed nonce, and a repeated nonce
 /// under XSalsa20 does not degrade — it fails outright.
-int secretbox_using_seals_with_a_fresh_nonce(const char * /*tmpdir*/)
+int aead_using_seals_with_a_fresh_nonce(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]()
@@ -573,7 +573,7 @@ int secretbox_using_seals_with_a_fresh_nonce(const char * /*tmpdir*/)
             constexpr std::string_view kName = "seal:a";
             const std::string plain = "the payload that goes in the vault";
 
-            secure().keys().add_random_key(kName, sec::SecureSubsystem::kSecretboxKeyBytes);
+            secure().keys().add_random_key(kName, sec::SecureSubsystem::kSymmetricKeyBytes);
 
             const auto plain_span = std::span<const std::uint8_t>(
                 reinterpret_cast<const std::uint8_t *>(plain.data()), plain.size());
@@ -582,10 +582,10 @@ int secretbox_using_seals_with_a_fresh_nonce(const char * /*tmpdir*/)
 
             std::vector<std::uint8_t> first(sealed_len);
             std::vector<std::uint8_t> second(sealed_len);
-            ASSERT_EQ(secure().secretbox_encrypt_using(kName, plain_span,
+            ASSERT_EQ(secure().aead_encrypt_using(kName, plain_span,
                                                        std::span<std::uint8_t>(first)),
                       sealed_len);
-            ASSERT_EQ(secure().secretbox_encrypt_using(kName, plain_span,
+            ASSERT_EQ(secure().aead_encrypt_using(kName, plain_span,
                                                        std::span<std::uint8_t>(second)),
                       sealed_len);
 
@@ -597,20 +597,20 @@ int secretbox_using_seals_with_a_fresh_nonce(const char * /*tmpdir*/)
 
             // ...and the differing part is the leading nonce.
             EXPECT_FALSE(std::equal(first.begin(),
-                                    first.begin() + sec::SecureSubsystem::kSecretboxNonceBytes,
+                                    first.begin() + sec::SecureSubsystem::kAeadNonceBytes,
                                     second.begin()))
                 << "the nonce prefix repeated across two seals";
 
             // Roundtrip.
             std::vector<std::uint8_t> out(plain.size());
-            ASSERT_EQ(secure().secretbox_decrypt_using(
+            ASSERT_EQ(secure().aead_decrypt_using(
                           kName, std::span<const std::uint8_t>(first), std::span<std::uint8_t>(out)),
                       plain.size());
             EXPECT_EQ(std::string(reinterpret_cast<const char *>(out.data()), out.size()), plain);
 
             // A different key must NOT open it — 0, not garbage, not a throw.
-            secure().keys().add_random_key("seal:other", sec::SecureSubsystem::kSecretboxKeyBytes);
-            EXPECT_EQ(secure().secretbox_decrypt_using("seal:other",
+            secure().keys().add_random_key("seal:other", sec::SecureSubsystem::kSymmetricKeyBytes);
+            EXPECT_EQ(secure().aead_decrypt_using("seal:other",
                                                        std::span<const std::uint8_t>(first),
                                                        std::span<std::uint8_t>(out)),
                       0u)
@@ -619,24 +619,75 @@ int secretbox_using_seals_with_a_fresh_nonce(const char * /*tmpdir*/)
             // Tamper one ciphertext byte: the MAC must catch it.
             auto tampered = first;
             tampered[tampered.size() - 1] ^= std::uint8_t{0x01};
-            EXPECT_EQ(secure().secretbox_decrypt_using(kName,
+            EXPECT_EQ(secure().aead_decrypt_using(kName,
                                                        std::span<const std::uint8_t>(tampered),
                                                        std::span<std::uint8_t>(out)),
                       0u)
                 << "a flipped ciphertext bit decrypted successfully";
 
             // An absent key is a wiring error, distinct from a crypto failure.
-            EXPECT_THROW((void)secure().secretbox_encrypt_using("seal:nope", plain_span,
+            EXPECT_THROW((void)secure().aead_encrypt_using("seal:nope", plain_span,
                                                                 std::span<std::uint8_t>(first)),
                          std::out_of_range);
 
             // Too-short output buffer is refused, not overrun.
             std::vector<std::uint8_t> tiny(4);
             EXPECT_EQ(
-                secure().secretbox_encrypt_using(kName, plain_span, std::span<std::uint8_t>(tiny)),
+                secure().aead_encrypt_using(kName, plain_span, std::span<std::uint8_t>(tiny)),
                 0u);
+
+            // ── Associated data (HEP-CORE-0043 §2.5.3.1) ─────────────
+            // The point of the AEAD: bytes that are NOT encrypted but
+            // ARE covered by the tag.  A vault header is the live case
+            // — it must be readable before the key exists, and it must
+            // still be tamper-evident.
+            const std::array<std::uint8_t, 4> hdr{{0x01, 0x02, 0x03, 0x04}};
+            std::array<std::uint8_t, 4> hdr_edited = hdr;
+            hdr_edited[2] ^= std::uint8_t{0x01};
+
+            std::vector<std::uint8_t> with_aad(sealed_len);
+            ASSERT_EQ(secure().aead_encrypt_using(kName, plain_span,
+                                                  std::span<std::uint8_t>(with_aad),
+                                                  std::span<const std::uint8_t>(hdr)),
+                      sealed_len);
+
+            // Same aad → opens.
+            EXPECT_EQ(secure().aead_decrypt_using(kName,
+                                                  std::span<const std::uint8_t>(with_aad),
+                                                  std::span<std::uint8_t>(out),
+                                                  std::span<const std::uint8_t>(hdr)),
+                      plain.size());
+
+            // THE assertion.  One flipped bit in the UNENCRYPTED part
+            // must fail the open — otherwise the header is decoration
+            // and a vault's stated key-derivation cost could be edited
+            // without detection.
+            EXPECT_EQ(secure().aead_decrypt_using(kName,
+                                                  std::span<const std::uint8_t>(with_aad),
+                                                  std::span<std::uint8_t>(out),
+                                                  std::span<const std::uint8_t>(hdr_edited)),
+                      0u)
+                << "a modified associated-data block still opened — the tag does not cover it, "
+                   "so anything outside the ciphertext is unprotected";
+
+            // Dropping the aad entirely must fail too, not silently
+            // succeed as if none had been supplied.
+            EXPECT_EQ(secure().aead_decrypt_using(kName,
+                                                  std::span<const std::uint8_t>(with_aad),
+                                                  std::span<std::uint8_t>(out)),
+                      0u)
+                << "a blob sealed WITH associated data opened without it";
+
+            // And the converse: a blob sealed without aad must not open
+            // when one is supplied.
+            EXPECT_EQ(secure().aead_decrypt_using(kName,
+                                                  std::span<const std::uint8_t>(first),
+                                                  std::span<std::uint8_t>(out),
+                                                  std::span<const std::uint8_t>(hdr)),
+                      0u)
+                << "a blob sealed WITHOUT associated data opened with some supplied";
         },
-        "key_store::secretbox_using_seals_with_a_fresh_nonce", Logger::GetLifecycleModule(),
+        "key_store::aead_using_seals_with_a_fresh_nonce", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -663,7 +714,7 @@ int key_from_password_separates_by_scope(const char * /*tmpdir*/)
             // SecureSubsystemTest.PwhashArgon2id_Roundtrip instead.
             constexpr unsigned long long kOps = 1ULL;
             constexpr std::size_t kMem = 8192U;
-            constexpr std::size_t kLen = sec::SecureSubsystem::kSecretboxKeyBytes;
+            constexpr std::size_t kLen = sec::SecureSubsystem::kSymmetricKeyBytes;
 
             secure().keys().add_key_from_password("vault:a", password, "hub.uid.AAAA", kLen, kOps,
                                                   kMem);
@@ -674,14 +725,14 @@ int key_from_password_separates_by_scope(const char * /*tmpdir*/)
                 reinterpret_cast<const std::uint8_t *>(plain.data()), plain.size());
             std::vector<std::uint8_t> sealed(plain.size() +
                                              sec::SecureSubsystem::kSealedOverheadBytes);
-            ASSERT_EQ(secure().secretbox_encrypt_using("vault:a", plain_span,
+            ASSERT_EQ(secure().aead_encrypt_using("vault:a", plain_span,
                                                        std::span<std::uint8_t>(sealed)),
                       sealed.size());
 
             std::vector<std::uint8_t> out(plain.size());
 
             // THE assertion: same password, different scope → cannot open.
-            EXPECT_EQ(secure().secretbox_decrypt_using(
+            EXPECT_EQ(secure().aead_decrypt_using(
                           "vault:b", std::span<const std::uint8_t>(sealed),
                           std::span<std::uint8_t>(out)),
                       0u)
@@ -692,7 +743,7 @@ int key_from_password_separates_by_scope(const char * /*tmpdir*/)
             // which is what lets a vault be reopened at all.
             secure().keys().add_key_from_password("vault:a_again", password, "hub.uid.AAAA", kLen,
                                                   kOps, kMem);
-            ASSERT_EQ(secure().secretbox_decrypt_using("vault:a_again",
+            ASSERT_EQ(secure().aead_decrypt_using("vault:a_again",
                                                        std::span<const std::uint8_t>(sealed),
                                                        std::span<std::uint8_t>(out)),
                       plain.size())
@@ -703,7 +754,7 @@ int key_from_password_separates_by_scope(const char * /*tmpdir*/)
             // A wrong password under the right scope must not open it.
             secure().keys().add_key_from_password("vault:wrongpw", "not-the-password",
                                                   "hub.uid.AAAA", kLen, kOps, kMem);
-            EXPECT_EQ(secure().secretbox_decrypt_using("vault:wrongpw",
+            EXPECT_EQ(secure().aead_decrypt_using("vault:wrongpw",
                                                        std::span<const std::uint8_t>(sealed),
                                                        std::span<std::uint8_t>(out)),
                       0u);
@@ -715,14 +766,14 @@ int key_from_password_separates_by_scope(const char * /*tmpdir*/)
             EXPECT_NO_THROW(secure().keys().replace_key_from_password(
                 "vault:a", password, "hub.uid.AAAA", kLen, kOps, kMem));
             // Replacing with the same inputs keeps the blob openable.
-            EXPECT_EQ(secure().secretbox_decrypt_using("vault:a",
+            EXPECT_EQ(secure().aead_decrypt_using("vault:a",
                                                        std::span<const std::uint8_t>(sealed),
                                                        std::span<std::uint8_t>(out)),
                       plain.size());
             // Replacing with a different scope changes the key.
             EXPECT_NO_THROW(secure().keys().replace_key_from_password(
                 "vault:a", password, "hub.uid.CCCC", kLen, kOps, kMem));
-            EXPECT_EQ(secure().secretbox_decrypt_using("vault:a",
+            EXPECT_EQ(secure().aead_decrypt_using("vault:a",
                                                        std::span<const std::uint8_t>(sealed),
                                                        std::span<std::uint8_t>(out)),
                       0u)
@@ -1787,8 +1838,8 @@ int dispatch_key_store(int argc, char **argv)
         return add_identity_wrong_size_throws(tmpdir);
     if (scenario == "add_random_key_mints_into_locked_memory")
         return add_random_key_mints_into_locked_memory(tmpdir);
-    if (scenario == "secretbox_using_seals_with_a_fresh_nonce")
-        return secretbox_using_seals_with_a_fresh_nonce(tmpdir);
+    if (scenario == "aead_using_seals_with_a_fresh_nonce")
+        return aead_using_seals_with_a_fresh_nonce(tmpdir);
     if (scenario == "key_from_password_separates_by_scope")
         return key_from_password_separates_by_scope(tmpdir);
     if (scenario == "add_raw_then_with_raw_key_roundtrip")

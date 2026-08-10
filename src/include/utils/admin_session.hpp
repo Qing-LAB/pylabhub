@@ -19,8 +19,10 @@
  * COMPOSED FROM EXISTING INFRASTRUCTURE — this module adds NO new crypto,
  * encoding, or key-storage primitive.  Each step delegates to an existing,
  * HEP-owned facility:
- *   - seal / unseal   → `secure().secretbox_encrypt/decrypt` + `random_bytes`
- *                       (SecureSubsystem, HEP-CORE-0043 §Cat-1a/1c).
+ *   - seal / unseal   → `secure().aead_encrypt_using` /
+ *                       `aead_decrypt_using` — named-key operations, so
+ *                       this module never holds the sealing key and
+ *                       never picks a nonce (HEP-CORE-0043 §2.5).
  *   - per-instance key → KeyStore `add_raw` + use-not-export accessor
  *                       (KeyStore, HEP-CORE-0040 §5).
  *   - hex encode/decode → `format_tools::bytes_to_hex` / `bytes_from_hex`.

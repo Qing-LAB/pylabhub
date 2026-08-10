@@ -34,12 +34,10 @@
  *       `memcmp_ct`, `memzero`, `bin2hex`, `generate_shared_secret`.
  *     - **1b. Hash + KDF** — `compute_blake2b`, `verify_blake2b`,
  *       `pwhash_argon2id`.
- *     - **1c. Encryption / decryption** — `secretbox_encrypt`,
- *       `secretbox_decrypt`, `secretbox_encrypt_using`,
- *       `secretbox_decrypt_using`, `box_encrypt_using`,
- *       `box_decrypt_using` (all shipped).  The `_using` forms name
- *       their key instead of taking it; prefer them.  Future:
- *       `aead_encrypt/_decrypt`, `sealed_box_*`.
+ *     - **1c. Encryption / decryption** — `aead_encrypt_using`,
+ *       `aead_decrypt_using`, `box_encrypt_using`, `box_decrypt_using`.
+ *       Every one names its key rather than taking it; there is no
+ *       raw-key form, deliberately.  Future: `sealed_box_*`.
  *   Category 1 has NO instance state — every method is stateless.
  *
  * - **Category 2 — Key management.**  Nested sub-container
@@ -90,10 +88,10 @@
  *   `lifecycle_initialized()`, and every Category 1 method
  *   (`random_bytes`, `memcmp_ct`, `memzero`, `bin2hex`,
  *   `compute_blake2b`, `verify_blake2b`, `derive_pwhash_salt`,
- *   `pwhash_argon2id`, `secretbox_encrypt`, `secretbox_decrypt`).
+ *   `pwhash_argon2id`).
  *
- * Note: the four `*_using` methods (`secretbox_encrypt_using`,
- * `secretbox_decrypt_using`, `box_encrypt_using`, `box_decrypt_using`)
+ * Note: the four `*_using` methods (`aead_encrypt_using`,
+ * `aead_decrypt_using`, `box_encrypt_using`, `box_decrypt_using`)
  * reach through `keys()` internally to resolve the key by name — they
  * inherit the `keys()` gate transitively.  Callers get the PANIC if they
  * invoke these methods without SMS being up.
@@ -395,7 +393,8 @@ class PYLABHUB_UTILS_EXPORT SecureSubsystem
     //   - Check the return value (0 = failure — MAC mismatch, bad
     //     input, or wrong key).
     //   - Ensure keys are exactly the byte length the primitive
-    //     requires (`kSecretbox*Bytes` constants below).
+    //     requires (`kSymmetricKeyBytes` / `kAeadNonceBytes` /
+    //     `kAeadTagBytes` below).
 
     // The raw-key `secretbox_encrypt` / `secretbox_decrypt` pair was
     // DELETED on 2026-08-09.  They made the caller hold the key and
@@ -411,9 +410,11 @@ class PYLABHUB_UTILS_EXPORT SecureSubsystem
     /// Encrypt `plaintext` under the **named** symmetric key, writing
     /// a self-contained sealed blob to `out`.
     ///
-    /// This is the symmetric twin of `box_encrypt_using`, and the
-    /// reason to prefer it over `secretbox_encrypt` above: the key is
-    /// named, not passed, so the caller never holds key bytes.
+    /// This is the symmetric twin of `box_encrypt_using`: the key is
+    /// named, not passed, so the caller never holds key bytes.  The
+    /// cipher is XChaCha20-Poly1305 (IETF) — an AEAD, because the
+    /// module needs to authenticate data it does not encrypt (§2.5.3.1),
+    /// which `crypto_secretbox` cannot express.
     ///
     /// **The nonce is generated inside and written to the front of
     /// `out`** — `[nonce(24) ‖ MAC(16) ‖ ciphertext]`.  Callers do not
@@ -425,17 +426,24 @@ class PYLABHUB_UTILS_EXPORT SecureSubsystem
     ///
     /// `out` needs `plaintext.size() + kSealedOverheadBytes` bytes.
     /// Returns bytes written, or 0 on failure (short `out`, missing
-    /// key, or a key that is not `kSecretboxKeyBytes` long).
+    /// key, or a key that is not `kSymmetricKeyBytes` long).
     ///
     /// Throws `std::out_of_range` if `key_name` is absent — a missing
     /// key is a wiring error, distinct from the 0 return that means
     /// "the crypto did not work".
-    [[nodiscard]] std::size_t secretbox_encrypt_using(std::string_view key_name,
-                                                      std::span<const std::uint8_t> plaintext,
-                                                      std::span<std::uint8_t> out);
+    /// `aad` is data that is NOT encrypted but IS covered by the
+    /// authentication tag (HEP-CORE-0043 §2.5.3.1).  A format with a
+    /// part that must be readable before the key is available — a vault
+    /// header, say — passes it here so that altering it still fails the
+    /// open.  Callers with nothing outside the ciphertext to protect
+    /// pass nothing.
+    [[nodiscard]] std::size_t aead_encrypt_using(std::string_view key_name,
+                                                 std::span<const std::uint8_t> plaintext,
+                                                 std::span<std::uint8_t> out,
+                                                 std::span<const std::uint8_t> aad = {});
 
-    /// Reverse of `secretbox_encrypt_using`.  `sealed` is the whole
-    /// blob including its leading nonce.  Writes
+    /// Reverse of `aead_encrypt_using`.  `sealed` is the whole blob
+    /// including its leading nonce.  Writes
     /// `sealed.size() - kSealedOverheadBytes` bytes to `out`.
     ///
     /// Returns 0 if the MAC does not verify — meaning the data was
@@ -444,32 +452,36 @@ class PYLABHUB_UTILS_EXPORT SecureSubsystem
     /// the tag verifies or it does not.
     ///
     /// Throws `std::out_of_range` if `key_name` is absent.
-    [[nodiscard]] std::size_t secretbox_decrypt_using(std::string_view key_name,
-                                                      std::span<const std::uint8_t> sealed,
-                                                      std::span<std::uint8_t> out);
+    /// `aad` MUST be byte-identical to what was supplied when sealing;
+    /// a mismatch fails exactly like a wrong key.
+    [[nodiscard]] std::size_t aead_decrypt_using(std::string_view key_name,
+                                                 std::span<const std::uint8_t> sealed,
+                                                 std::span<std::uint8_t> out,
+                                                 std::span<const std::uint8_t> aad = {});
 
-    /// Bytes that `secretbox_encrypt_using` adds to the plaintext
-    /// length: the leading nonce plus the MAC.  Sizing constant for
+    /// Bytes that `aead_encrypt_using` adds to the plaintext length:
+    /// the leading nonce plus the tag.  Sizing constant for
     /// callers allocating an output buffer.
     static constexpr std::size_t kSealedOverheadBytes = 24 + 16;
 
-    /// `crypto_secretbox_KEYBYTES` (32) — the exact secretbox key
-    /// size.  Exposed so callers can size their key buffers without
-    /// pulling `<sodium.h>` in.
-    static constexpr std::size_t kSecretboxKeyBytes = 32;
-    /// `crypto_secretbox_NONCEBYTES` (24).
-    static constexpr std::size_t kSecretboxNonceBytes = 24;
-    /// `crypto_secretbox_MACBYTES` (16) — the MAC prefix length
-    /// that `secretbox_encrypt`'s output contains.
-    static constexpr std::size_t kSecretboxMacBytes = 16;
+    /// Symmetric key size (32).  Exposed so callers can size their key
+    /// buffers without pulling `<sodium.h>` in.
+    static constexpr std::size_t kSymmetricKeyBytes = 32;
+    /// AEAD nonce size (24).
+    static constexpr std::size_t kAeadNonceBytes = 24;
+    /// Authentication tag size (16).  In a blob from
+    /// `aead_encrypt_using` the tag is at the END, after the
+    /// ciphertext — that is where the AEAD's combined mode writes it,
+    /// unlike `crypto_secretbox_easy` which prefixed its MAC.
+    static constexpr std::size_t kAeadTagBytes = 16;
 
     // ── Category 1c — Asymmetric box (crypto_box) ────────────────
     // Two-party authenticated encryption using Curve25519 +
     // XSalsa20-Poly1305 keypairs.  Sender proves possession of
     // `own_seckey_name`'s secret key AND recipient owns the
     // matching pubkey — mutual authentication built into every
-    // ciphertext (unlike `secretbox` which is single-party
-    // symmetric).
+    // ciphertext (unlike the symmetric `aead_*_using`, which proves
+    // only that the holder of one shared key produced the bytes).
     //
     // The sender's seckey is cited by NAME — SMS resolves it via
     // KeyStore's `with_seckey`, uses it inside a scoped callback,

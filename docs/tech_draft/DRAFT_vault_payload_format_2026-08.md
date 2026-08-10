@@ -72,12 +72,40 @@ Bounding the work, so the diff does not sprawl:
    profile (VF-2), decrypt with associated data (VF-3), check the
    plaintext covers the secret section (VF-4), deposit that section
    straight into the key store (VF-7).
-5. **Delete** the old read/write path, the `secret_z85` members, and
+5. **The admin token stops being a string.**  It is half the hub's
+   secret section, so it arrives in locked memory; without this step
+   the very next line copies it back out into the `std::string` on
+   `HubAdminConfig`, and the format's promise is false at its only hub
+   call site.  Deposit it as a named raw key, have the config carry the
+   name, and move the comparison into the key store
+   (`raw_key_matches_hex`, HEP-CORE-0043 §2.5.2).  `AdminService::Impl`
+   loses both its own copy and its hand-rolled constant-time loop.
+6. **Delete** the old read/write path, the `secret_z85` members, and
    every place that treats the build's KDF profile as a read input.
-6. Regenerate development vaults.
+7. Regenerate development vaults.
 
-Steps 1-4 can land as one commit. Step 5 is the point of no return and
+Steps 1-5 can land as one commit. Step 6 is the point of no return and
 should be its own.
+
+### 3.1 Where the identity name comes from
+
+`open()` deposits the identity itself and returns metadata only
+(HEP-CORE-0035 §4.6.6), so the vault object holds no secret afterwards
+and `load_identity_into` has nothing left to move.  The name it deposits
+under therefore has to arrive at `open()` / `create()`, which grow an
+`identity_name` parameter defaulting to the existing
+`kRoleIdentityName` / `kHubIdentityName`.
+
+Two names on one call is not an accident of the refactor — a vault has
+two keys and they have different lifetimes.  `key_name` names the key
+that *decrypts the file* (derived from the password, reused by a later
+save).  `identity_name` names the *keypair inside it* (the role's
+CurveZMQ identity).  Collapsing them would mean a caller holding two
+vaults open could not tell which identity it was using.
+
+This removes `load_identity_into` from both vaults.  Its two production
+call sites pass the name at open time instead; the ~16 test call sites
+follow.
 
 ## 4. Tests
 
@@ -97,6 +125,17 @@ proves almost nothing on its own.
   mid-metadata.
 - The existing hygiene checks continue to apply: no field name and no
   public key visible in the raw file bytes.
+- **The secret is not in the metadata (VF-6).**  Decrypt a role vault in
+  the test and assert the raw secret bytes do not occur anywhere in the
+  metadata region — not as raw bytes, not as Z85, not as hex.  A
+  round-trip cannot catch a regression that re-adds the secret as a JSON
+  field, because a round-trip still passes with it there.
+- **The admin token comparison rejects a near-miss.**  `raw_key_matches_hex`
+  must refuse a token differing in one character, refuse a correct token
+  presented at the wrong length, and refuse an absent name — each
+  indistinguishably.  Pin that a *correct* token still returns true after
+  the vault has been reopened, which is what proves the raw round-trip
+  through the secret section is faithful.
 
 ## 5. Consequences worth expecting
 

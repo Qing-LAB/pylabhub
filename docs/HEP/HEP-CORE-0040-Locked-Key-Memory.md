@@ -156,12 +156,12 @@ Two pieces, both registered LifecycleGuard modules:
    │    string_view              │   key_store().with_seckey(name, cb)   │
    │  - seckey via with_seckey   │     // cb invoked with std::string_view│
    │    callback only            │     // valid for callback scope only  │
-   │  - lookup_raw for HEP-0038  │     // cb MUST be prompt (no I/O)     │
-   │    script secrets           │   key_store().lookup_raw(name) → span │
+   │  - raw secrets via         │     // cb MUST be prompt (no I/O)     │
+   │    with_raw_key callback    │   key_store().with_raw_key(name, cb)  │
    │                             │   key_store().has(name)               │
    │  key_store() ref):          │                                       │
    │  add_identity / add_raw     │  Lifecycle handles ORDERING only —    │
-   │  lookup / lookup_raw        │  never instance retrieval.            │
+   │  remove / has               │  never instance retrieval.            │
    │  remove / has               │  key_store() throws if not yet ctor'd.│
    └─────────────────────────────┘                                       │
             │                                                            │
@@ -420,7 +420,7 @@ public:
     /// remove() or KeyStore dtor. Pubkeys are non-secret — fine to
     /// pass / log / copy.
     /// Throws `std::out_of_range` if `name` is absent or refers to a
-    /// raw entry (use `lookup_raw` for HEP-0038 secrets).
+    /// raw entry (use `with_raw_key` for raw secrets).
     [[nodiscard]] std::string_view pubkey(std::string_view name) const;
 
     /// Invoke `use` with the **RAW 32-byte SECRET key**
@@ -432,7 +432,7 @@ public:
     /// std::string copy.
     ///
     /// Shared lock is held for the callback's duration — concurrent
-    /// `with_seckey` / `pubkey` / `lookup_raw` calls run in parallel,
+    /// `with_seckey` / `pubkey` / `with_raw_key` calls run in parallel,
     /// but a concurrent `remove(name)` waits.  Callback MUST be
     /// prompt (microseconds): no blocking I/O, no syscalls beyond
     /// what's needed to consume the bytes (typically a single
@@ -444,13 +444,22 @@ public:
     void with_seckey(std::string_view name,
                      std::function<void(std::string_view)> use) const;
 
-    /// HEP-0038 raw-secret access.  Span lifetime is until remove()
-    /// or KeyStore dtor; script bindings MUST materialize the bytes
-    /// into a script-owned buffer before returning to the script,
-    /// not pass the span to script code.
-    /// Throws `std::out_of_range` if `name` is absent.
-    [[nodiscard]] std::span<const std::byte>
-                  lookup_raw(std::string_view name) const;
+    /// Raw-secret access — the callback twin of `with_seckey`, for
+    /// entries with no public half (symmetric keys).  The span is
+    /// valid ONLY inside `use`, and the shared lock is held for its
+    /// duration, so a concurrent `remove(name)` waits.
+    ///
+    /// This replaced a span-RETURNING `lookup_raw`, which could
+    /// promise neither: it handed out a pointer that outlived the
+    /// lock, leaving the caller to prove no `remove` would run before
+    /// it stopped reading.  Script bindings must still materialize
+    /// into a script-owned buffer INSIDE the callback rather than
+    /// passing the span outward.
+    ///
+    /// Throws `std::out_of_range` if `name` is absent, or if it names
+    /// an identity keypair (use `with_seckey`).
+    void with_raw_key(std::string_view name,
+                      std::function<void(std::span<const std::byte>)> use) const;
 
     /// Existence check (tests; production uses pubkey() /
     /// with_seckey() and lets the throw signal).
@@ -536,7 +545,7 @@ bool key_store_ready() noexcept {
 }  // namespace
 ```
 
-Consumers always call `pylabhub::utils::security::key_store().lookup(name)` — never `key_store().lookup(...)` (no static methods on the class) and never anything LifecycleManager-shaped. `CurveKeypair` is the existing strong type at `src/include/utils/security/curve_keypair.hpp`. HEP-0038 secrets are accessed via `lookup_raw` (returns a span); they do NOT go through `CurveKeypair` because they have no required structure.
+Consumers always reach the store through the guarded global accessor `pylabhub::utils::security::key_store()` — never through a static method on the class, and never through anything LifecycleManager-shaped. `CurveKeypair` is the existing strong type at `src/include/utils/security/curve_keypair.hpp`. Raw symmetric secrets are read via `with_raw_key(name, cb)`; they do NOT go through `CurveKeypair` because they have no required structure.
 
 ### 5.3 Naming convention
 
@@ -560,18 +569,18 @@ Future federation peer pubkeys are NOT stored here — pubkeys don't need lockin
 Two write paths exist in the full production picture:
 
 1. **Startup** — `add_identity` called once during vault open (single-threaded by construction; load_keypair runs on the main / startup thread before any worker exists).
-2. **Runtime** — `add_raw` / `remove` called by HEP-0038 script threads at arbitrary moments while broker / data-plane threads are reading via `pubkey` / `with_seckey` / `lookup_raw`.
+2. **Runtime** — `add_raw` / `remove` called by script threads at arbitrary moments while broker / data-plane threads are reading via `pubkey` / `with_seckey` / `with_raw_key`.
 
 The runtime case forces real concurrency control. KeyStore's `Impl` uses `std::shared_mutex` (fairness policy is implementation-defined — the expected workload is read-dominated with rare writes, so policy choice is not load-bearing).
 
-- **Read paths** (`pubkey`, `with_seckey`, `lookup_raw`, `has`, `size`): shared lock. Multiple consumers run in parallel — broker's bind path, BRC's connect path, a script's `vault_load`, and a federation peer's connect can all be inside read methods simultaneously without blocking each other.
+- **Read paths** (`pubkey`, `with_seckey`, `with_raw_key`, `has`, `size`): shared lock. Multiple consumers run in parallel — broker's bind path, BRC's connect path, a script's `vault_load`, and a federation peer's connect can all be inside read methods simultaneously without blocking each other.
 - **Write paths** (`add_identity`, `add_raw`, `remove`): exclusive lock. Serialized; block until all in-flight readers release.
 
 LockedKey bytes are immutable after `add_*` until `remove()`.  Once a read method has the shared lock and a pointer into the LockedKey buffer, the bytes can't change underneath it.  The shared lock protects against the MAP entry being removed (which would destroy the LockedKey and zero the bytes — UAF for any in-flight reader).  Thus:
 
 - **`pubkey(name)`** returns `std::string_view` into the LockedKey buffer.  Caller can hold the view past the call **only** if the caller can prove no `remove(name)` will run before they drop it.  For framework identity keys (never removed at runtime), holding indefinitely is safe.  For HEP-0038 secrets, materialize immediately.
 - **`with_seckey(name, use)`** holds the shared lock for the duration of `use`.  Concurrent `remove(name)` waits for `use` to return.  Callback contract: prompt completion (microseconds — a `socket.set` call is the typical operation).  Blocking I/O inside `use` starves writers; explicitly prohibited.
-- **`lookup_raw(name)`** returns a span; same lifetime rules as `pubkey`.
+- **`with_raw_key(name, use)`** holds the shared lock for the duration of `use`, exactly as `with_seckey` does — the span does not escape, so the lifetime caveat that applies to `pubkey` does not arise here.
 
 `remove()` blocks behind any in-flight `with_seckey` for the same name — that's the correct security semantic.  When a script asks to delete a secret, no in-flight caller retains addressable bytes after `remove()` returns.
 

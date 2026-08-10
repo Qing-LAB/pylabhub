@@ -134,7 +134,7 @@ pylabhub_add_gtest(TARGET test_layer2_zap_router
 # Pins:
 #   - ordering: KeyStore ctor throws if SecureSubsystem not ready
 #   - singleton: second KeyStore ctor throws
-#   - use-not-export: pubkey/with_seckey/lookup_raw error paths
+#   - use-not-export: pubkey/with_seckey/with_raw_key error paths
 #   - thread safety: parallel reads, remove blocks behind with_seckey
 #   - LockedKey + SecureBuffer dtor zeroing semantics
 # ============================================================================

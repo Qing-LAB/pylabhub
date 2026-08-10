@@ -170,9 +170,9 @@ TEST_F(KeyStoreTest, AddRandomKey_MintsIntoLockedMemory)
 
 /// HEP-CORE-0043 §2.5.3 — the sealed blob carries its own nonce and the
 /// caller cannot supply one, so a caller cannot repeat one.
-TEST_F(KeyStoreTest, SecretboxUsing_SealsWithAFreshNonce)
+TEST_F(KeyStoreTest, AeadUsing_SealsWithAFreshNonce)
 {
-    auto w = SpawnWorker("key_store.secretbox_using_seals_with_a_fresh_nonce",
+    auto w = SpawnWorker("key_store.aead_using_seals_with_a_fresh_nonce",
                          {unique_dir("seal_nonce")});
     ExpectWorkerOk(w);
 }
@@ -276,12 +276,11 @@ TEST_F(SecureSubsystemTest, ParallelInstanceCallsReturnSameReference)
     ExpectWorkerOk(w);
 }
 
-// R3.1 — `secretbox_encrypt/decrypt` roundtrip (HEP-CORE-0043 §2.1 Cat 1c).
 // RETIRED 2026-08-09 — `SecureSubsystemTest.SecretboxEncryptDecrypt_Roundtrip`
 // tested the raw-key `secretbox_encrypt` / `secretbox_decrypt`, which no
 // longer exist.  Its contract was NOT dropped: encrypt-then-decrypt
 // round-trip and MAC-tamper-returns-0 are both asserted by
-// `KeyStoreTest.SecretboxUsing_SealsWithAFreshNonce` above, which
+// `KeyStoreTest.AeadUsing_SealsWithAFreshNonce` above, which
 // additionally covers a fresh nonce per seal, a foreign key, an absent
 // key, and a short output buffer.
 
@@ -328,9 +327,11 @@ TEST_F(SecureSubsystemTest, BoxEncryptDecrypt_Roundtrip)
 // R3.2 — the ONLY gated accessor is `secure().keys()` — it panics
 // (process abort → exit code 134 = 128 + SIGABRT) when SMS is not in
 // the mods pack.  All other SMS methods (`secure()`,
-// `random_bytes`, `compute_blake2b`, `secretbox_encrypt`,
-// `pwhash_argon2id`, ...) are stateless wrappers on libsodium that
-// libsodium self-initializes; they succeed without SMS bringup.
+// `random_bytes`, `compute_blake2b`, `pwhash_argon2id`, ...) are
+// stateless wrappers on libsodium that libsodium self-initializes;
+// they succeed without SMS bringup.  Note the `*_using` methods are
+// NOT in that set — they resolve a key through `keys()` and so
+// inherit its gate.
 // Gate policy documented in `secure_subsystem.cpp` "Gate policy"
 // block.
 namespace // anon — SIGABRT expected-exit-code check

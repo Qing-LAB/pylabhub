@@ -4,7 +4,7 @@
 |-----------------|-------|
 | **HEP**         | `HEP-CORE-0043` |
 | **Title**       | Security Subsystem — unified module + HEP consolidation |
-| **Status**      | 🚀 **§0-§7 + §11-§13 AUTHORITATIVE (SEC-Fold-2 complete 2026-07-07; HEP-0044/0045 promoted 2026-07-08)** — §0-§2 architecture + two-category facade shipped; §3 random+hash shipped; §4 pwhash shipped; §5 secretbox shipped; §6 asymmetric box shipped (`box_encrypt_using` / `box_decrypt_using` with name-based key citation, primary consumer is HEP-CORE-0044); §7 KeyStore submodule shipped as member of `SecureSubsystem::Impl`.  **§8-§10 are INDEX sections that name owners and forbid migration — not stubs awaiting content** (see §13): §8 vault → HEP-CORE-0024 §3.4 + HEP-CORE-0033 §7.1 (placement, finalized) and HEP-CORE-0035 §4.6/§4.8 (format, payload, CLI); §9.1 → HEP-CORE-0036, which is **current and authoritative, not superseded**; §9.2 → HEP-CORE-0044 (AttachProtocol) + HEP-CORE-0041 (SHM binding) + HEP-CORE-0042 (attach coordination); §9.3 → ⛔ retired with HEP-CORE-0045; §10 → the binding-layer sandboxing rule, plus open questions for a script secret store that is neither designed nor built. |
+| **Status**      | 🚀 **§0-§7 + §11-§13 AUTHORITATIVE (SEC-Fold-2 complete 2026-07-07; HEP-0044/0045 promoted 2026-07-08)** — §0-§2 architecture + two-category facade shipped; §3 random+hash shipped; §4 pwhash shipped; §5 symmetric AEAD shipped; §6 asymmetric box shipped (`box_encrypt_using` / `box_decrypt_using` with name-based key citation, primary consumer is HEP-CORE-0044); §7 KeyStore submodule shipped as member of `SecureSubsystem::Impl`.  **§8-§10 are INDEX sections that name owners and forbid migration — not stubs awaiting content** (see §13): §8 vault → HEP-CORE-0024 §3.4 + HEP-CORE-0033 §7.1 (placement, finalized) and HEP-CORE-0035 §4.6/§4.8 (format, payload, CLI); §9.1 → HEP-CORE-0036, which is **current and authoritative, not superseded**; §9.2 → HEP-CORE-0044 (AttachProtocol) + HEP-CORE-0041 (SHM binding) + HEP-CORE-0042 (attach coordination); §9.3 → ⛔ retired with HEP-CORE-0045; §10 → the binding-layer sandboxing rule, plus open questions for a script secret store that is neither designed nor built. |
 | **Created**     | 2026-07-04 |
 | **Area**        | Framework Architecture (security module, libsodium ownership, key management, wire auth) |
 | **Depends on**  | HEP-CORE-0001 (Hybrid Lifecycle Model), HEP-CORE-0031 (ThreadManager pattern) |
@@ -94,8 +94,10 @@ historical R1-R8 reasoning trace.
   methods on `SecureSubsystem`.  The `pylabhub::crypto` namespace
   and its `GetLifecycleModule` are DELETED.
 - **§4 (KDF pwhash_argon2id) — SHIPPED 2026-07-07** — Category 1b.
-- **§5 (Symmetric secretbox) — SHIPPED 2026-07-07** — Category 1c;
-  `vault_crypto.cpp` migrated.
+- **§5 (Symmetric AEAD) — SHIPPED** — Category 1c; `vault_crypto.cpp`
+  and `admin_session.cpp` migrated.  Began as raw-key `secretbox_*`;
+  became name-citing `aead_*_using` when the vault format needed an
+  authenticated header (§2.5.3.1).
 - **§6 (Asymmetric box) — SHIPPED 2026-07-07** — Category 1c on
   `SecureSubsystem`: `box_encrypt_using(name, peer_pk, nonce, pt, out)`
   / `box_decrypt_using(...)` cite the seckey by KeyStore entry name
@@ -269,7 +271,8 @@ admin session id.  This is the honest comparison — the left is what the
 code does today, the right is what §2.5 designs and has **not yet built**:
 
 ```cpp
-// TODAY — the caller fetches the key and drives the primitive itself.
+// BEFORE — the caller fetched the key and drove the primitive itself.
+// Neither `lookup_raw` nor `secretbox_encrypt` still exists.
 auto keyspan = secure().keys().lookup_raw(kAdminSessionSealKeyName);
 if (keyspan.size() != 32) { /* handle */ }
 std::array<std::uint8_t, 24> nonce{};
@@ -283,9 +286,9 @@ const auto n = secure().secretbox_encrypt(
 ```
 
 ```cpp
-// DESIGNED (§2.5) — not implemented yet.  The caller names a key.
+// The caller names a key.
 std::vector<std::uint8_t> sealed(plaintext.size() + 40);  // nonce 24 + tag 16
-const auto n = secure().secretbox_encrypt_using(
+const auto n = secure().aead_encrypt_using(
     kAdminSessionSealKeyName, plaintext, sealed);
 ```
 
@@ -320,7 +323,7 @@ owns and mediates every access to libsodium.**  It is:
   `src/include/utils/security/` or `src/utils/security/`, and nowhere
   else in `src/`.  Every raw sodium primitive
   (`sodium_malloc`, `sodium_memzero`, `randombytes_buf`,
-  `crypto_box_*`, `crypto_secretbox_*`, `crypto_pwhash`,
+  `crypto_box_*`, `crypto_aead_xchacha20poly1305_ietf_*`, `crypto_pwhash`,
   `crypto_generichash`, `sodium_memcmp`, ...) is exposed through a
   typed C++ wrapper method on this module.
 
@@ -341,7 +344,7 @@ owns and mediates every access to libsodium.**  It is:
   A consumer that needs an operation with no wrapper adds the wrapper
   to the module rather than including the header at the call site —
   `vault_crypto` is the worked example, reaching `pwhash_argon2id`,
-  `secretbox_encrypt`, `random_bytes` and `memzero` entirely through
+  `aead_encrypt_using`, `random_bytes` and `memzero` entirely through
   `secure()`.
 - **The keystore.**  Owns the `KeyStore` submodule that holds
   every long-term identity keypair and every ephemeral runtime
@@ -409,11 +412,15 @@ Mechanism, four layers deep:
    - **`box_encrypt_using` / `box_decrypt_using`** — reach
      through `keys().with_seckey(name, ...)` internally to
      resolve the seckey; inherit the `keys()` gate transitively.
+   - **`aead_encrypt_using` / `aead_decrypt_using`** — same:
+     they resolve the key through `keys().with_raw_key(name, ...)`,
+     so they inherit the gate too.  This is a consequence of the
+     symmetric side becoming name-citing; the raw-key pair it
+     replaced took a key span and so was genuinely ungated.
 
    Everything else on `SecureSubsystem` (Category 1a byte
-   primitives, 1b hash/KDF, 1c `secretbox_*`) is a stateless
-   wrapper that libsodium self-initializes.  These succeed
-   without SMS bringup.  Full rationale + failure modes closed
+   primitives, 1b hash/KDF) is a stateless wrapper that libsodium
+   self-initializes.  These succeed without SMS bringup.  Full rationale + failure modes closed
    by this softening (Layer 0 UUID tests, vault-file unit
    tests) documented in `secure_subsystem.cpp` "Gate policy"
    block.  Reaching a gated accessor before SMS is up remains
@@ -605,14 +612,17 @@ Key management is the ONE nested sub-container (Category 2), because
 |---|---|---|
 | **1a. Byte primitives** | Stateless wrappers on single sodium functions — random, memcmp_ct, memzero, bin2hex | `secure().random_bytes(out)` |
 | **1b. Hash + KDF** | BLAKE2b + verify + Argon2id | `secure().compute_blake2b(...)` |
-| **1c. Encryption / decryption** | Higher-level protocol operations — secretbox (shipped), future box/aead/sealed_box | `secure().secretbox_encrypt(...)` |
+| **1c. Encryption / decryption** | Higher-level protocol operations — symmetric AEAD and asymmetric box, both name-citing; `sealed_box` if a use appears | `secure().aead_encrypt_using(name, ...)` |
 | **2. Key management** | KeyStore — long-term identities + ephemeral keys under use-not-export | `secure().keys().add_identity(...)` |
 
 Categories 1a/1b/1c are DOCUMENTATION groupings — all their methods
-are flat on `SecureSubsystem`.  Encryption verbs live flat because
-they have no state to encapsulate: `secretbox_encrypt(plaintext,
-key, nonce)` is a stateless call.  Grouping them by concept lives in
-header section markers, not class boundaries.
+are flat on `SecureSubsystem`.  They live flat because each is one
+operation the module performs, not an object a caller configures and
+holds; `aead_encrypt_using(name, plaintext, out)` is a single call
+that starts and finishes inside the module.  Note the 1c verbs are no
+longer *stateless* — they reach the key store to resolve the name, and
+so inherit its gate (§2.3).  Grouping by concept lives in header
+section markers, not class boundaries.
 
 The prior `Crypto` nested sub-container (introduced as scaffolding
 in the initial 2b design) was collapsed 2026-07-07 after realizing
@@ -664,22 +674,28 @@ public:
                                        std::string_view domain);
     bool          pwhash_argon2id(std::uint8_t *out, std::size_t out_len,
                                    const char *password, std::size_t password_len,
-                                   const std::uint8_t *salt);
+                                   const std::uint8_t *salt,
+                                   unsigned long long opslimit,
+                                   std::size_t memlimit);
     static constexpr std::size_t kPwhashSaltBytes = 16;
 
     // ── Category 1c: encryption / decryption ──────────────────
-    // Symmetric authenticated (XSalsa20-Poly1305):
-    std::size_t   secretbox_encrypt(std::uint8_t *out, std::size_t out_max_len,
-                                     const std::uint8_t *plaintext, std::size_t plaintext_len,
-                                     const std::uint8_t *nonce,
-                                     const std::uint8_t *key);
-    std::size_t   secretbox_decrypt(std::uint8_t *out, std::size_t out_max_len,
-                                     const std::uint8_t *ciphertext, std::size_t ciphertext_len,
-                                     const std::uint8_t *nonce,
-                                     const std::uint8_t *key);
-    static constexpr std::size_t kSecretboxKeyBytes   = 32;
-    static constexpr std::size_t kSecretboxNonceBytes = 24;
-    static constexpr std::size_t kSecretboxMacBytes   = 16;
+    // Symmetric authenticated (XChaCha20-Poly1305 IETF); key cited by
+    // KeyStore entry name (use-not-export, §1.4).  The nonce is
+    // generated inside and written into `out` — see §2.5.3.  `aad` is
+    // authenticated but not encrypted — see §2.5.3.1.
+    std::size_t   aead_encrypt_using(std::string_view key_name,
+                                      std::span<const std::uint8_t> plaintext,
+                                      std::span<std::uint8_t>       out,
+                                      std::span<const std::uint8_t> aad = {});
+    std::size_t   aead_decrypt_using(std::string_view key_name,
+                                      std::span<const std::uint8_t> sealed,
+                                      std::span<std::uint8_t>       out,
+                                      std::span<const std::uint8_t> aad = {});
+    static constexpr std::size_t kSymmetricKeyBytes    = 32;
+    static constexpr std::size_t kAeadNonceBytes       = 24;
+    static constexpr std::size_t kAeadTagBytes         = 16;
+    static constexpr std::size_t kSealedOverheadBytes  = 24 + 16;
     // Asymmetric authenticated (Curve25519 + XSalsa20-Poly1305);
     // seckey cited by KeyStore entry name (use-not-export, §1.4).
     // These methods transitively gate on `keys()` — PANIC if SMS
@@ -778,7 +794,7 @@ now on `KeyStore` accessed via `secure().keys()`):
 - `with_seckey(name, callback)` — raw 32 bytes, use-not-export.
 - `with_seckey_z85(name, callback)` — Z85 40 chars, use-not-export.
 - `with_keypair_z85(name, callback)` — both halves.
-- `lookup_raw(name)` — HEP-0038 raw span.
+- `with_raw_key(name, callback)` — raw symmetric secret, use-not-export.
 - `has(name)`, `size()`.
 
 Full contract: HEP-CORE-0040 §5.2 (API surface preserved verbatim
@@ -884,17 +900,18 @@ operations that still lack it.
 | `keys().add_key_from_password(name, password, scope)` | Turn a password into a key (Argon2id) and keep it.  `scope` is what makes the same password yield a different key per vault — today, the role or hub uid.  Without it, one leaked password opens every vault on the machine. |
 | `keys().replace_key_from_password(name, password, scope)` | Same, but for a name that already exists.  Separate from `add_` on purpose: `add_` throws on a duplicate, so an identity key cannot be overwritten by accident.  Replacement has to say so. |
 | `keys().remove(name)` | Forget a key and wipe its memory. |
-| `RoleVault::load_identity_into(name)` / `HubVault::load_identity_into(name)` | Open the vault file and deposit the identity into the key store directly.  **This method is on the vault, not on this module** — it is listed here because it exists to satisfy P3.  Without it, the caller reads `secret_key()` and forwards it, which makes the caller a courier for no reason.  When it lands, `secret_key()` leaves the public surface. |
+| `RoleVault::open(path, uid, password, identity_name, …)` / `HubVault::open(…)` | Opening a vault deposits the identity into the key store under `identity_name` and returns metadata only.  **These are on the vault, not on this module** — listed here because they are what satisfies P3 for vault-held identities.  The secret goes disk → locked memory without becoming a value the caller could hold; per HEP-CORE-0035 §4.6.6 the vault object retains no secret after the call, so there is nothing left for a separate hand-off step to move. |
 
 **Doing a job with a key.**
 
 | Operation | What it does |
 |---|---|
-| `secretbox_encrypt_using(name, plaintext, out)` | Encrypt under a symmetric key.  **The nonce is generated inside and written into the output** — see §2.5.3. |
-| `secretbox_decrypt_using(name, sealed, out)` | Reverse.  Returns 0 if the data was tampered with or the key is wrong; callers must check. |
+| `aead_encrypt_using(name, plaintext, out, aad)` | Encrypt under a symmetric key.  **The nonce is generated inside and written into the output** — see §2.5.3.  `aad` is optional data that is NOT encrypted but IS covered by the authentication tag — see §2.5.3.1. |
+| `aead_decrypt_using(name, sealed, out, aad)` | Reverse.  Returns 0 if the data was tampered with, the `aad` does not match what was sealed, or the key is wrong; callers must check. |
 | `box_encrypt_using(name, peer_pubkey, nonce, plaintext, out)` | Encrypt to a specific peer.  Keeps an explicit nonce — the attach protocol owns its frame layout and needs to control it. |
 | `box_decrypt_using(name, peer_pubkey, nonce, ciphertext, out)` | Reverse. |
 | `arm_curve_server(sock, name)` / `arm_curve_client(sock, name, peer)` | Configure a socket with our identity.  Free functions in `curve_socket.hpp`, not methods on this module — but the same shape, and the proof it works.  These are where the §1.0 export exception lives. |
+| `keys().raw_key_matches_hex(name, presented)` | Constant-time check that a presented credential equals the raw key held under `name`.  Verifying a secret is a job like any other: the answer is one bit, and one bit is all that crosses the boundary.  See §2.5.3.2 for why it takes hex. |
 
 **Whole-file jobs.**  A file is a job, not a primitive, and treating it
 as one is what keeps the key out of the caller:
@@ -917,7 +934,7 @@ A nonce must never repeat for a given key.  Repeat one with XSalsa20 and
 the encryption fails catastrophically — not degrades, fails.
 
 Callers have no reason to choose one.  The sealed output already carries
-its nonce (`[nonce ‖ tag ‖ ciphertext]`), so the value is an internal
+its nonce (`[nonce ‖ ciphertext ‖ tag]`), so the value is an internal
 detail of the format.  Generating it inside means **a caller cannot reuse
 a nonce, because a caller cannot supply one.**
 
@@ -925,6 +942,61 @@ a nonce, because a caller cannot supply one.**
 there the bytes are a protocol frame whose layout another implementation
 must agree with, so the protocol owns the nonce.  Here the bytes are an
 opaque blob only we ever open.
+
+#### 2.5.3.1 Why the symmetric operation takes associated data
+
+Some formats need a part that is readable **without** the key.  A vault
+file is the worked case: its header records how the password becomes a
+key, and a reader must act on that before it can decrypt anything
+(HEP-CORE-0035 §4.6.6).
+
+Readable must not mean unprotected.  If the tag covered only the
+ciphertext, the encrypted part would be tamper-evident while the
+instructions steering the reader were not — a half-guarantee, and the
+kind that reads as safe.  `aad` closes it: the bytes are not encrypted,
+but they are covered by the same tag, so altering either the header or
+the ciphertext fails the open.
+
+This is why the operation is an AEAD rather than `crypto_secretbox`.
+Secretbox has no associated-data input; a format needing a
+readable-before-decryption header cannot be expressed with it.  The
+name says `aead_` because that is what it is — the earlier
+`secretbox_` name would have described a primitive the module no longer
+uses.
+
+Callers with nothing to authenticate outside the ciphertext pass no
+`aad` and are unaffected.
+
+#### 2.5.3.2 Why verifying a credential takes hex, not bytes
+
+`raw_key_matches_hex` looks like it has the encoding backwards.  The key
+store holds raw bytes; a comparison against raw bytes would be the
+obvious signature, and the caller could decode first.
+
+The obvious signature is the wrong one, and the reason is visible only
+when the check **succeeds**.  A credential arrives over the wire as
+text.  If the caller decodes it, the caller now holds the decoded value
+in a buffer it owns — and on a successful check, that value is the real
+secret.  The failure case is harmless; the success case hands the caller
+exactly the material this module exists to keep away from it.  A
+verification step that leaks the secret precisely when the secret is
+correct is not a verification step worth having.
+
+So the boundary moves out to the encoding.  The presented text crosses
+in, the decode happens inside into locked memory, the comparison is
+constant-time, the scratch is wiped, and one bit comes back.  The caller
+never holds the credential in any form it could be blamed for.
+
+The comparison is constant-time because the alternative leaks the
+secret one byte at a time: an attacker who can measure how long a
+rejection takes learns where the first mismatch was, and walks the
+credential out of the system guess by guess.  A length check *is*
+allowed to short-circuit — the length is not the secret.
+
+A false return never distinguishes absent name, wrong kind of entry,
+malformed hex, wrong length, or wrong value.  Each of those is a fact
+about our side that a caller presenting a guess has no business
+learning.
 
 ### 2.5.4 How a caller composes these
 
@@ -1059,35 +1131,40 @@ Shipped: `generate_and_add_identity`, `add_identity_from_z85`,
 `box_encrypt_using`, `box_decrypt_using`, `remove`, and the socket-arming
 helpers.
 
-Designed here, not yet built — **nine**: `add_random_key`,
-`add_key_from_password`, `replace_key_from_password`,
-`secretbox_encrypt_using`, `secretbox_decrypt_using`,
-`save_encrypted_file`, `load_encrypted_file`,
-`open_file_with_password`, and `load_identity_into` on the two vault
-types.
+Also shipped since: `add_random_key`, `add_key_from_password`,
+`replace_key_from_password`, `with_raw_key`, `aead_encrypt_using`,
+`aead_decrypt_using`, and `load_identity_into` on both vault types.
 
-Until they exist, the callers that need them fetch keys instead — which
-is why `vault_crypto` derives a key onto the stack and the two config
-loaders pass a secret through a `string_view`.  Those are consequences of
-the gap, not independent defects.
+**The raw-key door is shut, not merely unused.**  The raw-key
+`secretbox_encrypt` / `secretbox_decrypt` and the span-returning
+`lookup_raw` are gone — deleted, not deprecated.  Those were the entry
+points that made every courier in this section possible; the asymmetric
+side never had an equivalent, only ever exposing `box_*_using`, and that
+is exactly why it never grew one.
 
-**The end state is that the raw-key door is shut, not merely unused.**
-There is no public raw-key `box_encrypt` — the asymmetric side only ever
-exposed `box_*_using`, and that is why it never grew a courier.  The
-symmetric side still exposes `secretbox_encrypt` / `secretbox_decrypt`
-taking a key span, and *that* is what made every symptom above possible.
-Once the `_using` variants exist and callers move, those two become
-private — implementation detail of the named form, mirroring `box_*`.
+Leaving a weaker surface in place once its callers have moved only
+invites its return: an API offering both doors has not consolidated
+anything — it has two ways to do one job, and the unsafe one is shorter
+to type.  Migrating callers removes today's couriers; **removing the
+entry point is what stops tomorrow's.**
 
-This matters more than it sounds.  Migrating callers removes today's
-couriers; **removing the entry point is what stops tomorrow's.** An API
-that still offers the unsafe door has not consolidated anything — it has
-two ways to do one job, and the unsafe one is the shorter to type.
+No caller fetches a key in order to use it any more.  The two config
+loaders were the last, each reading a secret out of a vault and passing
+it onward through a `string_view`; both now name the key instead.
 
-`keys().lookup_raw` is in the same position and is the harder call: after
-the migration it has no production consumer, but it is also the only way
-to read a raw secret at all, and retiring it is a contract handoff rather
-than a deletion.  Decide it deliberately; do not let it drift.
+Designed here, not yet built: `save_encrypted_file`,
+`load_encrypted_file`, `open_file_with_password`, and
+`raw_key_matches_hex`.  The file operations turned out to need less than
+this section assumed — `vault_write` / `vault_read_secure` already were
+the file layer, so they took a key NAME instead of a password rather
+than being replaced.
+
+`load_identity_into` is shipped and scheduled to go.  Once a vault
+deposits its identity during `open()` itself (HEP-CORE-0035 §4.6.6) the
+vault object holds no secret afterwards, so a separate hand-off step has
+nothing left to move; §2.5.2 records the shape that replaces it.  This
+is a retirement, not a deletion — the capability moves, and the row
+above is where it lands.
 
 **A scope-bound key handle** (`ScopedKey` — removes its key on
 destruction) is a natural companion for keys that must not outlive a
@@ -1113,7 +1190,7 @@ functions folded here 2026-07-07:
 | `verify_blake2b(stored, data, len)` | `pylabhub::crypto::verify_blake2b` | data_block (slot integrity) |
 | `derive_pwhash_salt(out, domain)` | (new — replaces inline `crypto_generichash(salt, 16, uid, ...)` in vault_crypto) | vault_crypto (Argon2 salt) |
 | `bin2hex(hex, hex_max_len, bin, bin_len)` | `sodium_bin2hex` | hub_vault (admin token) |
-| `secretbox_encrypt` / `secretbox_decrypt` | `crypto_secretbox_easy` / `_open_easy` | vault_crypto (file-at-rest AEAD) |
+| `aead_encrypt_using(name, pt, out, aad)` / `aead_decrypt_using(name, sealed, out, aad)` | `crypto_aead_xchacha20poly1305_ietf_encrypt` / `_decrypt` under a name-cited key | vault_crypto (file at rest), admin_session (session-id seal) |
 | `box_encrypt_using(name, peer_pk, nonce, pt, out)` | `crypto_box_easy` under a name-cited seckey (Phase 4 SEC-Fold-2, 2026-07-07) | attach_protocol (Frame 2 encrypt, Frame 3 sign) |
 | `box_decrypt_using(name, peer_pk, nonce, ct, out)` | `crypto_box_open_easy` under a name-cited seckey | attach_protocol (Frame 2 verify, Frame 3 verify) |
 
@@ -1241,21 +1318,39 @@ in 10 years), the build fails loud with a clear message.
   Argon2 salt from a domain string.  See §3.1.
 - `kPwhashSaltBytes` — public constexpr, value 16.
 
-Only caller today: `vault_crypto::vault_derive_key`.
+Only caller today: `vault_crypto::vault_add_key_from_password`, which
+passes the cost explicitly rather than letting the primitive choose —
+the vault records the profile it wrote at, and a reader honours the
+file's, not the build's (HEP-CORE-0035 §4.6.6 VF-2).
 
-## 5. Symmetric encryption (secretbox — Category 1c — SHIPPED 2026-07-07)
+## 5. Symmetric encryption (AEAD — Category 1c)
 
 Surface (§2.1):
-- `secretbox_encrypt(out, out_max_len, plaintext, plaintext_len, nonce, key)`
-  — replaces `crypto_secretbox_easy`.  Returns bytes written on
-  success, 0 on failure.  Ciphertext includes MAC as 16-byte prefix.
-- `secretbox_decrypt(out, out_max_len, ciphertext, ciphertext_len, nonce, key)`
-  — replaces `crypto_secretbox_open_easy`.  Returns bytes written on
-  success, 0 on MAC failure or bad input.  Callers MUST check
-  return value.
-- Constants: `kSecretboxKeyBytes` (32), `kSecretboxNonceBytes` (24),
-  `kSecretboxMacBytes` (16).
-- Callers: `vault_crypto::vault_write` / `vault_read_secure`.
+- `aead_encrypt_using(key_name, plaintext, out, aad)` — wraps
+  `crypto_aead_xchacha20poly1305_ietf_encrypt`.  Generates the nonce
+  internally and emits `[nonce(24) ‖ ciphertext ‖ tag(16)]`.  Returns
+  bytes written on success, 0 on failure.
+- `aead_decrypt_using(key_name, sealed, out, aad)` — the reverse.
+  Returns bytes written on success; **0 if the tag fails, the `aad`
+  does not match what was sealed, or the key is wrong.**  Callers MUST
+  check — a 0 return is the sole authentication signal.
+- Constants: `kSymmetricKeyBytes` (32), `kAeadNonceBytes` (24),
+  `kAeadTagBytes` (16), `kSealedOverheadBytes` (40).
+- Callers: `vault_crypto::vault_write` / `vault_read_secure`,
+  `admin_session` seal / unseal.
+
+**The tag trails the ciphertext**, because that is where the AEAD's
+combined mode writes it.  `crypto_secretbox_easy` prepended its MAC,
+so the byte layout is not interchangeable with the pre-AEAD one — see
+HEP-CORE-0035 §4.6.6 for why the vault format is versioned.
+
+**Why not secretbox.**  Secretbox takes no associated data, so a format
+needing a header the reader must act on *before* decrypting cannot be
+expressed with it without leaving that header unauthenticated.  The
+raw-key `secretbox_encrypt` / `secretbox_decrypt` pair that used to
+occupy this section was deleted once its callers moved: it made the
+caller hold the key and choose the nonce, the two things §2.5 exists to
+remove.
 
 **Use-case boundary.**  Symmetric encryption is appropriate when
 the SAME party (or same process instance) is on both sides — e.g.
@@ -1336,7 +1431,7 @@ methods accessible via `secure().keys()`:
 | `with_seckey(name, callback)` | Raw 32-byte seckey via callback; view valid only inside callback (use-not-export). |
 | `with_seckey_z85(name, callback)` | Z85 seckey (40 ASCII) via callback; encoded on-the-fly, buffer sodium_memzero'd on return. |
 | `with_keypair_z85(name, callback)` | Both halves Z85 via callback. |
-| `lookup_raw(name) → span<const byte>` | HEP-CORE-0038 vault_load: raw bytes span. |
+| `with_raw_key(name, callback)` | Raw symmetric secret via callback; the span is valid only inside it, and the shared lock is held for its duration.  Replaced a span-returning `lookup_raw`, which could not promise either. |
 | `has(name)` / `size()` | Existence + count probes. |
 
 **LockedKey (HEP-CORE-0040 §6).**  Each entry owns a
@@ -1345,7 +1440,7 @@ methods accessible via `secure().keys()`:
 of KeyStore's `.cpp`; never exposed publicly (R7 resolution).
 
 **Concurrency (HEP-CORE-0040 §5.5).**  `pubkey` / `with_seckey` /
-`lookup_raw` / `has` / `size` take a shared lock (parallel reads
+`with_raw_key` / `has` / `size` take a shared lock (parallel reads
 OK); `add_identity` / `add_raw` / `remove` take exclusive.
 Callbacks must be prompt (µs) — no blocking I/O.
 
@@ -1379,8 +1474,8 @@ that reasoned about it.
 What this HEP owns is only the last row: the moment a secret stops
 being a file and becomes bytes in a process.  `vault_crypto` is the
 file layer and calls into §4 (`pwhash_argon2id`) and §5
-(`secretbox_encrypt`/`_decrypt`) for its crypto steps — a consumer
-of this module, not part of it.
+(`aead_encrypt_using`/`aead_decrypt_using`) for its crypto steps — a
+consumer of this module, not part of it.
 
 **Write-back asymmetry, recorded here because it constrains any
 future design.**  `HubVault` can be mutated and re-saved
@@ -1513,7 +1608,8 @@ settled by this section.
 
 **Vault at rest is two capabilities and they do not have the same
 platform story**, so they get separate rows.  The *encryption* —
-argon2id KDF plus secretbox AEAD — is portable and holds everywhere.
+argon2id KDF plus XChaCha20-Poly1305 AEAD — is portable and holds
+everywhere.
 The *permission enforcement* does not: on Windows `set_keyfile_mode`
 is a no-op returning `Applied`, permission verification returns
 `ok = true` with a platform-skip diagnostic rather than checking

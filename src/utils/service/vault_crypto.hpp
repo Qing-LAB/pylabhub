@@ -5,8 +5,12 @@
  * Used by HubVault and RoleVault. NOT a public header — do not include from
  * outside src/utils/service/.
  *
- * Vault binary format (written by vault_write, read by vault_read_secure):
- *   [nonce (24 bytes)] [MAC (16 bytes) || ciphertext]
+ * Vault binary format — specified in HEP-CORE-0035 §4.6.6, which is
+ * authoritative.  Written by vault_write, read by vault_read_secure.
+ *
+ * NOTE the tag is at the END: the AEAD's combined mode appends it,
+ * unlike `crypto_secretbox_easy` which prepended its MAC.  A reader
+ * built to the old shape will not open these files.
  *
  * Key derivation: Argon2id(password, salt=BLAKE2b-16(uid),
  *                           kVaultOpsLimit, kVaultMemLimit)
@@ -162,9 +166,9 @@ struct VaultKdfCost
     return false;
 }
 
-constexpr std::size_t kVaultKeyBytes = 32U;   // crypto_secretbox_KEYBYTES
-constexpr std::size_t kVaultNonceBytes = 24U; // crypto_secretbox_NONCEBYTES
-constexpr std::size_t kVaultMacBytes = 16U;   // crypto_secretbox_MACBYTES
+constexpr std::size_t kVaultKeyBytes = 32U;   // symmetric key
+constexpr std::size_t kVaultNonceBytes = 24U; // AEAD nonce
+constexpr std::size_t kVaultMacBytes = 16U;   // AEAD tag (APPENDED, not prefixed)
 constexpr std::size_t kVaultSaltBytes = 16U;  // crypto_pwhash_SALTBYTES
 
 /// Secret-section length per kind (VF-8).  A role carries its CurveZMQ

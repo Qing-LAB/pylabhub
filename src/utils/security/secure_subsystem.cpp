@@ -22,7 +22,8 @@
 #include <sodium.h>
 
 // ── ABI static asserts: sodium constants we've hardcoded in headers
-// (secure_subsystem.hpp `kSecretbox*Bytes` + `kPwhashSaltBytes`;
+// (secure_subsystem.hpp `kSymmetricKeyBytes` / `kAeadNonceBytes` /
+// `kAeadTagBytes` + `kPwhashSaltBytes`;
 // vault_crypto.hpp `kVault*` KDF params) must match libsodium's
 // actual values.  libsodium has held these stable for over a decade;
 // if they ever drift, this build breaks loudly with a clear message.
@@ -48,9 +49,10 @@ static_assert(pylabhub::utils::security::SecureSubsystem::kBoxNonceBytes == cryp
 static_assert(pylabhub::utils::security::SecureSubsystem::kBoxMacBytes == crypto_box_MACBYTES,
               "SMS kBoxMacBytes must equal sodium's crypto_box_MACBYTES");
 static_assert(pylabhub::utils::security::SecureSubsystem::kSealedOverheadBytes ==
-                  crypto_secretbox_NONCEBYTES + crypto_secretbox_MACBYTES,
-              "SMS kSealedOverheadBytes must equal the nonce + MAC that "
-              "secretbox_encrypt_using prepends");
+                  crypto_aead_xchacha20poly1305_ietf_NPUBBYTES +
+                      crypto_aead_xchacha20poly1305_ietf_ABYTES,
+              "SMS kSealedOverheadBytes must equal the nonce + tag that "
+              "aead_encrypt_using adds");
 
 // ── Vault file format (HEP-CORE-0035 §4.6.6) ─────────────────────────
 // VF-8: the secret section's length is fixed by vault kind and MUST be
@@ -595,9 +597,10 @@ bool SecureSubsystem::verify_blake2b(const std::array<std::uint8_t, 32> &stored,
 // cross the API boundary.  HEP-CORE-0043 §1.4 + §6.
 // ─────────────────────────────────────────────────────────────────
 
-std::size_t SecureSubsystem::secretbox_encrypt_using(std::string_view key_name,
-                                                     std::span<const std::uint8_t> plaintext,
-                                                     std::span<std::uint8_t> out)
+std::size_t SecureSubsystem::aead_encrypt_using(std::string_view key_name,
+                                                std::span<const std::uint8_t> plaintext,
+                                                std::span<std::uint8_t> out,
+                                                std::span<const std::uint8_t> aad)
 {
     const std::size_t need = plaintext.size() + kSealedOverheadBytes;
     if (out.size() < need)
@@ -609,37 +612,42 @@ std::size_t SecureSubsystem::secretbox_encrypt_using(std::string_view key_name,
     // see the header: a caller that cannot supply a nonce cannot repeat
     // one.  It is not secret, so it lives in `out` directly.
     std::uint8_t *const nonce = out.data();
-    ::randombytes_buf(nonce, kSecretboxNonceBytes);
+    ::randombytes_buf(nonce, kAeadNonceBytes);
 
     // `keys()` is the SMS gate — panics if SMS is not `Initialized`.
     // `with_raw_key` holds the shared lock across the callback, so the
     // key cannot be removed underneath sodium, and the bytes never
     // leave the module.
     std::size_t written = 0;
-    keys().with_raw_key(key_name,
-                        [&](std::span<const std::byte> key)
-                        {
-                            if (key.size() != kSecretboxKeyBytes)
-                                return;
-                            const int rc = ::crypto_secretbox_easy(
-                                out.data() + kSecretboxNonceBytes, plaintext.data(),
-                                plaintext.size(), nonce,
-                                reinterpret_cast<const std::uint8_t *>(key.data()));
-                            if (rc == 0)
-                                written = need;
-                        });
+    keys().with_raw_key(
+        key_name,
+        [&](std::span<const std::byte> key)
+        {
+            if (key.size() != kSymmetricKeyBytes)
+                return;
+            unsigned long long clen = 0;
+            // Combined mode: the tag is APPENDED to the ciphertext, not
+            // prepended.  `aad` is authenticated but not encrypted.
+            const int rc = ::crypto_aead_xchacha20poly1305_ietf_encrypt(
+                out.data() + kAeadNonceBytes, &clen, plaintext.data(), plaintext.size(),
+                aad.empty() ? nullptr : aad.data(), aad.size(), nullptr, nonce,
+                reinterpret_cast<const std::uint8_t *>(key.data()));
+            if (rc == 0 && clen == plaintext.size() + kAeadTagBytes)
+                written = need;
+        });
     if (written == 0)
     {
         // Do not leave a fresh nonce sitting in a buffer the caller may
         // mistake for a short-but-valid blob.
-        ::sodium_memzero(out.data(), kSecretboxNonceBytes);
+        ::sodium_memzero(out.data(), kAeadNonceBytes);
     }
     return written;
 }
 
-std::size_t SecureSubsystem::secretbox_decrypt_using(std::string_view key_name,
-                                                     std::span<const std::uint8_t> sealed,
-                                                     std::span<std::uint8_t> out)
+std::size_t SecureSubsystem::aead_decrypt_using(std::string_view key_name,
+                                                std::span<const std::uint8_t> sealed,
+                                                std::span<std::uint8_t> out,
+                                                std::span<const std::uint8_t> aad)
 {
     if (sealed.size() < kSealedOverheadBytes)
         return 0;
@@ -650,19 +658,21 @@ std::size_t SecureSubsystem::secretbox_decrypt_using(std::string_view key_name,
         return 0;
 
     const std::uint8_t *const nonce = sealed.data();
-    const std::uint8_t *const ciphertext = sealed.data() + kSecretboxNonceBytes;
-    const std::size_t clen = sealed.size() - kSecretboxNonceBytes;
+    const std::uint8_t *const ciphertext = sealed.data() + kAeadNonceBytes;
+    const std::size_t clen = sealed.size() - kAeadNonceBytes;
 
     std::size_t decoded = 0;
     keys().with_raw_key(key_name,
                         [&](std::span<const std::byte> key)
                         {
-                            if (key.size() != kSecretboxKeyBytes)
+                            if (key.size() != kSymmetricKeyBytes)
                                 return;
-                            const int rc = ::crypto_secretbox_open_easy(
-                                out.data(), ciphertext, clen, nonce,
+                            unsigned long long mlen = 0;
+                            const int rc = ::crypto_aead_xchacha20poly1305_ietf_decrypt(
+                                out.data(), &mlen, nullptr, ciphertext, clen,
+                                aad.empty() ? nullptr : aad.data(), aad.size(), nonce,
                                 reinterpret_cast<const std::uint8_t *>(key.data()));
-                            if (rc == 0)
+                            if (rc == 0 && mlen == plain_len)
                                 decoded = plain_len;
                         });
     return decoded;

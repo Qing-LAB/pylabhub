@@ -108,7 +108,7 @@ void vault_add_key_from_password(std::string_view key_name, const std::string &p
     namespace sec = pylabhub::utils::security;
     static_assert(kVaultSaltBytes == pylabhub::utils::security::SecureSubsystem::kPwhashSaltBytes,
                   "vault salt size must match SMS's Argon2id salt size");
-    static_assert(kVaultKeyBytes == pylabhub::utils::security::SecureSubsystem::kSecretboxKeyBytes,
+    static_assert(kVaultKeyBytes == pylabhub::utils::security::SecureSubsystem::kSymmetricKeyBytes,
                   "vault key size must match SMS's secretbox key size");
 
     // `replace_` rather than `add_`: re-opening a vault legitimately
@@ -128,14 +128,17 @@ void vault_add_key_from_password(std::string_view key_name, const std::string &p
 void vault_write(const fs::path &path, const std::string &json_payload, std::string_view key_name)
 {
     namespace sec = pylabhub::utils::security;
-    // No key appears in this function.  `secretbox_encrypt_using`
-    // generates the nonce internally and emits
-    // `[nonce(24) || MAC(16) || ciphertext]` — byte-for-byte the vault
-    // format this file used to assemble by hand, so the on-disk layout
-    // is unchanged and old vaults still open.
+    // No key appears in this function.  `aead_encrypt_using` generates
+    // the nonce internally and emits `[nonce(24) || ciphertext || tag(16)]`.
+    //
+    // THE TAG MOVED.  It used to be a 16-byte MAC in FRONT of the
+    // ciphertext, because `crypto_secretbox_easy` prepends it; the AEAD
+    // appends instead.  Vaults written before that switch do not open —
+    // intended, and the reason the format is versioned (HEP-CORE-0035
+    // §4.6.6).
     std::vector<uint8_t> vault_bytes(json_payload.size() +
                                      sec::SecureSubsystem::kSealedOverheadBytes);
-    const std::size_t written = sec::secure().secretbox_encrypt_using(
+    const std::size_t written = sec::secure().aead_encrypt_using(
         key_name,
         std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(json_payload.data()),
                                       json_payload.size()),
@@ -176,7 +179,7 @@ std::size_t vault_read_secure(const fs::path &path, std::string_view key_name,
     // No key here either — the whole file, nonce included, goes to the
     // named-key operation.  A 0 return IS the password check: the
     // Poly1305 tag either verifies or it does not.
-    const std::size_t decoded = sec::secure().secretbox_decrypt_using(
+    const std::size_t decoded = sec::secure().aead_decrypt_using(
         key_name, std::span<const std::uint8_t>(vault_bytes.data(), vault_bytes.size()),
         span_as_u8);
     if (decoded == 0)

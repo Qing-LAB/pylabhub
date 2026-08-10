@@ -77,6 +77,19 @@ almost certainly re-deriving one of them.
   socket and `AdminWireClient` — have landed, so the migration is now
   mechanical. **Task #52.**
 
+- **The admin token lives in plain heap in three places.** The vault's
+  own copy is wiped, but `HubAdminConfig::admin_token` and
+  `AdminService::Impl::admin_token` are both `std::string` and neither
+  is, so the token sits in never-zeroed heap for the life of the process
+  — and `AdminService::Impl::token_ok` (`admin_service.cpp:277`)
+  hand-rolls a constant-time loop when `SecureSubsystem::memcmp_ct`
+  already exists. Approved 2026-08-09 as part of the vault format arc:
+  the token is half the hub's secret section under HEP-CORE-0035 §4.6.6,
+  so it now arrives in locked memory and must not be copied back out.
+  Deposit as a named raw key, config carries the name, comparison moves
+  to `keys().raw_key_matches_hex` (HEP-CORE-0043 §2.5.2, rationale
+  §2.5.3.2). **Task #139.**
+
 - **Deferred with federation:** operator identity derived from the client
   CURVE pubkey needs admin to have its own ZAP domain plus a
   `known_admins` allowlist (HEP-0033 §11.0.6). Verified 2026-08-07:

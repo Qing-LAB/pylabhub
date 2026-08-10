@@ -114,7 +114,7 @@
 //   to be visible when `key_store.hpp` is #included.  We pull SMS's
 //   header here so consumers only need one #include for the
 //   `secure().keys().X()` idiom.  Consumers that touch other SMS
-//   surfaces (`secure().secretbox_encrypt_using()`, `secure().random_bytes()`,
+//   surfaces (`secure().aead_encrypt_using()`, `secure().random_bytes()`,
 //   `sodium_ready()`) may include `secure_subsystem.hpp` directly
 //   without relying on this transitive pull — it's a convenience,
 //   not a substitute for explicit includes at the SMS use site.
@@ -267,6 +267,18 @@ class PYLABHUB_UTILS_EXPORT KeyStore
     /// or role uid.  Without it, one leaked password would open every
     /// vault on the machine.
     ///
+    /// **`password` then `scope` — do not transpose them.**  They are
+    /// adjacent parameters of the same type, so the compiler cannot
+    /// help, and a transposition is close to invisible: the system
+    /// still works, round-trips, refuses a wrong password, and keeps
+    /// two vaults independent, so no existing test distinguishes it.
+    /// What changes is the argument for WHY it is safe — the Argon2id
+    /// stretching would be applied to the uid, which is public, while
+    /// the secret would only choose the salt.  Both values are still
+    /// required to derive the key, so it is not an immediate break,
+    /// but the design says the secret is what gets stretched, and code
+    /// that quietly disagrees with the design is a defect.
+    ///
     /// `opslimit` / `memlimit` are the caller's cost policy, defaulting
     /// to libsodium's INTERACTIVE pair.  They are parameters and not
     /// constants on purpose: whoever owns the data at rest owns how
@@ -282,7 +294,7 @@ class PYLABHUB_UTILS_EXPORT KeyStore
     /// silently give every vault the same salt.
     void add_key_from_password(std::string_view name, std::string_view password,
                                std::string_view scope,
-                               std::size_t byte_count = SecureSubsystem::kSecretboxKeyBytes,
+                               std::size_t byte_count = SecureSubsystem::kSymmetricKeyBytes,
                                unsigned long long opslimit =
                                    SecureSubsystem::kPwhashOpsLimitInteractive,
                                std::size_t memlimit = SecureSubsystem::kPwhashMemLimitInteractive);
@@ -299,7 +311,7 @@ class PYLABHUB_UTILS_EXPORT KeyStore
     /// the name resolves to nothing.
     void replace_key_from_password(std::string_view name, std::string_view password,
                                    std::string_view scope,
-                                   std::size_t byte_count = SecureSubsystem::kSecretboxKeyBytes,
+                                   std::size_t byte_count = SecureSubsystem::kSymmetricKeyBytes,
                                    unsigned long long opslimit =
                                        SecureSubsystem::kPwhashOpsLimitInteractive,
                                    std::size_t memlimit =
@@ -383,11 +395,11 @@ class PYLABHUB_UTILS_EXPORT KeyStore
     /// valid ONLY inside `use`.  Callback MUST be prompt
     /// (HEP-CORE-0040 §5.5).
     ///
-    /// This is what `secretbox_encrypt_using` / `secretbox_decrypt_using`
-    /// are built on: it is the reason those operations can promise the
-    /// key never leaves the module.  It is also the ONLY raw-secret
-    /// read — the span-returning `lookup_raw` was deleted precisely
-    /// because it could not make that promise.
+    /// This is what `aead_encrypt_using` / `aead_decrypt_using` are
+    /// built on: it is the reason those operations can promise the key
+    /// never leaves the module.  It is also the ONLY raw-secret read —
+    /// the span-returning `lookup_raw` was deleted precisely because it
+    /// could not make that promise.
     ///
     /// Throws `std::out_of_range` if `name` is absent, or if it names
     /// an identity keypair (use `with_seckey`, which knows to return

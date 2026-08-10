@@ -28,9 +28,9 @@ namespace
 namespace sec = pylabhub::utils::security;
 using json = nlohmann::json;
 
-constexpr std::size_t kKeyBytes = sec::SecureSubsystem::kSecretboxKeyBytes;     // 32
-constexpr std::size_t kNonceBytes = sec::SecureSubsystem::kSecretboxNonceBytes; // 24
-constexpr std::size_t kMacBytes = sec::SecureSubsystem::kSecretboxMacBytes;     // 16
+constexpr std::size_t kKeyBytes = sec::SecureSubsystem::kSymmetricKeyBytes;     // 32
+constexpr std::size_t kNonceBytes = sec::SecureSubsystem::kAeadNonceBytes; // 24
+constexpr std::size_t kMacBytes = sec::SecureSubsystem::kAeadTagBytes;     // 16
 
 /// Serialize facts to the sealed plaintext.  Short keys keep the sealed id
 /// compact; the format is private to this TU (only the hub ever reads it).
@@ -76,19 +76,27 @@ std::string seal_session_id(const AdminSessionFacts &facts)
 {
     const std::string pt = serialize_facts(facts);
 
-    // Sealed blob = nonce(24) || MAC(16) || ciphertext.  This function
-    // used to assemble that layout by hand — generate a nonce, fetch the
+    // Sealed blob = nonce(24) || ciphertext || tag(16).  This function
+    // used to assemble the layout by hand — generate a nonce, fetch the
     // key with `lookup_raw`, call the raw-key `secretbox_encrypt`, then
-    // memcpy the two pieces together.  `secretbox_encrypt_using` emits
-    // exactly the same bytes, so the sealed-id format is unchanged, and
-    // the key never leaves the security module.
+    // memcpy the pieces together — which put the MAC in FRONT of the
+    // ciphertext, because that is where secretbox writes it.
+    //
+    // The tag now trails, so these bytes are NOT the old bytes.  That
+    // costs nothing here and is worth stating plainly: the sealing key
+    // is minted per process (`add_random_key`) and never persisted, so
+    // no sealed id outlives the process that made it and there is
+    // nothing on disk or on the wire to stay compatible with.  A vault
+    // could not have absorbed the same change silently.
+    //
+    // The key never leaves the security module either way.
     std::string blob;
     blob.resize(pt.size() + sec::SecureSubsystem::kSealedOverheadBytes);
 
     std::size_t written = 0;
     try
     {
-        written = sec::secure().secretbox_encrypt_using(
+        written = sec::secure().aead_encrypt_using(
             kAdminSessionSealKeyName,
             std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(pt.data()),
                                           pt.size()),
@@ -106,7 +114,7 @@ std::string seal_session_id(const AdminSessionFacts &facts)
     }
     if (written != blob.size())
     {
-        LOGGER_ERROR("[admin_session] seal: secretbox_encrypt_using failed");
+        LOGGER_ERROR("[admin_session] seal: aead_encrypt_using failed");
         return {};
     }
 
@@ -133,7 +141,7 @@ std::optional<AdminSessionFacts> open_session_id(std::string_view sealed_hex)
     std::size_t got = 0;
     try
     {
-        got = sec::secure().secretbox_decrypt_using(
+        got = sec::secure().aead_decrypt_using(
             kAdminSessionSealKeyName,
             std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(blob.data()),
                                           blob.size()),
