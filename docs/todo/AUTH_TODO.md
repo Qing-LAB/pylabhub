@@ -145,12 +145,22 @@ HEP-CORE-0043 §2.5. Task #137. Prerequisite for the file/dir vault below.**
 > the key it opened with is still there under its name. At-rest format
 > unchanged, verified byte-for-byte.
 >
-> **Still open: steps 5, 6, 7.** 5 — re-express the ten test sites off
-> the secret accessors. 6 — `load_identity_into` on both vault types,
-> restructure `create`, delete the `secret_z85` members. 7 — make the
-> raw-key `secretbox_*` private and decide `lookup_raw`; **this is the
-> step that decides whether any of it holds**, since 1-6 move callers
-> without removing the ability.
+> **Step 5 done and most of 6 (`ce8c67e3`).** The two secret accessors
+> are DELETED — nothing outside the security module can obtain a
+> vault's secret half. `load_identity_into` replaced both production
+> couriers (`role_config`, `hub_config`), and all 14 test sites compare
+> secrets by fingerprint taken inside `with_seckey_z85` rather than
+> handling them.
+>
+> **Still open:** (a) the vault objects STILL hold the keypair in an
+> unlocked array for their lifetime — the accessor is gone but the
+> member is not, so `open()` must deposit during parse and store
+> nothing, and `create` must mint via `generate_and_add_identity`.
+> **That step changes what is inside the payload and is the first one
+> needing a migration story.** (b) step 7 — make the raw-key
+> `secretbox_*` private and decide `lookup_raw`; **this decides whether
+> any of it holds**, since every step so far moves callers without
+> removing the ability.
 >
 > **Step 2's carried item is closed (`2fbc54f7`).** `admin_session.cpp`
 > now seals by name. **`lookup_raw` and the raw-key `secretbox_*` have
