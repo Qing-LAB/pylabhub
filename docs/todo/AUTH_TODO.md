@@ -152,15 +152,25 @@ HEP-CORE-0043 §2.5. Task #137. Prerequisite for the file/dir vault below.**
 > secrets by fingerprint taken inside `with_seckey_z85` rather than
 > handling them.
 >
-> **Still open:** (a) the vault objects STILL hold the keypair in an
-> unlocked array for their lifetime — the accessor is gone but the
-> member is not, so `open()` must deposit during parse and store
-> nothing, and `create` must mint via `generate_and_add_identity`.
-> **That step changes what is inside the payload and is the first one
-> needing a migration story.** (b) step 7 — make the raw-key
-> `secretbox_*` private and decide `lookup_raw`; **this decides whether
-> any of it holds**, since every step so far moves callers without
-> removing the ability.
+> **Step 7 done (`072787e6`).** The raw-key `secretbox_encrypt` /
+> `secretbox_decrypt` and `KeyStore::lookup_raw` are DELETED, not
+> privatised. There is no longer any way for code outside the security
+> module to hold a symmetric key or to keep a raw span past a call.
+>
+> **Still open — one item.** The vault objects hold the keypair in an
+> unlocked array for their lifetime: the accessor is gone, the member is
+> not. Closing it means `open()` depositing during parse and storing no
+> member, and `create` minting inside the module instead of building the
+> secret through four copies of the JSON payload.
+>
+> **Design: `tech_draft/DRAFT_vault_payload_format_2026-08.md`.** Owner
+> ruled 2026-08-09 that this is a framework redesign with NO backward
+> compatibility — no converter, no dual-read path, dev vaults are
+> regenerated. The design also closes the HEP-0043 §8 gap by recording
+> the Argon2id profile in an authenticated cleartext header, which
+> forces the primitive from `secretbox` to XChaCha20-Poly1305 IETF (the
+> header must be readable BEFORE key derivation, and cleartext that
+> nothing authenticates is a new hole).
 >
 > **Step 2's carried item is closed (`2fbc54f7`).** `admin_session.cpp`
 > now seals by name. **`lookup_raw` and the raw-key `secretbox_*` have
