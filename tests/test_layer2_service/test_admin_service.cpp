@@ -463,6 +463,57 @@ TEST_F(AdminServiceTest, Console_AdminDisabled_NoAdmin)
     TearDownHub();
 }
 
+TEST_F(AdminServiceTest, Console_NonLoopbackEndpoint_RefusedAtStartup)
+{
+    // HEP-CORE-0033 §11.1: administration is local-machine only, because the
+    // admin token is a shared secret rather than a per-operator identity.  A
+    // non-loopback bind would silently promote that shared secret into a
+    // NETWORK credential — the one thing the token model does not support.
+    //
+    // Pin the refusal, not just the default.  Every other test in this file
+    // boots on 127.0.0.1 and so only proves the happy path; a hub that
+    // accepted 0.0.0.0 would pass all of them.  The design statement is
+    // "refuses", so that is what gets asserted.
+    const fs::path dir = unique_temp_dir("nonloopback");
+    paths_to_clean_.push_back(dir);
+    fs::create_directories(dir);
+    HubDirectory::init_directory(dir, "AdminTestHub");
+    json j;
+    {
+        std::ifstream f(dir / "hub.json");
+        j = json::parse(f);
+    }
+    j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+    j["admin"]["enabled"] = true;
+    j["admin"]["endpoint"] = "tcp://0.0.0.0:5601"; // all interfaces — refused
+    j["script"]["path"] = "";
+    {
+        std::ofstream f(dir / "hub.json");
+        f << j.dump(2);
+    }
+    auto cfg = HubConfig::load_from_directory(dir.string());
+    const_cast<HubAdminConfig &>(cfg.admin()).admin_token_name = seed_admin_token();
+
+    host_.emplace(std::move(cfg));
+    try
+    {
+        host_->startup();
+        FAIL() << "a hub bound to 0.0.0.0 for admin must refuse to start";
+    }
+    catch (const std::invalid_argument &ex)
+    {
+        // The message has to tell the operator what to do — a bare
+        // "invalid endpoint" would leave them guessing at a security
+        // boundary they cannot see.
+        const std::string msg = ex.what();
+        EXPECT_NE(msg.find("local"), std::string::npos)
+            << "refusal must say the plane is local-only; got: " << msg;
+        EXPECT_NE(msg.find("0.0.0.0"), std::string::npos)
+            << "refusal must quote the offending endpoint; got: " << msg;
+    }
+    TearDownHub();
+}
+
 // ── Output poll — RESPONSE_QUERY (HEP-CORE-0033 §11.0.4) ──────────────────────
 
 TEST_F(AdminServiceTest, Console_ResponseQuery_EmptyBufferReturnsEmpty)

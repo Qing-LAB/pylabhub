@@ -1,9 +1,36 @@
 #!/usr/bin/env python3
 """
-hubshell_client.py — Interactive admin client for pyLabHub.
+hubshell_client.py — OBSOLETE. Interactive admin client for pyLabHub.
 
-Connects to a running pylabhub-hubshell process via the admin ZMQ REP socket
-and provides a REPL for executing Python code inside the hub process.
+    ┌──────────────────────────────────────────────────────────────────┐
+    │  OBSOLETE — DOES NOT WORK AGAINST A CURRENT HUB.                 │
+    │  Kept as a reference for the REPL ergonomics only.  Needs a      │
+    │  full rewrite before it is useful again; do not treat anything   │
+    │  below as a description of the current protocol.                 │
+    └──────────────────────────────────────────────────────────────────┘
+
+This client targets `pylabhub-hubshell`, a server that was retired and, before
+that, never actually built.  It speaks a request shape — `{"token", "code"}`,
+where `code` is Python evaluated inside the hub — that no current hub answers.
+
+What replaced it, and what a rewrite has to do differently:
+
+  * The server is `AdminService`, which serves a TYPED method surface,
+    `{method, session_id, params}`, over a CURVE-encrypted ROUTER/DEALER
+    session (HEP-CORE-0033 §11).  There is no code-evaluation path, by
+    design — arbitrary code execution is not an admin method.
+  * The client must be a CURVE client that pins the hub's public key, and
+    must establish a session once with the admin token; every later message
+    carries a sealed session id instead of the token.
+  * The token is NOT something a human types.  It lives in the hub's
+    encrypted vault, and the operator's credential is the vault password —
+    the tool is expected to unlock the vault and move the token itself.  A
+    `--token` command-line option is the wrong shape for the current design.
+  * Administration is local-machine only, and the hub now refuses a
+    non-loopback `admin.endpoint` at startup (§11.1).
+
+The working reference implementation of the current wire protocol is the
+C++ `AdminWireClient` used by the test suite.
 
 Usage
 -----

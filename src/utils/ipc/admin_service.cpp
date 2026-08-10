@@ -69,6 +69,47 @@ json make_ok(json result)
     };
 }
 
+/// Is `endpoint` reachable only from this machine?  (HEP-CORE-0033 §11.1)
+///
+/// Administration is scoped to the local machine because the admin token is
+/// a SHARED SECRET: adequate for the person who already owns the machine,
+/// the vault, and the keys, and not adequate once it has to travel between
+/// hosts — a copied string cannot be attributed or revoked per person.
+///
+/// `inproc` and `ipc` are local by construction.  For `tcp` the host must be
+/// a loopback address; anything else would turn a local-only credential into
+/// a network credential, which is the situation this model does not support.
+/// An unrecognised transport is refused rather than assumed safe.
+[[nodiscard]] bool is_local_only_endpoint(std::string_view endpoint)
+{
+    if (endpoint.starts_with("inproc://") || endpoint.starts_with("ipc://"))
+        return true;
+    if (!endpoint.starts_with("tcp://"))
+        return false; // pgm, epgm, vmci, ws… — not local, and not expected here
+
+    std::string_view host = endpoint.substr(std::string_view("tcp://").size());
+
+    // IPv6 literals are bracketed: [::1]:5600.  Strip the brackets first so
+    // the port-trimming below cannot mistake a colon inside the address for
+    // the port separator.
+    if (host.starts_with("["))
+    {
+        const auto close = host.find(']');
+        if (close == std::string_view::npos)
+            return false; // malformed
+        host = host.substr(1, close - 1);
+    }
+    else if (const auto colon = host.rfind(':'); colon != std::string_view::npos)
+    {
+        host = host.substr(0, colon);
+    }
+
+    // 127.0.0.0/8 is loopback in its entirety, not just 127.0.0.1.
+    if (host.starts_with("127."))
+        return true;
+    return host == "::1" || host == "localhost";
+}
+
 } // namespace
 
 // ============================================================================
@@ -133,10 +174,27 @@ AdminService::AdminService(zmq::context_t &zmq_ctx, const config::HubAdminConfig
     impl_->endpoint = cfg.endpoint;
     impl_->admin_token_name = std::string(admin_token_name);
 
+    // §11.1: administration is scoped to the local machine.  Refuse at
+    // CONSTRUCTION, beside the token check below, rather than at bind:
+    // this is a configuration error, and the operator should learn about it
+    // when the hub starts, not from a thread that failed later.  Binding a
+    // non-loopback address would quietly promote a shared-secret credential
+    // into a network credential.
+    if (!is_local_only_endpoint(impl_->endpoint))
+    {
+        throw std::invalid_argument(
+            "AdminService: admin.endpoint '" + impl_->endpoint +
+            "' is not local.  Administration is local-machine only "
+            "(HEP-CORE-0033 §11.1) because the admin token is a shared secret, "
+            "not a per-operator identity.  Use a loopback address such as "
+            "tcp://127.0.0.1:5600, or disable the admin plane with "
+            "admin.enabled=false.");
+    }
+
     // §11.3 invariant: the admin token is MANDATORY — there is no
-    // token-less admin path (the CURVE transport in run() encrypts it, so
-    // a non-loopback bind is no longer a hazard, but the token is still
-    // the sole authority).
+    // token-less admin path.  The CURVE transport in run() encrypts it, and
+    // the endpoint is loopback per the check above, but the token remains
+    // the sole authority.
     //
     // An empty NAME is the "vault not unlocked" signal, exactly as an
     // empty token was.  The check is stronger than it looks: an unknown

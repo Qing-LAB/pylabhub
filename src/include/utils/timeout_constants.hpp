@@ -16,7 +16,7 @@
  * | Constant            | Value  | Purpose                                    |
  * |---------------------|--------|--------------------------------------------|
  * | kZmqPollIntervalMs  | 50 ms  | Peer/ctrl/data thread poll slice           |
- * | kAdminPollIntervalMs| 100 ms | AdminShell REP worker poll slice           |
+ * | kAdminPollIntervalMs| 100 ms | AdminService console worker poll slice     |
  * | kRetrySliceMs       | 500 ms | discover_producer retry sleep slice        |
  *
  * ## CMake overrides (build-time only)
@@ -57,7 +57,7 @@ namespace pylabhub
 /// Lifecycle shutdown timeout for lightweight modules (JsonConfig, crypto, HubConfig).
 inline constexpr int kShortTimeoutMs = PYLABHUB_SHORT_TIMEOUT_MS;
 
-/// Lifecycle shutdown timeout for heavyweight services (ZMQ, Python interpreter, AdminShell).
+/// Lifecycle shutdown timeout for heavyweight services (ZMQ, Python interpreter, AdminService).
 inline constexpr int kMidTimeoutMs = PYLABHUB_MID_TIMEOUT_MS;
 
 /// Reserved for long-running operations (not yet used in production paths).
@@ -67,7 +67,7 @@ inline constexpr int kLongTimeoutMs = PYLABHUB_LONG_TIMEOUT_MS;
 /// Fixed at 50 ms — reducing this increases CPU consumption with no protocol benefit.
 inline constexpr int kZmqPollIntervalMs = 50;
 
-/// Poll slice for the AdminShell REP worker and shutdown sleep loops.
+/// Poll slice for the AdminService console worker and shutdown sleep loops.
 /// Fixed at 100 ms — coarser than ZMQ poll; latency here is not user-visible.
 inline constexpr int kAdminPollIntervalMs = 100;
 

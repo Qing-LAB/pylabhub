@@ -1997,18 +1997,72 @@ and the reference for task #57.)
 
 ### 11.1 Transport
 
+*Amendment 2026-08-10 — administration is scoped to the local machine; see
+"Scope: local administration" below.*
+
 The admin plane is a **CURVE-secured operator console**: a persistent session
 over which the operator sends commands and output polls, and the hub returns
 replies — including the buffered output the operator pulls (§11.0.1 layer 6).
 It is CURVE-secured like every other hub interface (broker↔role, role↔role); it
 is not a plaintext exception.
 
-- **`ROUTER` socket** at `admin.endpoint` (default `tcp://127.0.0.1:5600`),
+#### Scope: local administration
+
+**Administering a hub is an operation performed on the machine the hub runs
+on.** That is a deliberate boundary, not a limitation waiting to be lifted by
+accident, and the rest of this section only makes sense in its light.
+
+The reason is what authorises an operator. The admin token is a **shared
+secret**: whoever presents it is the administrator. A shared secret is
+adequate when the person holding it is the person who owns the machine, the
+vault, and the keys — they could already do anything the token permits. It
+stops being adequate the moment it has to travel to another machine, because
+then it is a string being copied between hosts, and a copied string cannot be
+attributed to a person, revoked for one person, or prevented from being copied
+again.
+
+So the boundary is drawn where the reasoning holds: **the endpoint MUST be a
+loopback address.** A hub configured with any other bind address refuses to
+start. This is enforcement, not advice — an operator who binds `0.0.0.0`
+without meaning to would silently turn a local-only credential into a network
+credential, which is precisely the situation the token model does not support.
+
+**Why loopback TCP rather than a Unix socket.** A Unix domain socket with
+owner-only permissions would be stronger for a strictly local plane: the
+operating system would refuse the connection outright rather than requiring
+the caller to fail an authentication step. It is not chosen, because remote
+administration is a plausible future and TCP keeps that a change of *address
+and authorisation* rather than a change of *transport*. Loopback TCP means any
+account on the machine may attempt a connection and be refused by the token;
+a Unix socket would mean they could not connect at all. On a single-owner
+instrument that difference is immaterial, and it is recorded here so the
+trade is visible rather than assumed.
+
+**The accepted consequence.** Because the token lives in the hub's vault
+beside the broker's private key, anything able to obtain the token can also
+obtain the hub's identity. *Administering the hub and impersonating the hub
+are the same permission.* For a single-owner instrument this is acceptable —
+one person owns both. It is stated rather than glossed because it is the
+property that a reader would otherwise assume was designed away.
+
+**What invalidates this design.** Either of two changes retires the shared
+token in favour of per-operator identity: administration crossing a machine
+boundary, or more than one person needing distinguishable, individually
+revocable admin authority. The replacement is already the shape the rest of
+the system uses — an operator becomes a CURVE identity admitted by a
+`known_admins` allowlist held in the hub vault beside `known_roles`, gated by
+a ZAP domain of its own, exactly as roles are admitted today (§4.8, and the
+deferred refinement in §11.0.6). Recording the trigger here means that change
+is a pre-agreed extension of this design rather than a reversal of it.
+
+- **`ROUTER` socket** at `admin.endpoint` (default `tcp://127.0.0.1:5600`;
+  a non-loopback address is refused at startup, see "Scope" above),
   configured as a **`curve_server`** keyed with the hub's **broker CURVE
-  keypair** — the same server identity every role already trusts
-  (`HubVault::broker_curve_secret_key()` / `_public_key()`). The admin
+  keypair** — the same server identity every role already trusts. The admin
   transport reuses the hub's existing keypair; there is no separate admin
-  keypair. The operator connects a **`DEALER`** console that stays connected
+  keypair.  The socket is armed by citing the key by NAME
+  (`kHubIdentityName`); the hub's broker secret is never fetched to configure
+  it (HEP-CORE-0043 §2.5). The operator connects a **`DEALER`** console that stays connected
   for the life of the session. `ROUTER`/`DEALER` — not `REQ`/`REP` — because
   the operator pipelines many requests over the one session (commands
   interleaved with frequent output polls), which `DEALER` allows and strict
@@ -2018,7 +2072,9 @@ is not a plaintext exception.
   *server* to the operator — an impostor lacking the broker secret key fails
   the CURVE handshake — and **encrypts the entire exchange**, so the admin
   token (§11.3) and the session id (§11.0.5) never cross the wire in
-  cleartext, on loopback or network.
+  cleartext.  Encryption is required even though the endpoint is loopback:
+  the loopback interface is not private on a multi-user machine, and the
+  token is a bearer credential.
 - The admin socket is **not ZAP-gated**: client identity is not gatekept by
   key (any well-formed CURVE client obtains an encrypted channel; authority
   is the token at establishment, then the sealed session id per message,

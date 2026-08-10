@@ -9,7 +9,7 @@
  * with a typed, token-validated method surface.
  *
  * Phase 6.2a (this header) ships the **skeleton only** — REP socket,
- * run loop, token gate, localhost-bind enforcement, ThreadManager-
+ * run loop, token gate, local-endpoint enforcement, ThreadManager-
  * compatible run/stop pair, and a single built-in `ping` method that
  * proves the round-trip.  All §11.2 query/control methods return
  * `{"status":"error", "error":{"code":"not_implemented"}}` until
@@ -34,9 +34,12 @@
  *     `keys().raw_key_matches_hex(name, presented)`, constant-time
  *     (HEP-CORE-0043 §2.5.3.2).
  *     Mismatch/missing → `{"status":"error","error":{"code":"unauthorized"}}`.
- *   - Because the transport is encrypted, the token never crosses the wire
- *     in cleartext; loopback is the default bind (defense-in-depth) but a
- *     network bind is a safe operator opt-in.
+ *   - The endpoint MUST be local (loopback / ipc / inproc); a non-local
+ *     `admin.endpoint` is refused at construction.  Administration is
+ *     local-machine only because the token is a shared secret rather than a
+ *     per-operator identity — HEP-CORE-0033 §11.1 states the boundary and
+ *     what would retire it.  This used to read "a network bind is a safe
+ *     operator opt-in", which it is not under a bearer-token model.
  *
  * Lifetime invariant:
  *   - `AdminService` borrows the ZMQ context (caller-owned, typically
