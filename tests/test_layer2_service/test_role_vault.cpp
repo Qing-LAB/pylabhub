@@ -15,6 +15,8 @@
 #include "utils/logger.hpp"
 #include "utils/security/secure_subsystem.hpp"
 #include "binary_lifecycle.h"
+#include "utils/security/key_store.hpp"
+#include <array>
 #include <gtest/gtest.h>
 
 #include <cctype>
@@ -123,12 +125,50 @@ TEST_F(RoleVaultTest, Create_RestrictedPerms)
 #endif
 }
 
+// ── Secret-half checks without the secret leaving locked memory ─────
+//
+// These tests used to read `RoleVault::secret_key()`, a view into an
+// UNLOCKED member of the vault object.  That accessor is going away
+// (HEP-CORE-0043 §2.5), and the replacement is the production path:
+// deposit the identity into the KeyStore, then use the use-not-export
+// accessors.
+//
+// Comparisons are done on a BLAKE2b fingerprint computed INSIDE the
+// `with_seckey_z85` callback, so the secret is never copied into a
+// test-local string.  Comparing fingerprints proves the secret halves
+// match; it does not require either of them to be handled.
+namespace
+{
+namespace vsec = pylabhub::utils::security;
+
+std::array<std::uint8_t, 32> seckey_fingerprint(std::string_view key_name)
+{
+    std::array<std::uint8_t, 32> h{};
+    bool hashed = false;
+    vsec::secure().keys().with_seckey_z85(
+        key_name, [&](std::string_view sk)
+        { hashed = vsec::secure().compute_blake2b(h.data(), sk.data(), sk.size()); });
+    EXPECT_TRUE(hashed) << "no secret yielded for KeyStore entry '" << key_name << "'";
+    return h;
+}
+
+bool deposited_seckey_is_valid_z85(std::string_view key_name)
+{
+    bool ok = false;
+    vsec::secure().keys().with_seckey_z85(key_name,
+                                          [&](std::string_view sk) { ok = is_valid_z85_key(sk); });
+    return ok;
+}
+} // namespace
+
 TEST_F(RoleVaultTest, Create_ValidZ85Keypair)
 {
     RoleVault v = RoleVault::create(vault_path_, role_uid_, kPassword);
     EXPECT_TRUE(is_valid_z85_key(v.public_key()))
         << "public_key is not a valid 40-char Z85 key: '" << v.public_key() << "'";
-    EXPECT_TRUE(is_valid_z85_key(v.secret_key())) << "secret_key is not a valid 40-char Z85 key";
+    v.load_identity_into("rv:create");
+    EXPECT_TRUE(deposited_seckey_is_valid_z85("rv:create"))
+        << "secret half is not a valid 40-char Z85 key";
 }
 
 TEST_F(RoleVaultTest, Create_EmptyPassword)
@@ -148,7 +188,10 @@ TEST_F(RoleVaultTest, Open_CorrectPassword)
     RoleVault opened = RoleVault::open(vault_path_, role_uid_, kPassword);
 
     EXPECT_EQ(created.public_key(), opened.public_key());
-    EXPECT_EQ(created.secret_key(), opened.secret_key());
+    created.load_identity_into("rv:created");
+    opened.load_identity_into("rv:opened");
+    EXPECT_EQ(seckey_fingerprint("rv:created"), seckey_fingerprint("rv:opened"))
+        << "reopening the vault yielded a different secret half";
     EXPECT_EQ(created.role_uid(), opened.role_uid());
 }
 
@@ -198,10 +241,18 @@ TEST_F(RoleVaultTest, Encrypt_SecretsNotInPlaintext)
     const std::string raw_bytes((std::istreambuf_iterator<char>(ifs)),
                                 std::istreambuf_iterator<char>());
 
+    // Searching for the PUBLIC key is the sufficient check, and it needs
+    // no secret.  Both keys are values in the same JSON payload, so an
+    // unencrypted file exposes both — finding neither means the payload
+    // is not on disk in the clear.  The public key is not secret, so
+    // this test can hold it; the secret-key search this replaces
+    // required an accessor that is going away.
     EXPECT_EQ(raw_bytes.find(v.public_key()), std::string::npos)
-        << "Public key appears in plaintext in vault file";
-    EXPECT_EQ(raw_bytes.find(v.secret_key()), std::string::npos)
-        << "Secret key appears in plaintext in vault file";
+        << "Public key appears in plaintext in vault file — the payload is NOT encrypted, "
+           "which means the secret key is sitting there too";
+    EXPECT_EQ(raw_bytes.find(std::string_view{"secret_key"}), std::string::npos)
+        << "the JSON field name 'secret_key' is on disk in the clear — the payload was written "
+           "unencrypted, so the key beside it is exposed";
 }
 
 TEST_F(RoleVaultTest, Encrypt_DifferentUid_DifferentCiphertext)
@@ -310,13 +361,16 @@ TEST_F(RoleVaultTest, MoveConstructor_TransfersOwnership)
 {
     RoleVault v1 = RoleVault::create(vault_path_, role_uid_, kPassword);
     const std::string pk{v1.public_key()};
-    const std::string sk{v1.secret_key()};
     const std::string uid{v1.role_uid()};
+    v1.load_identity_into("rv:before_move");
+    const auto fp_before = seckey_fingerprint("rv:before_move");
 
     RoleVault v2(std::move(v1));
     EXPECT_EQ(v2.public_key(), pk);
-    EXPECT_EQ(v2.secret_key(), sk);
     EXPECT_EQ(v2.role_uid(), uid);
+    v2.load_identity_into("rv:after_move");
+    EXPECT_EQ(seckey_fingerprint("rv:after_move"), fp_before)
+        << "move did not carry the secret half across";
 }
 
 TEST_F(RoleVaultTest, DifferentUids_DifferentKeys)

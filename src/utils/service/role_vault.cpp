@@ -9,6 +9,7 @@
 #include "utils/security/curve_keypair.hpp"
 #include "utils/security/key_file_acl.hpp"
 #include "utils/security/secure_buffer.hpp"
+#include "utils/security/key_store.hpp"
 #include "utils/security/secure_subsystem.hpp"
 
 #include "vault_crypto.hpp"
@@ -218,10 +219,18 @@ std::string_view RoleVault::public_key() const noexcept
 {
     return std::string_view(pImpl->public_z85.data(), Impl::kKeyLen);
 }
-std::string_view RoleVault::secret_key() const noexcept
+void RoleVault::load_identity_into(std::string_view key_name) const
 {
-    return std::string_view(pImpl->secret_z85.data(), Impl::kKeyLen);
+    namespace sec = pylabhub::utils::security;
+    // The secret goes straight from this vault's storage into the
+    // KeyStore's locked allocation.  No caller sees it, and no new
+    // copy is made beyond the one `add_identity_from_z85` needs to
+    // build the packed 64-byte form.
+    sec::secure().keys().add_identity_from_z85(
+        key_name, std::string_view(pImpl->public_z85.data(), Impl::kKeyLen),
+        std::string_view(pImpl->secret_z85.data(), Impl::kKeyLen));
 }
+
 std::string_view RoleVault::role_uid() const noexcept
 {
     return pImpl->role_uid_;

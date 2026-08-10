@@ -531,16 +531,17 @@ bool RoleConfig::load_keypair(const std::string &password)
 
     {
         const auto vault = utils::RoleVault::open(vault_path, uid, password);
-        const auto pub = vault.public_key(); // string_view
-        const auto sec = vault.secret_key(); // string_view
 
-        // HEP-CORE-0040 §171: identity keypair lives in `secure().keys()`
-        // (LockedKey storage).  `add_identity_from_z85` is the single
-        // site (production + tests) where the (pub_z85 || sec_z85)
-        // layout is defined.
-        pylabhub::utils::security::secure().keys().add_identity_from_z85(
-            pylabhub::utils::security::kRoleIdentityName, pub, sec);
+        // HEP-CORE-0040 §171: the identity keypair lives in
+        // `secure().keys()` (LockedKey storage).  The vault deposits it
+        // directly — this function used to read `secret_key()` and
+        // forward the view, which made it a courier for a secret it had
+        // no other use for.
+        vault.load_identity_into(pylabhub::utils::security::kRoleIdentityName);
 
+        const auto pub =
+            pylabhub::utils::security::secure().keys().pubkey(
+                pylabhub::utils::security::kRoleIdentityName);
         std::fprintf(stderr, "[%s] Loaded vault from '%s' (pubkey: %.8s...)\n", tag,
                      vault_path.string().c_str(), pub.data());
     }

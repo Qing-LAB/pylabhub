@@ -336,19 +336,18 @@ bool HubConfig::load_keypair(const std::string &password)
 
     const auto vault = utils::HubVault::open(vault_path, uid, password);
     {
-        const auto pub = vault.broker_curve_public_key(); // string_view
-        const auto sec = vault.broker_curve_secret_key(); // string_view
-        const auto adm = vault.admin_token();             // string_view
+        const auto adm = vault.admin_token(); // string_view
 
-        // HEP-CORE-0040 §171: identity keypair lives in
-        // `pylabhub::utils::security::secure().keys()` (LockedKey storage,
-        // mlock'd + zero-on-destruct).  `add_identity_from_z85` is the
-        // single site (production + tests) where the (pub_z85 ||
-        // sec_z85) layout is defined; it packs into a SecureBuffer<80>
-        // and hands off, then KeyStore + SecureBuffer dtor both zero
-        // the source.  No `std::string` copy survives.
-        pylabhub::utils::security::secure().keys().add_identity_from_z85(
-            pylabhub::utils::security::kHubIdentityName, pub, sec);
+        // HEP-CORE-0040 §171: the identity keypair lives in
+        // `pylabhub::utils::security::secure().keys()` (LockedKey
+        // storage, mlock'd + zero-on-destruct).  The vault deposits it
+        // directly — this function used to read
+        // `broker_curve_secret_key()` and forward the view, which made
+        // it a courier for a secret it had no other use for.
+        vault.load_identity_into(pylabhub::utils::security::kHubIdentityName);
+
+        const auto pub = pylabhub::utils::security::secure().keys().pubkey(
+            pylabhub::utils::security::kHubIdentityName);
 
         // Admin token is a separate secret; for now it continues as a
         // std::string on AdminConfig (HEP-CORE-0040 §175 deferred —

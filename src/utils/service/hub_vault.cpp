@@ -10,6 +10,7 @@
 #include "utils/security/curve_keypair.hpp"
 #include "utils/security/key_file_acl.hpp"
 #include "utils/security/secure_buffer.hpp"
+#include "utils/security/key_store.hpp"
 #include "utils/security/secure_subsystem.hpp"
 
 #include "vault_crypto.hpp"
@@ -259,10 +260,16 @@ HubVault HubVault::open(const fs::path &vault_path, const std::string &hub_uid,
 // Accessors
 // ============================================================================
 
-std::string_view HubVault::broker_curve_secret_key() const noexcept
+void HubVault::load_identity_into(std::string_view key_name) const
 {
-    return std::string_view(pImpl->broker_secret_z85.data(), Impl::kSecretLen);
+    namespace sec = pylabhub::utils::security;
+    // Same as RoleVault: the broker keypair moves into locked memory
+    // without the caller ever holding the secret half.
+    sec::secure().keys().add_identity_from_z85(
+        key_name, std::string_view(pImpl->broker_public_z85.data(), Impl::kPublicLen),
+        std::string_view(pImpl->broker_secret_z85.data(), Impl::kSecretLen));
 }
+
 
 std::string_view HubVault::broker_curve_public_key() const noexcept
 {

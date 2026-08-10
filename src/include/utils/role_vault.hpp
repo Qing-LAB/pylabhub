@@ -111,10 +111,23 @@ class PYLABHUB_UTILS_EXPORT RoleVault
     /// valid until this RoleVault is destroyed.  Safe to distribute.
     std::string_view public_key() const noexcept;
 
-    /// CurveZMQ secret key (Z85, 40 chars).  Same view-lifetime
-    /// contract as `public_key()`.  Never write this to disk in
-    /// plaintext.
-    std::string_view secret_key() const noexcept;
+    /// Deposit this vault's identity keypair into the process KeyStore
+    /// under `key_name`, without the secret passing through the caller.
+    ///
+    /// This exists so a caller stops being a courier.  The pattern it
+    /// replaces — read `secret_key()`, hand the view to
+    /// `add_identity_from_z85` — made every caller responsible for a
+    /// secret it had no reason to hold, and it is the only reason that
+    /// accessor is still public.
+    ///
+    /// Use `secure().keys()` afterwards: `pubkey(key_name)` for the
+    /// public half, `with_seckey(key_name, ...)` / `with_seckey_z85`
+    /// for the secret one.  Those are the use-not-export accessors
+    /// (HEP-CORE-0040 §5.2); this method is what gets the key to them.
+    ///
+    /// Throws `std::runtime_error` if `key_name` is already present —
+    /// an identity is never silently replaced.
+    void load_identity_into(std::string_view key_name) const;
 
     /// Role UID stored in the vault payload (matches the role_uid used
     /// at create time).  Same view-lifetime contract.

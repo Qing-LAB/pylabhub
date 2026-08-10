@@ -18,6 +18,8 @@
 #include "utils/logger.hpp"
 #include "utils/security/secure_subsystem.hpp"
 #include "binary_lifecycle.h"
+#include "utils/security/key_store.hpp"
+#include <array>
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
@@ -179,6 +181,42 @@ TEST_F(HubVaultTest, CreateVaultFileHasRestrictedPermissions)
 #endif
 }
 
+// ── Secret-half checks without the secret leaving locked memory ─────
+//
+// These tests used to read `HubVault::broker_curve_secret_key()`, a view
+// into an UNLOCKED member of the vault object.  That accessor is going
+// away (HEP-CORE-0043 §2.5); the replacement is the production path —
+// deposit the identity into the KeyStore, then use the use-not-export
+// accessors.
+//
+// Comparisons use a BLAKE2b fingerprint computed INSIDE the
+// `with_seckey_z85` callback, so the secret is never copied into a
+// test-local string.  Equal fingerprints prove the secret halves match
+// without either being handled.
+namespace
+{
+namespace vsec = pylabhub::utils::security;
+
+std::array<std::uint8_t, 32> seckey_fingerprint(std::string_view key_name)
+{
+    std::array<std::uint8_t, 32> h{};
+    bool hashed = false;
+    vsec::secure().keys().with_seckey_z85(
+        key_name, [&](std::string_view sk)
+        { hashed = vsec::secure().compute_blake2b(h.data(), sk.data(), sk.size()); });
+    EXPECT_TRUE(hashed) << "no secret yielded for KeyStore entry '" << key_name << "'";
+    return h;
+}
+
+bool deposited_seckey_is_valid_z85(std::string_view key_name)
+{
+    bool ok = false;
+    vsec::secure().keys().with_seckey_z85(key_name,
+                                          [&](std::string_view sk) { ok = is_valid_z85_key(sk); });
+    return ok;
+}
+} // namespace
+
 TEST_F(HubVaultTest, CreateReturnsValidZ85Keypair)
 {
     HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
@@ -186,7 +224,8 @@ TEST_F(HubVaultTest, CreateReturnsValidZ85Keypair)
     EXPECT_TRUE(is_valid_z85_key(v.broker_curve_public_key()))
         << "broker_curve_public_key is not a valid 40-char Z85 key: '"
         << v.broker_curve_public_key() << "'";
-    EXPECT_TRUE(is_valid_z85_key(v.broker_curve_secret_key()))
+    v.load_identity_into("hv:create");
+    EXPECT_TRUE(deposited_seckey_is_valid_z85("hv:create"))
         << "broker_curve_secret_key is not a valid 40-char Z85 key";
 }
 
@@ -234,7 +273,10 @@ TEST_F(HubVaultTest, OpenWithCorrectPasswordReturnsMatchingSecrets)
     HubVault opened = HubVault::open(vault_path_, hub_uid_, kPassword);
 
     EXPECT_EQ(created.broker_curve_public_key(), opened.broker_curve_public_key());
-    EXPECT_EQ(created.broker_curve_secret_key(), opened.broker_curve_secret_key());
+    created.load_identity_into("hv:created");
+    opened.load_identity_into("hv:opened");
+    EXPECT_EQ(seckey_fingerprint("hv:created"), seckey_fingerprint("hv:opened"))
+        << "reopening the vault yielded a different broker secret half";
     EXPECT_EQ(created.admin_token(), opened.admin_token());
 }
 
@@ -314,10 +356,17 @@ TEST_F(HubVaultTest, VaultFileDoesNotContainPlaintextSecrets)
     const std::string raw_bytes((std::istreambuf_iterator<char>(ifs)),
                                 std::istreambuf_iterator<char>());
 
+    // The PUBLIC key search is the sufficient check and needs no secret:
+    // both keys are values in the same JSON payload, so an unencrypted
+    // file exposes both.  Finding neither means the payload is not on
+    // disk in the clear.  The secret-key search this replaces required
+    // an accessor that is going away.
     EXPECT_EQ(raw_bytes.find(v.broker_curve_public_key()), std::string::npos)
-        << "Broker public key appears in plaintext in hub.vault — encryption is not working!";
-    EXPECT_EQ(raw_bytes.find(v.broker_curve_secret_key()), std::string::npos)
-        << "Broker secret key appears in plaintext in hub.vault — encryption is not working!";
+        << "Broker public key appears in plaintext in hub.vault — the payload is NOT encrypted, "
+           "which means the broker secret key is sitting there too";
+    EXPECT_EQ(raw_bytes.find(std::string_view{"curve_secret_key"}), std::string::npos)
+        << "the JSON field name 'curve_secret_key' is on disk in the clear — the payload was "
+           "written unencrypted, so the key beside it is exposed";
     EXPECT_EQ(raw_bytes.find(v.admin_token()), std::string::npos)
         << "Admin token appears in plaintext in hub.vault — encryption is not working!";
 }
@@ -330,7 +379,8 @@ TEST_F(HubVaultTest, EncryptDecryptRoundTrip)
     HubVault created = HubVault::create(vault_path_, hub_uid_, kPassword);
 
     const std::string expected_pubkey{created.broker_curve_public_key()};
-    const std::string expected_seckey{created.broker_curve_secret_key()};
+    created.load_identity_into("hv:roundtrip_before");
+    const auto expected_fp = seckey_fingerprint("hv:roundtrip_before");
     const std::string expected_token{created.admin_token()};
 
     // Simulate a new process opening the vault (discard the in-memory object).
@@ -338,7 +388,8 @@ TEST_F(HubVaultTest, EncryptDecryptRoundTrip)
 
     EXPECT_EQ(reopened.broker_curve_public_key(), expected_pubkey)
         << "Public key changed after encrypt/decrypt roundtrip";
-    EXPECT_EQ(reopened.broker_curve_secret_key(), expected_seckey)
+    reopened.load_identity_into("hv:roundtrip_after");
+    EXPECT_EQ(seckey_fingerprint("hv:roundtrip_after"), expected_fp)
         << "Secret key changed after encrypt/decrypt roundtrip";
     EXPECT_EQ(reopened.admin_token(), expected_token)
         << "Admin token changed after encrypt/decrypt roundtrip";
@@ -458,7 +509,8 @@ TEST_F(HubVaultTest, Save_PreservesKeypairAndAdminToken)
     // token on an unrelated allowlist edit.
     HubVault v = HubVault::create(vault_path_, hub_uid_, kPassword);
     const std::string expected_pubkey{v.broker_curve_public_key()};
-    const std::string expected_seckey{v.broker_curve_secret_key()};
+    v.load_identity_into("hv:save_before");
+    const auto expected_fp = seckey_fingerprint("hv:save_before");
     const std::string expected_token{v.admin_token()};
 
     v.set_known_roles(sample_roster());
@@ -467,7 +519,8 @@ TEST_F(HubVaultTest, Save_PreservesKeypairAndAdminToken)
     HubVault reopened = HubVault::open(vault_path_, hub_uid_, kPassword);
     EXPECT_EQ(reopened.broker_curve_public_key(), expected_pubkey)
         << "save() changed the broker public key";
-    EXPECT_EQ(reopened.broker_curve_secret_key(), expected_seckey)
+    reopened.load_identity_into("hv:save_after");
+    EXPECT_EQ(seckey_fingerprint("hv:save_after"), expected_fp)
         << "save() changed the broker secret key";
     EXPECT_EQ(reopened.admin_token(), expected_token) << "save() changed the admin token";
 }
@@ -603,11 +656,14 @@ TEST_F(HubVaultTest, MoveConstructor_TransfersOwnership)
 {
     HubVault v1 = HubVault::create(vault_path_, hub_uid_, kPassword);
     const std::string pk{v1.broker_curve_public_key()};
-    const std::string sk{v1.broker_curve_secret_key()};
+    v1.load_identity_into("hv:before_move");
+    const auto fp_before = seckey_fingerprint("hv:before_move");
 
     HubVault v2(std::move(v1));
     EXPECT_EQ(v2.broker_curve_public_key(), pk);
-    EXPECT_EQ(v2.broker_curve_secret_key(), sk);
+    v2.load_identity_into("hv:after_move");
+    EXPECT_EQ(seckey_fingerprint("hv:after_move"), fp_before)
+        << "move did not carry the broker secret half across";
 }
 
 // ============================================================================
