@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstring>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 namespace pylabhub::admin
@@ -75,36 +76,42 @@ std::string seal_session_id(const AdminSessionFacts &facts)
 {
     const std::string pt = serialize_facts(facts);
 
-    std::array<std::uint8_t, kNonceBytes> nonce{};
-    sec::secure().random_bytes(std::span<std::uint8_t>(nonce.data(), nonce.size()));
+    // Sealed blob = nonce(24) || MAC(16) || ciphertext.  This function
+    // used to assemble that layout by hand — generate a nonce, fetch the
+    // key with `lookup_raw`, call the raw-key `secretbox_encrypt`, then
+    // memcpy the two pieces together.  `secretbox_encrypt_using` emits
+    // exactly the same bytes, so the sealed-id format is unchanged, and
+    // the key never leaves the security module.
+    std::string blob;
+    blob.resize(pt.size() + sec::SecureSubsystem::kSealedOverheadBytes);
 
-    std::vector<std::uint8_t> ct(pt.size() + kMacBytes);
-
-    const auto keyspan = sec::secure().keys().lookup_raw(kAdminSessionSealKeyName);
-    if (keyspan.size() != kKeyBytes)
+    std::size_t written = 0;
+    try
     {
-        LOGGER_ERROR("[admin_session] seal: sealing key absent/wrong size — "
+        written = sec::secure().secretbox_encrypt_using(
+            kAdminSessionSealKeyName,
+            std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(pt.data()),
+                                          pt.size()),
+            std::span<std::uint8_t>(reinterpret_cast<std::uint8_t *>(blob.data()), blob.size()));
+    }
+    catch (const std::out_of_range &)
+    {
+        // Absent key throws; the previous `lookup_raw` shape reported it
+        // as an empty return.  Preserve that contract — callers treat an
+        // empty string as "could not seal", and a throw here would
+        // escape into the admin request path.
+        LOGGER_ERROR("[admin_session] seal: sealing key absent — "
                      "ensure_session_seal_key() must run first");
         return {};
     }
-
-    const std::size_t written = sec::secure().secretbox_encrypt(
-        ct.data(), ct.size(), reinterpret_cast<const std::uint8_t *>(pt.data()), pt.size(),
-        std::span<const std::uint8_t, kNonceBytes>(nonce.data(), nonce.size()),
-        std::span<const std::uint8_t, kKeyBytes>(
-            reinterpret_cast<const std::uint8_t *>(keyspan.data()), kKeyBytes));
-    if (written == 0)
+    if (written != blob.size())
     {
-        LOGGER_ERROR("[admin_session] seal: secretbox_encrypt failed");
+        LOGGER_ERROR("[admin_session] seal: secretbox_encrypt_using failed");
         return {};
     }
 
-    // Sealed blob = nonce(24) || [MAC(16) || ciphertext].  Ciphertext is not
-    // secret (it is handed to the operator), so hex via format_tools is fine.
-    std::string blob;
-    blob.resize(kNonceBytes + written);
-    std::memcpy(blob.data(), nonce.data(), kNonceBytes);
-    std::memcpy(blob.data() + kNonceBytes, ct.data(), written);
+    // Ciphertext is not secret (it is handed to the operator), so hex via
+    // format_tools is fine.
     return pylabhub::format_tools::bytes_to_hex(blob);
 }
 
@@ -120,20 +127,22 @@ std::optional<AdminSessionFacts> open_session_id(std::string_view sealed_hex)
     if (blob.size() < kNonceBytes + kMacBytes)
         return std::nullopt; // too short to hold nonce + MAC
 
-    const std::size_t ct_len = blob.size() - kNonceBytes;
-
-    const auto keyspan = sec::secure().keys().lookup_raw(kAdminSessionSealKeyName);
-    if (keyspan.size() != kKeyBytes)
-        return std::nullopt;
-
-    std::vector<std::uint8_t> pt(ct_len - kMacBytes);
-    const std::size_t got = sec::secure().secretbox_decrypt(
-        pt.data(), pt.size(), reinterpret_cast<const std::uint8_t *>(blob.data() + kNonceBytes),
-        ct_len,
-        std::span<const std::uint8_t, kNonceBytes>(
-            reinterpret_cast<const std::uint8_t *>(blob.data()), kNonceBytes),
-        std::span<const std::uint8_t, kKeyBytes>(
-            reinterpret_cast<const std::uint8_t *>(keyspan.data()), kKeyBytes));
+    // The whole blob, leading nonce included, goes to the named-key
+    // operation — same bytes the hand-rolled path split apart.
+    std::vector<std::uint8_t> pt(blob.size() - sec::SecureSubsystem::kSealedOverheadBytes);
+    std::size_t got = 0;
+    try
+    {
+        got = sec::secure().secretbox_decrypt_using(
+            kAdminSessionSealKeyName,
+            std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(blob.data()),
+                                          blob.size()),
+            std::span<std::uint8_t>(pt.data(), pt.size()));
+    }
+    catch (const std::out_of_range &)
+    {
+        return std::nullopt; // no sealing key in this process
+    }
     if (got == 0)
         return std::nullopt; // MAC failure: tampered, or foreign-instance key
 

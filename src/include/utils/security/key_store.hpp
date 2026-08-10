@@ -111,7 +111,7 @@
 //   to be visible when `key_store.hpp` is #included.  We pull SMS's
 //   header here so consumers only need one #include for the
 //   `secure().keys().X()` idiom.  Consumers that touch other SMS
-//   surfaces (`secure().secretbox_encrypt()`, `secure().random_bytes()`,
+//   surfaces (`secure().secretbox_encrypt_using()`, `secure().random_bytes()`,
 //   `sodium_ready()`) may include `secure_subsystem.hpp` directly
 //   without relying on this transitive pull — it's a convenience,
 //   not a substitute for explicit includes at the SMS use site.
