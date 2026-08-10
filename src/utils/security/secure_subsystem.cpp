@@ -561,43 +561,6 @@ bool SecureSubsystem::verify_blake2b(const std::array<std::uint8_t, 32> &stored,
 // Collapsed from the retired `Crypto` sub-container 2026-07-06.
 // ─────────────────────────────────────────────────────────────────
 
-std::size_t SecureSubsystem::secretbox_encrypt(std::uint8_t *out, std::size_t out_max_len,
-                                               const std::uint8_t *plaintext,
-                                               std::size_t plaintext_len,
-                                               std::span<const std::uint8_t, 24> nonce,
-                                               std::span<const std::uint8_t, 32> key)
-{
-    if (out == nullptr)
-        return 0;
-    if (plaintext == nullptr && plaintext_len > 0)
-        return 0;
-    const std::size_t need = plaintext_len + kSecretboxMacBytes;
-    if (out_max_len < need)
-        return 0;
-    if (::crypto_secretbox_easy(out, plaintext, plaintext_len, nonce.data(), key.data()) != 0)
-        return 0;
-    return need;
-}
-
-std::size_t SecureSubsystem::secretbox_decrypt(std::uint8_t *out, std::size_t out_max_len,
-                                               const std::uint8_t *ciphertext,
-                                               std::size_t ciphertext_len,
-                                               std::span<const std::uint8_t, 24> nonce,
-                                               std::span<const std::uint8_t, 32> key)
-{
-    if (out == nullptr || ciphertext == nullptr)
-        return 0;
-    if (ciphertext_len < kSecretboxMacBytes)
-        return 0;
-    const std::size_t need = ciphertext_len - kSecretboxMacBytes;
-    if (out_max_len < need)
-        return 0;
-    if (::crypto_secretbox_open_easy(out, ciphertext, ciphertext_len, nonce.data(), key.data()) !=
-        0)
-        return 0;
-    return need;
-}
-
 // ─────────────────────────────────────────────────────────────────
 // Category 1c — Asymmetric box (crypto_box)
 // Seckey cited by KeyStore name (use-not-export) — bytes never

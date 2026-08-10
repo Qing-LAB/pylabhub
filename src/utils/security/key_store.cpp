@@ -268,7 +268,7 @@ KeyStore::~KeyStore()
 {
     // Drain in-flight readers (HEP-CORE-0040 §5.5).  Acquiring the
     // exclusive lock blocks until every active `with_seckey` callback
-    // / `pubkey` / `lookup_raw` call has released its shared lock.
+    // / `pubkey` / `with_raw_key` call has released its shared lock.
     // After this point, no consumer holds any reference into `pImpl`;
     // std::unordered_map dtor walks Entry map — each Entry's
     // unique_ptr<LockedKey> dtor runs sodium_memzero + sodium_free.
@@ -567,7 +567,7 @@ std::string_view KeyStore::pubkey(std::string_view name) const
     if (!it->second.is_identity)
     {
         throw std::out_of_range("KeyStore::pubkey: '" + std::string(name) +
-                                "' is a raw secret, not an identity keypair — use lookup_raw");
+                                "' is a raw secret, not an identity keypair — use with_raw_key");
     }
     // HEP-CORE-0040 §8.5.2 — return the Z85 cache (40 ASCII chars)
     // computed at add_identity time.  Pubkey is non-secret; the
@@ -588,7 +588,7 @@ void KeyStore::with_seckey(std::string_view name, std::function<void(std::string
     if (!it->second.is_identity)
     {
         throw std::out_of_range("KeyStore::with_seckey: '" + std::string(name) +
-                                "' is a raw secret, not an identity keypair — use lookup_raw");
+                                "' is a raw secret, not an identity keypair — use with_raw_key");
     }
 
     // HEP-CORE-0040 §8.5.2 (#291 follow-up, 2026-06-26) — return the
@@ -620,7 +620,7 @@ void KeyStore::with_seckey_z85(std::string_view name,
     if (!it->second.is_identity)
     {
         throw std::out_of_range("KeyStore::with_seckey_z85: '" + std::string(name) +
-                                "' is a raw secret, not an identity keypair — use lookup_raw");
+                                "' is a raw secret, not an identity keypair — use with_raw_key");
     }
 
     // HEP-CORE-0040 §8.5.2 — Z85 view of the seckey, encoded
@@ -664,7 +664,7 @@ void KeyStore::with_keypair_z85(
     if (!it->second.is_identity)
     {
         throw std::out_of_range("KeyStore::with_keypair_z85: '" + std::string(name) +
-                                "' is a raw secret, not an identity keypair — use lookup_raw");
+                                "' is a raw secret, not an identity keypair — use with_raw_key");
     }
 
     // Pubkey: non-secret cached Z85 (40 chars, lifetime = Entry).
@@ -715,19 +715,6 @@ void KeyStore::with_raw_key(std::string_view name,
     // blocks until this returns.  Same contract as with_seckey
     // (HEP-CORE-0040 §5.5) — callback MUST be prompt.
     use(it->second.key->bytes());
-}
-
-std::span<const std::byte> KeyStore::lookup_raw(std::string_view name) const
-{
-    std::shared_lock<std::shared_mutex> rlk(pImpl->mu);
-
-    const auto it = pImpl->store.find(std::string(name));
-    if (it == pImpl->store.end())
-    {
-        throw std::out_of_range("KeyStore::lookup_raw: name not present: '" + std::string(name) +
-                                "'");
-    }
-    return it->second.key->bytes();
 }
 
 void KeyStore::remove(std::string_view name)

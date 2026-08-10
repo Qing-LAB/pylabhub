@@ -124,9 +124,9 @@ TEST_F(KeyStoreTest, WithSeckey_OnMissing_Throws)
     ExpectWorkerOk(w);
 }
 
-TEST_F(KeyStoreTest, LookupRaw_OnMissing_Throws)
+TEST_F(KeyStoreTest, WithRawKey_OnMissing_Throws)
 {
-    auto w = SpawnWorker("key_store.lookup_raw_on_missing_throws", {unique_dir("raw_missing")});
+    auto w = SpawnWorker("key_store.with_raw_key_on_missing_throws", {unique_dir("raw_missing")});
     ExpectWorkerOk(w);
 }
 
@@ -188,10 +188,10 @@ TEST_F(KeyStoreTest, KeyFromPassword_SeparatesByScope)
 
 // ── Raw secret (HEP-0038) happy path ───────────────────────────────────────
 
-TEST_F(KeyStoreTest, AddRaw_LookupRawRoundtrip)
+TEST_F(KeyStoreTest, AddRaw_WithRawKeyRoundtrip)
 {
     auto w =
-        SpawnWorker("key_store.add_raw_then_lookup_raw_roundtrip", {unique_dir("raw_roundtrip")});
+        SpawnWorker("key_store.add_raw_then_with_raw_key_roundtrip", {unique_dir("raw_roundtrip")});
     ExpectWorkerOk(w);
 }
 
@@ -277,12 +277,13 @@ TEST_F(SecureSubsystemTest, ParallelInstanceCallsReturnSameReference)
 }
 
 // R3.1 — `secretbox_encrypt/decrypt` roundtrip (HEP-CORE-0043 §2.1 Cat 1c).
-TEST_F(SecureSubsystemTest, SecretboxEncryptDecrypt_Roundtrip)
-{
-    auto w = SpawnWorker("key_store.secretbox_encrypt_decrypt_roundtrip",
-                         {unique_dir("secretbox_roundtrip")});
-    ExpectWorkerOk(w);
-}
+// RETIRED 2026-08-09 — `SecureSubsystemTest.SecretboxEncryptDecrypt_Roundtrip`
+// tested the raw-key `secretbox_encrypt` / `secretbox_decrypt`, which no
+// longer exist.  Its contract was NOT dropped: encrypt-then-decrypt
+// round-trip and MAC-tamper-returns-0 are both asserted by
+// `KeyStoreTest.SecretboxUsing_SealsWithAFreshNonce` above, which
+// additionally covers a fresh nonce per seal, a foreign key, an absent
+// key, and a short output buffer.
 
 // R3.7 — deeper wrapper-API coverage (random distribution sanity,
 // memcmp_ct single-bit flips, memzero pattern verify).

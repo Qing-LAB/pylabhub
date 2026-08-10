@@ -324,7 +324,7 @@ int with_seckey_on_missing_throws(const char * /*tmpdir*/)
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
-int lookup_raw_on_missing_throws(const char * /*tmpdir*/)
+int with_raw_key_on_missing_throws(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]()
@@ -335,12 +335,13 @@ int lookup_raw_on_missing_throws(const char * /*tmpdir*/)
             bool threw_with_right_message = false;
             try
             {
-                (void)secure().keys().lookup_raw("missing-key-xyz");
+                secure().keys().with_raw_key("missing-key-xyz",
+                                             [](std::span<const std::byte>) {});
             }
             catch (const std::out_of_range &e)
             {
                 const std::string what = e.what();
-                EXPECT_NE(what.find("lookup_raw"), std::string::npos);
+                EXPECT_NE(what.find("with_raw_key"), std::string::npos);
                 EXPECT_NE(what.find("missing-key-xyz"), std::string::npos);
                 threw_with_right_message = true;
             }
@@ -349,7 +350,7 @@ int lookup_raw_on_missing_throws(const char * /*tmpdir*/)
             EXPECT_EQ(secure().keys().size(), 1u);
             EXPECT_TRUE(secure().keys().has("vault:x"));
         },
-        "key_store::lookup_raw_on_missing_throws", Logger::GetLifecycleModule(),
+        "key_store::with_raw_key_on_missing_throws", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -375,7 +376,7 @@ int pubkey_on_raw_entry_throws(const char * /*tmpdir*/)
                 const std::string what = e.what();
                 EXPECT_NE(what.find("pubkey"), std::string::npos);
                 EXPECT_NE(what.find("vault:script-secret"), std::string::npos);
-                EXPECT_NE(what.find("lookup_raw"), std::string::npos)
+                EXPECT_NE(what.find("with_raw_key"), std::string::npos)
                     << "message should hint at the correct API: " << what;
                 threw_with_right_message = true;
             }
@@ -384,13 +385,17 @@ int pubkey_on_raw_entry_throws(const char * /*tmpdir*/)
             // Entry still exists and is unchanged — pubkey throwing
             // must not have mutated the LockedKey storage.
             EXPECT_TRUE(secure().keys().has("vault:script-secret"));
-            const auto bytes = secure().keys().lookup_raw("vault:script-secret");
-            ASSERT_EQ(bytes.size(), 16u);
-            for (std::size_t i = 0; i < bytes.size(); ++i)
-            {
-                EXPECT_EQ(static_cast<unsigned>(bytes[i]), static_cast<unsigned>(0x40 + i))
-                    << "raw byte " << i << " corrupted by failed pubkey() call";
-            }
+            secure().keys().with_raw_key(
+                "vault:script-secret",
+                [](std::span<const std::byte> bytes)
+                {
+                    ASSERT_EQ(bytes.size(), 16u);
+                    for (std::size_t i = 0; i < bytes.size(); ++i)
+                    {
+                        EXPECT_EQ(static_cast<unsigned>(bytes[i]), static_cast<unsigned>(0x40 + i))
+                            << "raw byte " << i << " corrupted by failed pubkey() call";
+                    }
+                });
         },
         "key_store::pubkey_on_raw_entry_throws", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
@@ -418,7 +423,7 @@ int with_seckey_on_raw_entry_throws(const char * /*tmpdir*/)
                 const std::string what = e.what();
                 EXPECT_NE(what.find("with_seckey"), std::string::npos);
                 EXPECT_NE(what.find("vault:script-secret"), std::string::npos);
-                EXPECT_NE(what.find("lookup_raw"), std::string::npos);
+                EXPECT_NE(what.find("with_raw_key"), std::string::npos);
                 threw_with_right_message = true;
             }
             EXPECT_TRUE(threw_with_right_message);
@@ -426,12 +431,16 @@ int with_seckey_on_raw_entry_throws(const char * /*tmpdir*/)
 
             // Entry survives byte-for-byte.
             EXPECT_TRUE(secure().keys().has("vault:script-secret"));
-            const auto bytes = secure().keys().lookup_raw("vault:script-secret");
-            ASSERT_EQ(bytes.size(), 16u);
-            for (std::size_t i = 0; i < bytes.size(); ++i)
-            {
-                EXPECT_EQ(static_cast<unsigned>(bytes[i]), static_cast<unsigned>(0x80 + i));
-            }
+            secure().keys().with_raw_key("vault:script-secret",
+                                         [](std::span<const std::byte> bytes)
+                                         {
+                                             ASSERT_EQ(bytes.size(), 16u);
+                                             for (std::size_t i = 0; i < bytes.size(); ++i)
+                                             {
+                                                 EXPECT_EQ(static_cast<unsigned>(bytes[i]),
+                                                           static_cast<unsigned>(0x80 + i));
+                                             }
+                                         });
         },
         "key_store::with_seckey_on_raw_entry_throws", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
@@ -507,7 +516,16 @@ int add_random_key_mints_into_locked_memory(const char * /*tmpdir*/)
             secure().keys().add_random_key("mint:a", 32);
 
             ASSERT_TRUE(secure().keys().has("mint:a"));
-            auto a = secure().keys().lookup_raw("mint:a");
+
+            // Copy the first mint out inside its OWN callback, rather
+            // than nesting a second `with_raw_key` inside it: both take
+            // the same shared_mutex, and taking it twice on one thread
+            // can deadlock if a writer queues between them.  These are
+            // throwaway random test keys, so a test-local copy is fine.
+            std::vector<std::byte> a;
+            secure().keys().with_raw_key("mint:a",
+                                         [&](std::span<const std::byte> bytes)
+                                         { a.assign(bytes.begin(), bytes.end()); });
             ASSERT_EQ(a.size(), 32u) << "minted key is not the requested length";
 
             // Not all-zero.  A zeroed allocation would pass a
@@ -521,10 +539,14 @@ int add_random_key_mints_into_locked_memory(const char * /*tmpdir*/)
             // A second name yields different bytes.  Catches a stub, a
             // reused buffer, or a mis-seeded generator.
             secure().keys().add_random_key("mint:b", 32);
-            auto b = secure().keys().lookup_raw("mint:b");
-            ASSERT_EQ(b.size(), 32u);
-            EXPECT_FALSE(std::equal(a.begin(), a.end(), b.begin()))
-                << "two mints produced identical bytes";
+            secure().keys().with_raw_key(
+                "mint:b",
+                [&](std::span<const std::byte> b)
+                {
+                    ASSERT_EQ(b.size(), 32u);
+                    EXPECT_FALSE(std::equal(a.begin(), a.end(), b.begin()))
+                        << "two mints produced identical bytes";
+                });
 
             // Duplicate name is refused, not silently replaced —
             // overwriting a live key must never be accidental.
@@ -725,7 +747,7 @@ int key_from_password_separates_by_scope(const char * /*tmpdir*/)
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
-int add_raw_then_lookup_raw_roundtrip(const char * /*tmpdir*/)
+int add_raw_then_with_raw_key_roundtrip(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
         [&]()
@@ -740,12 +762,15 @@ int add_raw_then_lookup_raw_roundtrip(const char * /*tmpdir*/)
             for (std::size_t i = 0; i < raw.size(); ++i)
                 EXPECT_EQ(static_cast<unsigned>(raw[i]), 0u) << "raw byte " << i << " not zeroed";
 
-            auto out = secure().keys().lookup_raw("vault:s");
-            ASSERT_EQ(out.size(), 32u);
-            for (std::size_t i = 0; i < out.size(); ++i)
-                EXPECT_EQ(static_cast<unsigned>(out[i]), i + 1);
+            secure().keys().with_raw_key("vault:s",
+                                         [](std::span<const std::byte> out)
+                                         {
+                                             ASSERT_EQ(out.size(), 32u);
+                                             for (std::size_t i = 0; i < out.size(); ++i)
+                                                 EXPECT_EQ(static_cast<unsigned>(out[i]), i + 1);
+                                         });
         },
-        "key_store::add_raw_then_lookup_raw_roundtrip", Logger::GetLifecycleModule(),
+        "key_store::add_raw_then_with_raw_key_roundtrip", Logger::GetLifecycleModule(),
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
@@ -1174,46 +1199,6 @@ int secure_keys_returns_same_reference(const char * /*tmpdir*/)
         pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
 }
 
-/// R3.1 — the encryption verbs `secretbox_encrypt` / `secretbox_decrypt`
-/// are directly on `SecureSubsystem` (Category 1c post-Crypto-collapse,
-/// HEP-CORE-0043 §2.1).  Roundtrip: encrypt then decrypt yields the
-/// original plaintext; MAC-tamper detection returns 0.
-int secretbox_encrypt_decrypt_roundtrip(const char * /*tmpdir*/)
-{
-    return run_gtest_worker(
-        [&]()
-        {
-            namespace sec = pylabhub::utils::security;
-            std::array<std::uint8_t, sec::SecureSubsystem::kSecretboxKeyBytes> key{};
-            std::array<std::uint8_t, sec::SecureSubsystem::kSecretboxNonceBytes> nonce{};
-            sec::secure().random_bytes(std::span<std::uint8_t>(key));
-            sec::secure().random_bytes(std::span<std::uint8_t>(nonce));
-
-            const std::string plain = "attack at dawn";
-            std::array<std::uint8_t, 128> ct{};
-            const std::size_t written = sec::secure().secretbox_encrypt(
-                ct.data(), ct.size(), reinterpret_cast<const std::uint8_t *>(plain.data()),
-                plain.size(), std::span<const std::uint8_t, 24>(nonce),
-                std::span<const std::uint8_t, 32>(key));
-            ASSERT_EQ(written, plain.size() + sec::SecureSubsystem::kSecretboxMacBytes);
-
-            std::array<std::uint8_t, 128> pt{};
-            const std::size_t decoded = sec::secure().secretbox_decrypt(
-                pt.data(), pt.size(), ct.data(), written, std::span<const std::uint8_t, 24>(nonce),
-                std::span<const std::uint8_t, 32>(key));
-            ASSERT_EQ(decoded, plain.size());
-            EXPECT_EQ(std::string(reinterpret_cast<const char *>(pt.data()), decoded), plain);
-
-            // Tamper the MAC (first byte) — decrypt must refuse.
-            ct[0] ^= 0x01;
-            const std::size_t bad = sec::secure().secretbox_decrypt(
-                pt.data(), pt.size(), ct.data(), written, std::span<const std::uint8_t, 24>(nonce),
-                std::span<const std::uint8_t, 32>(key));
-            EXPECT_EQ(bad, 0u) << "MAC tamper should have failed decryption";
-        },
-        "key_store::secretbox_encrypt_decrypt_roundtrip", Logger::GetLifecycleModule(),
-        pylabhub::utils::security::SecureSubsystem::GetLifecycleModule());
-}
 
 /// R3.5 — `KeyStore::generate_and_add_identity` end-to-end.  Verifies
 /// (a) the returned Z85 pubkey is 40 chars, (b) `has(name)` becomes
@@ -1790,8 +1775,8 @@ int dispatch_key_store(int argc, char **argv)
         return pubkey_on_missing_throws(tmpdir);
     if (scenario == "with_seckey_on_missing_throws")
         return with_seckey_on_missing_throws(tmpdir);
-    if (scenario == "lookup_raw_on_missing_throws")
-        return lookup_raw_on_missing_throws(tmpdir);
+    if (scenario == "with_raw_key_on_missing_throws")
+        return with_raw_key_on_missing_throws(tmpdir);
     if (scenario == "pubkey_on_raw_entry_throws")
         return pubkey_on_raw_entry_throws(tmpdir);
     if (scenario == "with_seckey_on_raw_entry_throws")
@@ -1806,8 +1791,8 @@ int dispatch_key_store(int argc, char **argv)
         return secretbox_using_seals_with_a_fresh_nonce(tmpdir);
     if (scenario == "key_from_password_separates_by_scope")
         return key_from_password_separates_by_scope(tmpdir);
-    if (scenario == "add_raw_then_lookup_raw_roundtrip")
-        return add_raw_then_lookup_raw_roundtrip(tmpdir);
+    if (scenario == "add_raw_then_with_raw_key_roundtrip")
+        return add_raw_then_with_raw_key_roundtrip(tmpdir);
     if (scenario == "remove_makes_subsequent_lookup_throw")
         return remove_makes_subsequent_lookup_throw(tmpdir);
     if (scenario == "has_and_size_track_entries")
@@ -1830,8 +1815,6 @@ int dispatch_key_store(int argc, char **argv)
         return secure_keys_returns_same_reference(tmpdir);
     if (scenario == "sms_parallel_instance_calls")
         return sms_parallel_instance_calls(tmpdir);
-    if (scenario == "secretbox_encrypt_decrypt_roundtrip")
-        return secretbox_encrypt_decrypt_roundtrip(tmpdir);
     if (scenario == "generate_and_add_identity_roundtrip")
         return generate_and_add_identity_roundtrip(tmpdir);
     if (scenario == "with_seckey_z85_view_shape")

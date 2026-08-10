@@ -42,11 +42,14 @@
  *   contract as `with_seckey`.  This is what the symmetric
  *   `secretbox_*_using` operations are built on, and why they can
  *   promise the key never leaves the module.
- * - **Raw secrets, unscoped (`lookup_raw`)** — returned as
- *   `std::span<const std::byte>` into LockedKey-owned bytes, after the
- *   lock is dropped.  The weaker form; prefer `with_raw_key`.  Future
- *   script bindings (deferred — see task #136) must materialize into a
- *   script-owned buffer before returning to the script layer.
+ *
+ * There is deliberately NO span-returning raw accessor.  `lookup_raw`
+ * existed and was deleted on 2026-08-09: it handed back a span AFTER
+ * dropping the lock, so the bytes it pointed at could be freed by a
+ * concurrent `remove()`, and it let a caller keep a secret past the
+ * call.  Future script bindings (deferred — see task #136) must
+ * materialize into a script-owned buffer INSIDE a `with_raw_key`
+ * callback before returning to the script layer.
  *
  * # Storage layout
  *
@@ -66,7 +69,7 @@
  *
  * - **Read-mostly** (shared lock, parallel):
  *   `pubkey`, `with_seckey`, `with_seckey_z85`, `with_keypair_z85`,
- *   `with_raw_key`, `lookup_raw`, `has`, `size`.
+ *   `with_raw_key`, `has`, `size`.
  * - **Write** (exclusive lock):
  *   `add_identity`, `add_identity_from_z85`,
  *   `generate_and_add_identity`, `add_raw`, `add_random_key`,
@@ -84,8 +87,8 @@
  * syscalls beyond consuming the bytes).  A concurrent `remove(name)`
  * blocks until every in-flight callback for that name returns — this
  * is the security guarantee that "bytes become unreachable for every
- * caller as soon as `remove()` returns."  `lookup_raw` is outside that
- * guarantee: it returns after dropping the lock.
+ * caller as soon as `remove()` returns."  Every raw-secret read goes
+ * through a callback, so nothing is outside that guarantee.
  *
  * Full thread-safety contract: HEP-CORE-0040 §5.5.
  *
@@ -316,7 +319,7 @@ class PYLABHUB_UTILS_EXPORT KeyStore
     /// dtor.  Pubkeys are non-secret — fine to pass / log / copy
     /// (HEP-CORE-0036 §I10 + HEP-CORE-0040 §8.5.2).
     /// Throws `std::out_of_range` if `name` is absent or refers to a
-    /// raw entry (use `lookup_raw` for raw secrets).
+    /// raw entry (use `with_raw_key` for raw secrets).
     [[nodiscard]] std::string_view pubkey(std::string_view name) const;
 
     /// Invoke `use` with the **RAW 32-byte SECRET key**
@@ -333,7 +336,7 @@ class PYLABHUB_UTILS_EXPORT KeyStore
     /// into a stack buffer that is sodium_memzero'd before return.
     ///
     /// Shared lock is held for the callback's duration — concurrent
-    /// `with_seckey` / `pubkey` / `lookup_raw` calls run in parallel,
+    /// `with_seckey` / `pubkey` / `with_raw_key` calls run in parallel,
     /// but a concurrent `remove(name)` waits.  Callback MUST be
     /// prompt (microseconds): no blocking I/O, no syscalls beyond
     /// what's needed to consume the bytes (typically a single
@@ -375,15 +378,16 @@ class PYLABHUB_UTILS_EXPORT KeyStore
 
     /// Invoke `use` with a raw (non-identity) secret — the symmetric
     /// twin of `with_seckey`, and the scoped alternative to
-    /// `lookup_raw`.  The shared lock is held for the callback's
+    /// a span after the lock is dropped.  The shared lock is held for the callback's
     /// duration, so a concurrent `remove(name)` waits; the view is
     /// valid ONLY inside `use`.  Callback MUST be prompt
     /// (HEP-CORE-0040 §5.5).
     ///
     /// This is what `secretbox_encrypt_using` / `secretbox_decrypt_using`
     /// are built on: it is the reason those operations can promise the
-    /// key never leaves the module.  `lookup_raw` cannot make that
-    /// promise — it returns a span after dropping the lock.
+    /// key never leaves the module.  It is also the ONLY raw-secret
+    /// read — the span-returning `lookup_raw` was deleted precisely
+    /// because it could not make that promise.
     ///
     /// Throws `std::out_of_range` if `name` is absent, or if it names
     /// an identity keypair (use `with_seckey`, which knows to return
@@ -391,20 +395,6 @@ class PYLABHUB_UTILS_EXPORT KeyStore
     void with_raw_key(std::string_view name,
                       std::function<void(std::span<const std::byte>)> use) const;
 
-    /// Raw-secret access.  Live consumer: the admin-session seal key
-    /// (admin_session.cpp, HEP-CORE-0043 §7).  (A script-facing secret
-    /// store is NOT implemented and NOT designed — task #136; when it
-    /// lands, bindings MUST materialize the bytes into a script-owned
-    /// buffer, never pass the span to script code.)
-    /// Span lifetime is until `remove()` or KeyStore dtor — which is
-    /// exactly why handing spans out blocks key replacement.
-    ///
-    /// **Prefer `with_raw_key` or a `*_using(name, ...)` operation.**
-    /// This one returns after dropping the lock, so the span it hands
-    /// back can be invalidated by a concurrent `remove()`; the scoped
-    /// forms hold the shared lock for the callback and cannot be.
-    /// Throws `std::out_of_range` if `name` is absent.
-    [[nodiscard]] std::span<const std::byte> lookup_raw(std::string_view name) const;
 
     /// Existence check (tests; production uses `pubkey()` /
     /// `with_seckey()` and lets the throw signal).

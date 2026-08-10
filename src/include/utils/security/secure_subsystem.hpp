@@ -397,47 +397,16 @@ class PYLABHUB_UTILS_EXPORT SecureSubsystem
     //   - Ensure keys are exactly the byte length the primitive
     //     requires (`kSecretbox*Bytes` constants below).
 
-    /// XSalsa20-Poly1305 authenticated symmetric encryption
-    /// (wrapper for `crypto_secretbox_easy`).  Encrypts `plaintext`
-    /// under 32-byte `key` and 24-byte `nonce`.  Ciphertext contains
-    /// the MAC as the first 16 bytes (combined mode) — do NOT
-    /// interpret bytes 0..15 as data.  Writes
-    /// `plaintext.size() + kSecretboxMacBytes` bytes to `out`.
-    /// Returns the number of bytes written, 0 on failure.
-    ///
-    /// Nonce and key are statically-sized spans — the compiler
-    /// enforces exact 24-byte / 32-byte inputs at each call site
-    /// (Priority 7 of the SMS review — replaces the previous
-    /// unsafe `const std::uint8_t *nonce, const std::uint8_t *key`
-    /// signature that would silently read past a shorter buffer).
-    ///
-    /// **Prefer `secretbox_encrypt_using` below.**  This form makes the
-    /// caller hold the key, which is the courier problem HEP-CORE-0043
-    /// §2.5.1 exists to remove; it also makes the caller pick a nonce,
-    /// and a repeated nonce breaks XSalsa20 catastrophically.  The
-    /// vault used to be the caller here and no longer is.  Retained for
-    /// callers that must control the nonce because a peer parses the
-    /// frame — the same reason `box_*_using` keeps its explicit nonce.
-    [[nodiscard]] std::size_t secretbox_encrypt(std::uint8_t *out, std::size_t out_max_len,
-                                                const std::uint8_t *plaintext,
-                                                std::size_t plaintext_len,
-                                                std::span<const std::uint8_t, 24> nonce,
-                                                std::span<const std::uint8_t, 32> key);
-
-    /// XSalsa20-Poly1305 authenticated symmetric decryption
-    /// (wrapper for `crypto_secretbox_open_easy`).  Verifies the MAC
-    /// and decrypts into `out`.  Returns
-    /// `ciphertext_len - kSecretboxMacBytes` on success, 0 on MAC
-    /// failure or bad input.  A 0 return means the ciphertext was
-    /// tampered with or the key is wrong — CALLERS MUST CHECK.
-    ///
-    /// Nonce and key are statically-sized spans — same rationale as
-    /// `secretbox_encrypt` above.
-    [[nodiscard]] std::size_t secretbox_decrypt(std::uint8_t *out, std::size_t out_max_len,
-                                                const std::uint8_t *ciphertext,
-                                                std::size_t ciphertext_len,
-                                                std::span<const std::uint8_t, 24> nonce,
-                                                std::span<const std::uint8_t, 32> key);
+    // The raw-key `secretbox_encrypt` / `secretbox_decrypt` pair was
+    // DELETED on 2026-08-09.  They made the caller hold the key and
+    // pick the nonce — the two things HEP-CORE-0043 §2.5 exists to
+    // remove — and by then nothing used them: the vault and the admin
+    // session had both moved to the named-key forms below.  Leaving a
+    // working raw-key door open is how the callers come back.
+    //
+    // If a future caller genuinely must control the nonce because a
+    // peer parses the frame, that is what `box_*_using` is for: it
+    // keeps an explicit nonce AND still names its key.
 
     /// Encrypt `plaintext` under the **named** symmetric key, writing
     /// a self-contained sealed blob to `out`.
