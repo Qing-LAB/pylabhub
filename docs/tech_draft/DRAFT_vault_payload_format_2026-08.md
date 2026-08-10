@@ -21,7 +21,7 @@ Task: #137 final item. Tracker: `docs/todo/AUTH_TODO.md`.
 
 | Contract | Code today |
 |---|---|
-| VF-1 magic + version checked before deriving | no header exists at all — the file is nonce followed by ciphertext |
+| VF-1 magic + version checked before deriving | no header exists at all — the file is nonce followed by MAC-then-ciphertext |
 | VF-2 derive at the file's recorded cost | derives at the reader's own compile-time profile; a vault written under another fails **indistinguishably from a wrong password** |
 | VF-3 header authenticated as associated data | nothing to authenticate; `crypto_secretbox` has no associated-data input |
 | VF-6 secret never in the metadata document | the secret **is** a JSON value — `"secret_key": "..."` |
@@ -69,9 +69,9 @@ Bounding the work, so the diff does not sprawl:
 3. **Write path** — assemble metadata with no secret in it; copy the
    secret section directly out of the key store inside `with_seckey`.
 4. **Read path** — verify header (VF-1, VF-5), derive at the file's
-   profile (VF-2), decrypt with associated data (VF-3), validate
-   `metadata_len` (VF-4), deposit the secret section straight into the
-   key store (VF-7).
+   profile (VF-2), decrypt with associated data (VF-3), check the
+   plaintext covers the secret section (VF-4), deposit that section
+   straight into the key store (VF-7).
 5. **Delete** the old read/write path, the `secret_z85` members, and
    every place that treats the build's KDF profile as a read input.
 6. Regenerate development vaults.

@@ -1253,16 +1253,30 @@ memory that is freed without being wiped.
   ├─────────────────────────────────────────┤
   │ NONCE — cleartext              24 bytes │
   ├─────────────────────────────────────────┤
-  │ TAG                            16 bytes │
-  ├─────────────────────────────────────────┤
   │ CIPHERTEXT                              │
   │   ┌───────────────────────────────────┐ │
-  │   │ metadata_len       2 bytes, LE    │ │
-  │   │ metadata           JSON, no secret│ │
-  │   │ secret section     raw bytes      │ │
+  │   │ secret section   raw, fixed length│ │  ← offset 0
+  │   │ metadata         JSON, no secret  │ │  ← the remainder
   │   └───────────────────────────────────┘ │
+  ├─────────────────────────────────────────┤
+  │ TAG                            16 bytes │
   └─────────────────────────────────────────┘
 ```
+
+The tag follows the ciphertext; that is where the AEAD's combined mode
+places it.
+
+**There is no length field.**  The secret section's length is fixed by
+`vault_kind`, so it sits at a constant offset and the metadata is
+simply whatever follows.  A stored length would be derivable from the
+plaintext size, and a derivable field that is also stored is a field
+that can disagree with reality.  Its absence also means the metadata —
+which for a hub carries the whole known-roles allowlist — has no
+arbitrary size ceiling.
+
+The secret comes **first**, at a fixed offset, so that no variable-length
+field can move it.  A defect in metadata handling cannot relocate the
+secret.
 
 The header is not encrypted — a reader must act on it before it has a
 key — but it **is** covered by the authentication tag as associated
@@ -1274,10 +1288,28 @@ design that needs a readable-before-decryption header cannot use it.
 
 #### Secret sections
 
-| `vault_kind` | Metadata (JSON) | Secret section |
+| `vault_kind` | Secret section (at offset 0) | Metadata (JSON) |
 |---|---|---|
-| `role` | `role_uid`, `public_key` | secret key — 32 raw bytes |
-| `hub` | `broker.curve_public_key`, `known_roles` | broker secret key 32 ‖ admin token 32 |
+| `role` | secret key — 32 raw bytes | `role_uid`, `public_key` |
+| `hub` | broker secret key 32 ‖ admin token 32 | `broker.curve_public_key`, `known_roles` |
+
+#### Key-derivation profiles
+
+`kdf_profile` selects Argon2id cost.  The byte values are part of the
+format — a reader maps the byte to the cost, and MUST NOT substitute its
+own build-time choice:
+
+| Value | Name | Operations | Memory |
+|---|---|---|---|
+| `1` | interactive | 2 | 64 MiB |
+| `2` | sensitive | 4 | 1 GiB |
+| `3` | minimal | 1 | 8 KiB |
+
+`minimal` exists so an automated test environment can create throwaway
+vaults without Argon2id's memory cost exhausting a constrained runner.
+It is cryptographically weak and is a **write-time** choice only:
+because the value is recorded and honoured on read, a binary built to
+write `minimal` vaults still opens `sensitive` ones, and vice versa.
 
 Secrets are raw bytes, not Z85 text.  That is the form the key store
 holds (HEP-CORE-0040 §8.5.2), so the secret crosses the file boundary
@@ -1319,7 +1351,7 @@ sequenceDiagram
         Note over V: wrong password OR tampering —<br/>indistinguishable by design
     else tag verifies
         S-->>V: plaintext
-        V->>V: validate metadata_len, parse metadata
+        V->>V: check length covers the secret section, parse metadata
         V->>S: deposit raw secret section under a key name
         Note over V,S: secret goes locked-memory → locked-memory;<br/>no string is ever built
         V-->>R: metadata only
@@ -1334,9 +1366,9 @@ needs to: everything that uses the key names it (HEP-CORE-0043 §2.5).
 | | Invariant |
 |---|---|
 | **VF-1** | A reader MUST verify `magic` and `version` before deriving a key.  An unknown value is refused with an error naming the mismatch. |
-| **VF-2** | A reader MUST derive using the `kdf_profile` recorded in the file, never its own build-time setting.  A binary built for any profile can open a vault written under any other. |
+| **VF-2** | A reader MUST derive using the `kdf_profile` recorded in the file, never its own build-time setting.  A binary built for any profile can open a vault written under any other.  An unrecognised profile value is refused, not defaulted. |
 | **VF-3** | The header MUST be passed as associated data.  A file whose header has been altered MUST fail to open. |
-| **VF-4** | `metadata_len` MUST be validated against the decrypted length before it is used to slice.  A length that does not fit is a corrupt file, not a parse to attempt. |
+| **VF-4** | The decrypted plaintext MUST be at least the secret-section length for its `vault_kind` before any slicing.  A shorter plaintext is a corrupt file, not a parse to attempt. |
 | **VF-5** | `reserved` MUST be zero on read.  A non-zero byte means a writer this reader does not understand; refuse rather than guess. |
 | **VF-6** | The secret section MUST NOT appear in the metadata document, in any form or encoding. |
 | **VF-7** | Writing MUST take the secret directly from the key store; reading MUST deposit it directly into the key store.  Neither path may construct a string, an owning container, or any copy the security module does not wipe. |
