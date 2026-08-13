@@ -303,8 +303,8 @@ encryption is broken and nothing says so.
 
 The right-hand version has none of them, because none of those decisions
 belongs to the caller.  That is what P3 buys, and the gap between these
-two blocks is the work listed in §2.5.6 — with the four holes in §2.5.5
-to settle first.
+two blocks is the work listed in §2.5.6 — with the two open holes in
+§2.5.5 to settle first.
 
 ---
 
@@ -918,15 +918,30 @@ as one is what keeps the key out of the caller:
 
 | Operation | What it does |
 |---|---|
-| `save_encrypted_file(path, payload, key_name)` | Encrypt and write, at the right permissions, without following symlinks, replacing atomically. |
-| `load_encrypted_file(path, key_name)` | Read and decrypt. |
-| `open_file_with_password(path, password, scope, key_name)` | Derive the key, decrypt the file, and **on success keep the key** under `key_name`.  Later saves need no password. |
+| `vault_add_key_from_password(key_name, password, uid)` | Turn a password into the file's key and keep it under `key_name`.  `uid` is the domain separator, so the same password on two vaults yields unrelated keys. |
+| `vault_write(path, kind, metadata, key_name, fill_secret)` | Encrypt and write, at the right permissions, refusing to clobber.  The secret arrives through the `fill_secret` callback straight from the key store and is overwritten in place by its own ciphertext — it is never a value the caller holds. |
+| `vault_read(path, kind, uid, password, key_name, on_plaintext)` | Derive at the profile the FILE records, decrypt with the header as associated data, hand the secret section and metadata to `on_plaintext` while the plaintext is live, and **on success keep the derived key** under `key_name`.  Later saves need no password. |
 
-That last one is deliberately one call and not two.  **A successful
+An earlier revision of this table named three operations —
+`save_encrypted_file`, `load_encrypted_file`, `open_file_with_password`
+— that were designed here and never built.  They were not needed:
+`vault_write` and `vault_read` already were the file layer, so they took
+a key NAME instead of a password rather than being replaced.  The names
+are corrected here because §2.5.5 below states a constraint that binds
+any script-facing use of these calls, and a constraint attached to
+symbols that do not exist is one nobody will find.
+
+`vault_read` is deliberately one call and not two.  **A successful
 decrypt is the password check** — the authentication tag either verifies
 or it does not.  Splitting it into "check the password" and "derive the
 key" would invite deriving twice, and would invite someone to treat a
 check that passed a moment ago as still true.
+
+Both take a callback rather than returning a buffer, for the same
+reason: a returned payload is a value the caller owns, and for a vault
+that value is a private key.  The callback keeps the plaintext inside
+the module's buffer, which is zeroed on every exit path including a
+throwing callback.
 
 ### 2.5.3 Why the symmetric operations do not take a nonce
 
@@ -1008,16 +1023,16 @@ sequenceDiagram
     participant S as SecureSubsystem
     participant D as Disk
 
-    R->>S: open_file_with_password(path, pw, uid, "role.vault.key")
+    R->>S: vault_read(path, kind, uid, pw, "role.vault.key", on_plaintext)
     S->>D: read bytes
-    S->>S: derive key (Argon2id) into locked memory
+    S->>S: verify header, derive at the profile the FILE records
     S->>S: decrypt — tag verifies, so the password was right
-    S-->>R: payload  (key retained under "role.vault.key")
-    Note over R,S: password is now gone; the key stays for the process
+    S-->>R: on_plaintext(secret, metadata) — inside the module's buffer
+    Note over R,S: buffer zeroed on return; key retained under "role.vault.key"
 
-    R->>S: save_encrypted_file(path, new_payload, "role.vault.key")
+    R->>S: vault_write(path, kind, metadata, "role.vault.key", fill_secret)
     S->>S: encrypt using the retained key, fresh nonce
-    S->>D: atomic write, 0600
+    S->>D: write 0600, refusing to clobber
     S-->>R: ok
 ```
 
@@ -1026,38 +1041,27 @@ in the caller at all.
 
 ### 2.5.5 What this design does not cover — read before implementing
 
-Four holes, found by attacking the design rather than re-reading it.
-None is hypothetical; each has a concrete path to a real secret.
+Four holes were found by attacking the design rather than re-reading it.
+None was hypothetical; each had a concrete path to a real secret.  **Two
+have since been closed by the at-rest format work (HEP-CORE-0035
+§4.6.6); two remain open.**  The closed pair is recorded rather than
+deleted, because what closed them is a property of the format that a
+future change could undo without noticing.
 
-A note on P4 while reading these: **a vault object holds the secret in an
-ordinary heap array for its whole lifetime.**  `RoleVault::Impl` and
-`HubVault::Impl` keep fixed-size members and wipe them in the destructor
-— the good half — but the allocation is not locked, so it can be paged to
-disk while the object is alive.  Depositing into the key store is only a
-real fix if the secret never lands in a member on the way there.
+**0 — CLOSED. The secret was a value in a JSON document.**
 
-**0. The format is the cause, and it constrains the fix.**
+The payload used to be one JSON object with the private key as a string
+node inside it.  A JSON string node holds a `std::string`, so the secret
+became an unwiped heap allocation on the way in and on the way out —
+four of them, tracing a freshly generated key through vault creation.
+No amount of care at the call site could remove that.
 
-The vault payload is a JSON document and the private key is a value
-inside it.  A JSON string node holds a `std::string`, so the secret
-*must* become an unwiped heap string on the way in and on the way out.
-Tracing a freshly generated key through vault creation finds it in four
-such allocations before it reaches the one fixed-size member that is
-actually wiped.
-
-This is not a call-site problem and no amount of care at the call site
-removes it.  Either the secret stops being a JSON value — payload becomes
-non-secret metadata plus a raw key section — or it never reaches the
-caller at all: generate straight into the key store, and write the file
-by reading inside a scoped accessor directly into the output buffer, the
-same shape as arming a socket.  The second is preferable and is the one
-consistent with P3.
-
-Decide this before the file operations are written.  Every point below
-is downstream of it — and so is the at-rest format: the first option
-changes the file layout, the second leaves it untouched, so the choice
-determines whether the migration is a compatibility exercise or a format
-change.
+The format now separates a raw secret section from non-secret metadata,
+and V4 of §4.6.6 states the resulting rule: a secret is never a value in
+a structured document.  Both remedies this hole proposed were taken —
+the secret stopped being a JSON value *and* it stopped reaching the
+caller at all, arriving through a callback that writes straight into the
+output buffer where it is overwritten in place by its own ciphertext.
 
 *Why the blunt instrument is not available here.*  `mlockall(MCL_CURRENT
 | MCL_FUTURE)` would lock every page the process ever allocates and make
@@ -1070,36 +1074,27 @@ Region-scoped `mlock` is what `sodium_malloc` already does inside
 `LockedKey`, which is why "get the secret into the key store" is the
 answer rather than a process-wide switch.
 
-**1. The output side is half-solved, and the unsolved half is the one
-the new API would enshrine.**
+**1 — CLOSED. The write path materialised the key in a heap string.**
 
-Reading a vault was fixed already: `vault_read_secure` decrypts into a
-caller-supplied `SecureBuffer` span, and its own comment says *"no
-`std::string` materializes."* Both callers use it. That is the right
-shape and it exists.
+Reading was careful and writing, three lines away, was not: `vault_write`
+took a `const std::string &json_payload` and every call site passed
+`payload.dump()`, putting the role's or hub's private key in an ordinary
+heap string that nothing wiped.  This section warned that a new
+file-writing API taking a `std::string` payload would inherit the leak
+and bless it.
 
-Writing was not.  `vault_write` takes `const std::string &json_payload`,
-and all three call sites pass `payload.dump()` — which materialises the
-role's or hub's **private key** in an ordinary heap string that nothing
-wipes.  The read path is careful and the write path, three lines away,
-is not.
+Both sides now take callbacks and neither takes a payload string.  The
+related P4 concern in this section's original preamble is closed with
+it: `RoleVault` and `HubVault` no longer keep secret members at all, so
+there is no window in which a vault object holds key material — a
+stronger position than wiping one carefully.
 
-This lands directly on `save_encrypted_file(path, payload, key_name)`:
-**if `payload` is a `std::string`, the new API inherits the leak and
-blesses it.**  It must take a span, matching `vault_read_secure`.
-
-That is not free, and the difficulty should not be glossed: JSON
-serialisation naturally produces a `std::string`, so the caller needs a
-way to serialise into locked storage rather than dumping and copying.
-Wiping the temporary afterwards is not a fix — small-string optimisation
-and reallocation mean the bytes may have already been elsewhere.  **This
-needs deciding before the file operations are written, not after.**
-
-**2. Nothing in this design constrains which *file* a caller may touch.**
+**2 — OPEN. Nothing in this design constrains which *file* a caller may
+touch.**
 
 §10 places sandboxing in the binding layer, and it namespaces the **key
-name**.  It says nothing about the **path**.  `save_encrypted_file` and
-`open_file_with_password` both take an arbitrary path.
+name**.  It says nothing about the **path**.  `vault_write` and
+`vault_read` both take an arbitrary path.
 
 If a script-facing store is ever built on these calls, a script that can
 influence a path can address another role's vault, or the hub's.  The
@@ -1111,7 +1106,7 @@ store owns its directory and the caller names an entry within it, never
 a path.  Stated here because the constraint belongs with the operation,
 not with whichever binding is written first and remembered second.
 
-**3. `replace_key_from_password` is unrestricted, and it is a
+**3 — OPEN. `replace_key_from_password` is unrestricted, and it is a
 replacement primitive pointed at the key store.**
 
 `add_` throws on an existing name, so it cannot clobber anything.
@@ -1152,11 +1147,12 @@ No caller fetches a key in order to use it any more.  The two config
 loaders were the last, each reading a secret out of a vault and passing
 it onward through a `string_view`; both now name the key instead.
 
-Designed here, not built: `save_encrypted_file`,
-`load_encrypted_file`, `open_file_with_password`.  The file operations
-turned out to need less than this section assumed — `vault_write` /
-`vault_read` already were the file layer, so they took a key NAME
-instead of a password rather than being replaced.
+The whole-file jobs shipped as `vault_write` / `vault_read` /
+`vault_add_key_from_password`, and §2.5.2 now names them that way.  They
+turned out to need less than this section first assumed: `vault_write`
+and `vault_read` already were the file layer, so they took a key NAME
+instead of a password rather than being replaced by the three new
+operations that were originally designed here.
 
 `load_identity_into` is **gone**.  A vault deposits its identity
 during `open()` / `create()` (HEP-CORE-0035 §4.6.6) and holds no secret
@@ -1336,7 +1332,7 @@ Surface (§2.1):
   check — a 0 return is the sole authentication signal.
 - Constants: `kSymmetricKeyBytes` (32), `kAeadNonceBytes` (24),
   `kAeadTagBytes` (16), `kSealedOverheadBytes` (40).
-- Callers: `vault_crypto::vault_write` / `vault_read_secure`,
+- Callers: `vault_crypto::vault_write` / `vault_read`,
   `admin_session` seal / unseal.
 
 **The tag trails the ciphertext**, because that is where the AEAD's
@@ -1467,7 +1463,7 @@ that reasoned about it.
 | Where the vault lives, filename convention, placement security — role side | **HEP-CORE-0024 §3.4, §3.4.1** |
 | Where the vault lives, keygen, path resolution, placement security — hub side | **HEP-CORE-0033 §6.5, §7.1, §7.2** |
 | On-disk file ACLs protecting the container | **HEP-CORE-0035 §4.6** — and *only* this; §4.6 states that cipher details are out of its scope |
-| Encrypted file format — layout, KDF, AEAD, parameters | **No HEP owns this.**  It is specified in the file-level comment of `src/utils/service/vault_crypto.hpp`: `[nonce 24][MAC 16 ‖ ciphertext]`, key = Argon2id(password, salt=BLAKE2b-16(uid), opslimit, memlimit) |
+| Encrypted file format — layout, KDF, AEAD, parameters | **HEP-CORE-0035 §4.6.6.**  Layout is `[header 12][nonce 24][ciphertext][tag 16]`; the header is cleartext but authenticated as associated data, and records the KDF cost profile so a reader never assumes its own build settings match the writer's |
 | Payload contents (the `known_roles` allowlist) + the operator CLI that edits them | **HEP-CORE-0035 §4.8** |
 | The keys once loaded OUT of the vault and into memory | **§7 of this HEP** |
 
@@ -1484,22 +1480,24 @@ future design.**  `HubVault` can be mutated and re-saved
 write-once.  Anything proposing to store additional material in a
 role's vault must first answer how write-back works — see §10.
 
-**The at-rest format has no design-authority owner.**  Noted rather
-than dramatised: the format is documented *thoroughly*, but only in
-a source-file comment, and the dangerous knob is build-gated.  The
-KDF cost parameters are selected at COMPILE TIME — INTERACTIVE by
-default, SENSITIVE under `-DPYLABHUB_VAULT_HIGH_SECURITY`, MIN under
-`-DPYLABHUB_VAULT_TEST_KDF` (which `tests/CMakeLists.txt` sets only
-when `BUILD_TESTS=ON` *and* CI is detected, so production builds
-cannot reach it).  A vault written under one parameter set **cannot
-be opened under another**, and the file carries no marker recording
-which set wrote it — so a mismatch surfaces as a MAC failure that is
-indistinguishable from a wrong password.  The source header warns
-operators explicitly; the format simply cannot self-diagnose.
-Two things follow, neither urgent: an at-rest compatibility contract
-should have a design owner rather than living only beside the code
-that implements it, and a self-describing header would turn a
-confusing failure into a clear one.
+**The at-rest format is self-describing, and that closes a failure mode
+this section used to warn about.**  The KDF cost parameters are still
+selected at COMPILE TIME — INTERACTIVE by default, SENSITIVE under
+`-DPYLABHUB_VAULT_HIGH_SECURITY`, MIN under `-DPYLABHUB_VAULT_TEST_KDF`
+(which `tests/CMakeLists.txt` sets only when `BUILD_TESTS=ON` *and* CI
+is detected, so production builds cannot reach it).  What changed is
+that the **file records which profile wrote it**, and a reader derives
+at the file's recorded cost rather than at its own build's.  A vault
+written under one parameter set therefore opens under another build,
+and the three outcomes a reader cares about — not a vault, unknown
+writer, wrong password — are distinguishable instead of collapsing into
+one indistinguishable MAC failure.
+
+This section previously argued that the format had no design-authority
+owner and that a self-describing header would turn a confusing failure
+into a clear one.  Both were true when written and neither is now:
+HEP-CORE-0035 §4.6.6 owns the format, and its V3 promise is exactly the
+self-description that was being asked for.
 
 ## 9. Wire authentication protocols
 
@@ -1573,6 +1571,19 @@ Stated explicitly because the tempting shortcut — teaching the
 module about roles so it can sandbox centrally — would put policy
 inside a mechanism module and give it a reason to know who is
 calling it.  It must not learn that.
+
+**Namespacing the name is only half the sandbox.  The other half is
+that a script never supplies a path.**  The file operations
+(`vault_write`, `vault_read`) take an arbitrary path, and the file is
+where the secrets are — so a script that can influence a path addresses
+another role's vault, or the hub's, and the key-name namespace above
+becomes irrelevant.  Whatever exposes storage to scripts owns its own
+directory and accepts an ENTRY name within it, never a path.
+
+This is the same constraint §2.5.5 records against the named-key
+operations, repeated here rather than cross-referenced because this is
+the section someone reads before writing a binding, and a rule found
+only next to the operation is a rule remembered second.
 
 **Persistent script secrets are NOT designed and NOT built.**  No
 `vault_save` / `vault_load` surface exists anywhere in the tree.

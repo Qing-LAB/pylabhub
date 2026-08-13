@@ -298,7 +298,7 @@ indirect call paths.  Examples seen in this repo:
   spell `pull_from` / `push_to` (the canonical names HEP-CORE-0040
   §8.4 always wanted).
 - A `build_tx_queue` requirement change (now needs `"role_identity"`
-  in KeyStore) broke `RoleApiFlexzoneTest.ZmqTxNull` which constructs
+  in KeyStore) broke `RoleApiFlexzoneTest.ZmqTx_NoFlexzone_ArmsCurve` which constructs
   a `RoleAPIBase` directly without the new setup.
 
 Neither test file was edited as part of the lib change; both depended
@@ -1845,6 +1845,51 @@ For an inventory of compliance violations currently being swept, see
 5. **Test edge cases:** Empty inputs, null pointers, boundary values
 6. **Clean up resources:** Use fixtures for proper setup/teardown
 
+### Bringing a data queue up in a test
+
+**Never call `queue->start()`.** Call `activate(queue)` from
+`tests/test_framework/queue_activation.h`.
+
+A queue leaves its constructor in `Standby`, and `start()` refuses a
+queue that has not reached `Configured` (HEP-CORE-0036 §6.7.1). That
+refusal is the admission contract, not an obstacle: every data socket
+here is CURVE-authenticated, and *who a queue may talk to* is the
+broker's decision. It arrives as REG_ACK / CONSUMER_REG_ACK and is
+installed by `apply_master_approval`, which then arms the socket.
+
+An L2 test has no broker and does not need one. `apply_master_approval`
+takes a JSON object; an empty one is an ACK that names no peers. That is
+a stub of the master's **answer**, not a stub of the broker — the queue
+runs its real transition — so it does not breach the no-mocks rule.
+
+```cpp
+auto q = ZmqQueue::create_reader(ChannelTopology::FanIn, std::move(rx));
+ASSERT_TRUE(activate(*q));            // Standby → Configured → Active
+```
+
+Pass a populated ACK instead when the test cares about the peers — the
+`TopologyFactory_*` tests hand it a real `producers` /
+`initial_allowlist` array.
+
+**One topology needs a second step.** A fan-in producer (dialing PUSH)
+stops at `DialDeferred` after approval, because connecting would start
+the CURVE handshake before the consumer has installed its key, and
+libzmq treats the resulting ZAP denial as terminal (§6.6.3). Finish it
+with `complete_deferred_dial(queue)`. That call is a harmless success on
+every other queue, so call it unconditionally — the role host does.
+
+| Symptom | Cause |
+|---|---|
+| `start() refused — queue is Standby, not yet Configured` in the log | something tried to arm a queue before approval; route through `activate` |
+| fan-in producer: approval succeeded, `is_running()` false, no data | missing `complete_deferred_dial` |
+
+Do not look for a way to hand a queue its peer at construction time so
+it comes up "already configured". There isn't one. That shortcut existed
+on `RxQueueOptions::producer_peers`, was production surface serving only
+tests, and was deleted (#148). The narrative contract lives at
+`@ref queue_activation` in `src/include/utils/hub_queue.hpp`; the
+normative one is HEP-CORE-0036 §6.7.
+
 ### Concurrent ordering — `sleep_for` is NOT a synchronization primitive
 
 When a test must wait for an asynchronous side effect (a thread published
@@ -1909,6 +1954,8 @@ already exists.**
 | `broker_wire_client.h` | `BrokerWireClient` — raw ZMQ DEALER `send(msg_type, body)` / recv | L3 broker-only wire tests (drive the broker protocol without a full role). |
 | `pattern4_helpers.h` | `Pattern4Setup`; `expect_log(proc, substr)` / `expect_log_sequence(...)` | Pattern-4 multi-process wire tests: setup + log-marker (FSM-transition) assertions. |
 | `curve_test_setup.h` | `CurveKeypair` / `CurveSetup` / `gen_curve_keypair()` | Real CURVE keys for auth tests (no mocks). |
+| `queue_activation.h` | `activate(queue)`; `complete_deferred_dial(queue)` | Bring a data queue up. **Use instead of `queue->start()`** — a freshly built queue is in `Standby` and `start()` refuses it (HEP-CORE-0036 §6.7.1). See "Bringing a data queue up in a test" below. |
+| `queue_activation.h` | `bound_endpoint_or_fail(queue)` | The queue's bound address as a string, for a test that needs to dial it. **Use instead of reading the configured endpoint** — a queue that binds `tcp://127.0.0.1:0` only learns its real port at bind time, and this fails the test outright when there is no address yet, rather than handing back a `:0` string that connects to nothing (HEP-CORE-0036 §6.7.2). Works for `ZmqQueue` and `InboxQueue`. |
 | `role_api_base_test_access.h`, `hub_state_test_access.h` | friend/test-access shims | Reach private role/hub state from a test without loosening production visibility. |
 | `test_schema_helpers.h`, `wire_conformance.h`, `test_datahub_types.h` | schema builders, wire-shape conformance checks, shared test types | Build schemas / assert wire conformance / share fixtures. |
 
@@ -1971,6 +2018,39 @@ should be corrected, not propagated.
    editing, run `git grep '<OldFixtureOrTestName>'` to find external
    script filters (CI, dashboards, release notes) that may break
    silently when the name changes.
+
+7. **Worker scenario names state a CONDITION, not a subject.** A
+   Pattern-3/4 worker function (`int <scenario>()` in `workers/*.cpp`,
+   dispatched by string) is the only test name that looks like an
+   ordinary C++ identifier, so it is the one most easily misread as
+   production API. Name it as a claim that can be true or false:
+   `<subject>_<condition>_<outcome>`.
+
+   The in-repo model is `zmq_queue_auth_workers.cpp`, where every
+   scenario reads as a sentence:
+
+   | Good — states a claim | Bad — reads like a symbol |
+   |---|---|
+   | `auth_unallowed_peer_blocked` | `zmq_tx_null` |
+   | `auth_set_peer_allowlist_on_pull_side_returns_false` | `zmq_rx_null` |
+   | `auth_failed_start_does_not_leave_queue_active` | `from_channel_si7_gates` |
+   | `shm_slot_checksum_corrupt_detected` | |
+
+   `zmq_tx_null` is the cautionary case, renamed 2026-08-12 after it
+   was read as a scalar flag holding flexzone state. It is a scenario
+   asserting *"a ZMQ tx queue has no flexzone"* — but nothing in the
+   name says condition, and `null` reads as a value. It is now
+   `zmq_tx_has_no_flexzone_and_arms_curve`, which also names the
+   assertion that carries the test's real weight.
+
+   Two corollaries:
+   - **A name that describes only the setup is a warning sign.** If
+     you cannot put the expected outcome in the name, check that the
+     test actually asserts one. Both `*_null` scenarios turned out to
+     rest on assertions that could not fail.
+   - **Rule 4 applies here too.** `from_channel_si7_gates` carried a
+     spec-section label; it is now
+     `from_channel_startup_gates_refuse_illegal_configs`.
 
 Conventions are minimum requirements — richer names are fine as long
 as they're grep-compatible. If a future test author needs an

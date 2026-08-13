@@ -1224,3 +1224,179 @@ TEST(WireBodies, AdminErrorBodyValidatesCodeAndMessage)
     EXPECT_EQ(b.code(), "unauthorized");
     EXPECT_EQ(b.message(), "bad session");
 }
+
+// ── Peer rows and peer lists (HEP-CORE-0036 §6.2 / §6.5) ──────────────
+//
+// Every REG-family message that carries peers carries them in this one
+// shape, read by this one reader.  Assertions below come from the
+// contract, not from what any current caller happens to emit — the
+// defect that produced this type (a peer the receiver could not name)
+// was invisible to every test that only counted rows.
+//
+// Locks:
+//   - a row names its peer AND carries its key; neither is optional
+//   - `endpoint` is present exactly when the reader is going to dial
+//   - a list is accepted whole or not at all
+//   - an EMPTY list is a valid list, not an unusable one
+
+namespace
+{
+using pylabhub::wire::PeerDetail;
+using pylabhub::wire::PeerRow;
+
+// 40 chars from the Z85 alphabet — a well-formed key as far as the
+// encoding is concerned, which is all this layer judges.
+constexpr const char *kPeerKeyA = "abcdefghij0123456789abcdefghij0123456789";
+constexpr const char *kPeerKeyB = "ABCDEFGHIJ0123456789ABCDEFGHIJ0123456789";
+} // namespace
+
+TEST(WirePeerRow, IdentityOnlyEmitsNameAndKeyWithoutEndpoint)
+{
+    const auto row =
+        PeerRow::from_pair("cons.alice.uid00000001", kPeerKeyA, "tcp://127.0.0.1:5555");
+    const auto j = row.to_json(PeerDetail::IdentityOnly);
+
+    EXPECT_EQ(j.at("role_uid"), "cons.alice.uid00000001");
+    EXPECT_EQ(j.at("pubkey_z85"), kPeerKeyA);
+    EXPECT_FALSE(j.contains("endpoint"))
+        << "An allow entry is about identity.  Absence is the signal that this side does not "
+           "dial — an always-present-but-sometimes-empty field cannot be told apart from a "
+           "dropped one.";
+}
+
+TEST(WirePeerRow, WithEndpointAddsTheDialTarget)
+{
+    const auto row = PeerRow::from_pair("prod.bob.uid000000001", kPeerKeyB, "tcp://127.0.0.1:5556");
+    const auto j = row.to_json(PeerDetail::WithEndpoint);
+
+    EXPECT_EQ(j.at("role_uid"), "prod.bob.uid000000001");
+    EXPECT_EQ(j.at("pubkey_z85"), kPeerKeyB);
+    EXPECT_EQ(j.at("endpoint"), "tcp://127.0.0.1:5556");
+}
+
+TEST(WirePeerRow, RoundTripRecoversBothHalves)
+{
+    const auto sent =
+        PeerRow::from_pair("prod.bob.uid000000001", kPeerKeyB, "tcp://127.0.0.1:5556");
+    const auto got =
+        PeerRow::parse(sent.to_json(PeerDetail::WithEndpoint), PeerDetail::WithEndpoint);
+
+    ASSERT_TRUE(got.has_value());
+    EXPECT_EQ(got->role_uid(), "prod.bob.uid000000001");
+    EXPECT_EQ(got->pubkey_z85(), kPeerKeyB);
+    EXPECT_EQ(got->endpoint(), "tcp://127.0.0.1:5556");
+}
+
+TEST(WirePeerRow, NamelessRowIsRefused)
+{
+    // THE defect this type exists to make unrepresentable: a row whose
+    // key is admitted but whose name column is blank.  The receiver's
+    // copy of such a list answers "no" for a peer that is in fact
+    // allowed (HEP-CORE-0036, "Why a peer entry always names its peer").
+    nlohmann::json entry;
+    entry["pubkey_z85"] = kPeerKeyA;
+    EXPECT_FALSE(PeerRow::parse(entry, PeerDetail::IdentityOnly).has_value());
+
+    entry["role_uid"] = "";
+    EXPECT_FALSE(PeerRow::parse(entry, PeerDetail::IdentityOnly).has_value())
+        << "Present-but-empty is the same nameless row, spelled differently.";
+}
+
+TEST(WirePeerRow, BareStringIsRefused)
+{
+    // The retired pre-2026-08 shape.  Accepting it would mean carrying a
+    // row that names nobody, which is the state this shape exists to end.
+    EXPECT_FALSE(PeerRow::parse(nlohmann::json(kPeerKeyA), PeerDetail::IdentityOnly).has_value());
+}
+
+TEST(WirePeerRow, MalformedKeyIsRefused)
+{
+    nlohmann::json entry;
+    entry["role_uid"] = "cons.alice.uid00000001";
+
+    entry["pubkey_z85"] = "";
+    EXPECT_FALSE(PeerRow::parse(entry, PeerDetail::IdentityOnly).has_value());
+
+    entry["pubkey_z85"] = "tooshort";
+    EXPECT_FALSE(PeerRow::parse(entry, PeerDetail::IdentityOnly).has_value());
+
+    // 40 chars, but a space is outside the Z85 alphabet (RFC 32 §4) —
+    // the row is judged by the one key-validation rule, not by length.
+    entry["pubkey_z85"] = "abcdefghij0123456789abcdefghij012345678 ";
+    EXPECT_FALSE(PeerRow::parse(entry, PeerDetail::IdentityOnly).has_value());
+}
+
+TEST(WirePeerRow, EndpointIsRequiredOnlyOfAReaderThatWillDial)
+{
+    nlohmann::json entry;
+    entry["role_uid"] = "prod.bob.uid000000001";
+    entry["pubkey_z85"] = kPeerKeyB;
+
+    EXPECT_FALSE(PeerRow::parse(entry, PeerDetail::WithEndpoint).has_value())
+        << "A reader about to dial has nowhere to go; it must find that out here, not at "
+           "connect time.";
+    EXPECT_TRUE(PeerRow::parse(entry, PeerDetail::IdentityOnly).has_value())
+        << "A binding side does not dial, so the absent endpoint is the expected shape.";
+}
+
+TEST(WirePeerRow, IdentityOnlyKeepsAnEndpointThatTravelled)
+{
+    // The fan-in consumer binds, and reads `producers[]` rows that do
+    // carry endpoints.  Reading as IdentityOnly means "I will not dial",
+    // not "discard what arrived".
+    nlohmann::json entry;
+    entry["role_uid"] = "prod.bob.uid000000001";
+    entry["pubkey_z85"] = kPeerKeyB;
+    entry["endpoint"] = "tcp://127.0.0.1:5556";
+
+    const auto got = PeerRow::parse(entry, PeerDetail::IdentityOnly);
+    ASSERT_TRUE(got.has_value());
+    EXPECT_EQ(got->endpoint(), "tcp://127.0.0.1:5556");
+}
+
+TEST(WirePeerList, EmptyListIsValidAndNotAnError)
+{
+    // A fresh channel has no peers yet.  Confusing "nobody is allowed"
+    // with "this message is unusable" would make the reader preserve a
+    // stale set instead of installing the empty one the broker sent.
+    const auto rows =
+        pylabhub::wire::parse_peer_list(nlohmann::json::array(), PeerDetail::IdentityOnly);
+    ASSERT_TRUE(rows.has_value());
+    EXPECT_TRUE(rows->empty());
+}
+
+TEST(WirePeerList, NonArrayIsRefused)
+{
+    EXPECT_FALSE(pylabhub::wire::parse_peer_list(nlohmann::json::object(), PeerDetail::IdentityOnly)
+                     .has_value());
+}
+
+TEST(WirePeerList, OneBadRowRejectsTheWholeList)
+{
+    // All-or-nothing.  These lists REPLACE the reader's set, so keeping
+    // the readable rows would install a quietly smaller allowlist — a
+    // system that looks like it is working and denies someone.
+    nlohmann::json arr = nlohmann::json::array();
+    arr.push_back({{"role_uid", "cons.alice.uid00000001"}, {"pubkey_z85", kPeerKeyA}});
+    arr.push_back({{"pubkey_z85", kPeerKeyB}}); // nameless
+
+    const auto rows = pylabhub::wire::parse_peer_list(arr, PeerDetail::IdentityOnly);
+    EXPECT_FALSE(rows.has_value())
+        << "Two good rows and one bad row is not a two-row list; it is a message the reader "
+           "cannot act on.";
+}
+
+TEST(WirePeerList, GoodListPreservesEveryRowAndItsOrder)
+{
+    nlohmann::json arr = nlohmann::json::array();
+    arr.push_back({{"role_uid", "cons.alice.uid00000001"}, {"pubkey_z85", kPeerKeyA}});
+    arr.push_back({{"role_uid", "prod.bob.uid000000001"}, {"pubkey_z85", kPeerKeyB}});
+
+    const auto rows = pylabhub::wire::parse_peer_list(arr, PeerDetail::IdentityOnly);
+    ASSERT_TRUE(rows.has_value());
+    ASSERT_EQ(rows->size(), 2u);
+    EXPECT_EQ((*rows)[0].role_uid(), "cons.alice.uid00000001");
+    EXPECT_EQ((*rows)[0].pubkey_z85(), kPeerKeyA);
+    EXPECT_EQ((*rows)[1].role_uid(), "prod.bob.uid000000001");
+    EXPECT_EQ((*rows)[1].pubkey_z85(), kPeerKeyB);
+}

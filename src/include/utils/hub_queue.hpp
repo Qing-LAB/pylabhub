@@ -19,6 +19,7 @@
 #include "pylabhub_utils_export.h"
 #include "utils/data_block_policy.hpp"
 #include "utils/json_fwd.hpp"               // nlohmann::json fwd-decl
+#include "utils/net_address.hpp"            // BoundAddress (bound_address())
 #include "utils/schema_types.hpp"           // SchemaFieldDesc (configure_slot_schema)
 #include "utils/shared_memory_spinlock.hpp" // SharedSpinLock (spinlock accessors on base)
 
@@ -324,6 +325,151 @@ enum class Mechanism
     ShmCapability, ///< SHM capability-transport authed (HEP-CORE-0041 §6.1).
 };
 
+/// Where a queue is in the HEP-CORE-0036 §6.7 lifecycle.
+///
+/// The queue HOLDS this (§6.7.1).  It is not derived from whether some
+/// other member happens to be empty — that was the previous shape, and
+/// it produced a predicate that reported `Configured` on a binding queue
+/// that was still in `Standby`, because a binding queue receives its
+/// endpoint from config at construction and the predicate was really
+/// asking "do I have a string to bind to".
+///
+/// **Ordered on purpose.**  `Configured`, `DialDeferred` and `Active` all
+/// mean "the master's answer has been applied", so `>= Configured` is the
+/// honest spelling of `is_configured()`.  Do not reorder without
+/// revisiting that comparison.
+///
+/// What is deliberately NOT here: whether the runtime-resolved slot
+/// format is installed.  That is a different axis — a property of the
+/// data format, not the socket — and it GATES one edge
+/// (`Standby → Configured` is refused while it is pending,
+/// HEP-CORE-0034 §10.3a) rather than being a position on this line.
+enum class QueueState : std::uint8_t
+{
+    /// Never started, or stopped.  `stop()` is terminal and lands here.
+    Uninitialized = 0,
+    /// Constructed; socket/segment resources allocated; no authority
+    /// artifacts applied.  A queue that exists is at least here.
+    Standby = 1,
+    /// `apply_master_approval` has run: authority artifacts are in place.
+    Configured = 2,
+    /// Configured, and the connect is deliberately deferred pending peer
+    /// readiness — fan-in DIALING PUSH only (HEP-CORE-0036 §6.6.3).
+    /// `finalize_connect` completes the transition to `Active`.
+    DialDeferred = 3,
+    /// Bound or connected, worker running, data may flow.
+    Active = 4,
+};
+
+/// Stable name for a `QueueState` — logs and diagnostics.
+[[nodiscard]] inline const char *to_string(QueueState s) noexcept
+{
+    switch (s)
+    {
+    case QueueState::Uninitialized:
+        return "Uninitialized";
+    case QueueState::Standby:
+        return "Standby";
+    case QueueState::Configured:
+        return "Configured";
+    case QueueState::DialDeferred:
+        return "DialDeferred";
+    case QueueState::Active:
+        return "Active";
+    }
+    return "Unknown";
+}
+
+/**
+ * @page queue_activation Bringing a queue up — the contract
+ *
+ * Read this before calling anything on a freshly built queue.  The rule
+ * is one sentence:
+ *
+ *   **Building a queue and arming it are separate acts, and only the
+ *   master's answer may perform the second one.**
+ *
+ * "The master" is the broker.  A queue must not carry data until the
+ * broker has said who it is allowed to talk to, because in this system
+ * every data socket is CURVE-authenticated and admission is not the
+ * role's decision to make.
+ *
+ * ## The three steps
+ *
+ * 1. **Build.**  `Queue::create_reader` / `create_writer`, or a role's
+ *    `build_rx_queue` / `build_tx_queue`.  You get a live object in
+ *    `Standby`: resources allocated, nothing bound, nothing connected,
+ *    no peer known.  A dialing queue does not even have an endpoint
+ *    yet — it cannot, since only the broker knows where the peer is.
+ *
+ * 2. **Approve.**  `apply_master_approval(ack)`, handed the broker's
+ *    REG_ACK / CONSUMER_REG_ACK.  This installs the peer artifacts and
+ *    drives `Standby → Configured → Active`.  Role code reaches it
+ *    through `apply_consumer_reg_ack` and friends rather than calling
+ *    it directly.
+ *
+ * 3. **Finalize.**  `finalize_connect(oracle, …)`.  Needed by exactly
+ *    one topology (below); a harmless success everywhere else.  The
+ *    role host calls it uniformly after step 2 for that reason — you
+ *    should too, rather than branching on topology at the call site.
+ *
+ * ## Who needs step 3
+ *
+ * | Role     | Topology            | Socket        | After approval |
+ * |----------|---------------------|---------------|----------------|
+ * | Consumer | fan-in              | PULL, binds   | `Active`       |
+ * | Consumer | fan-out, one-to-one | dials         | `Active`       |
+ * | Producer | fan-out, one-to-one | binds         | `Active`       |
+ * | Producer | **fan-in**          | PUSH, dials   | **`DialDeferred`** |
+ *
+ * The fan-in producer is the odd one out because it is the only queue
+ * that dials a peer whose allowlist is still being written.  Connecting
+ * starts the CURVE handshake immediately; the consumer installs this
+ * producer's key a moment later; libzmq treats the ZAP denial in
+ * between as terminal, with no retry.  So the connect waits until a
+ * `PeerReadinessOracle` confirms the consumer is ready.  See
+ * HEP-CORE-0036 §6.6.3.
+ *
+ * ## Do not call `start()`
+ *
+ * `start()` is the mechanical step approval performs once it has the
+ * master's answer — bind or connect the socket, spawn the worker.  It
+ * is public only because the abstract queue interfaces are, and it
+ * refuses any queue below `Configured` (§6.7.1).  Calling it yourself
+ * either fails, or — worse, if the queue happens to be configured —
+ * arms a socket the broker never approved.
+ *
+ * ## In tests
+ *
+ * An L2 test has no broker, and does not need one: what the queue wants
+ * is the *shape* of the master's answer, which is a JSON object.
+ *
+ * @code
+ * auto q = ZmqQueue::create_reader(ChannelTopology::FanIn, std::move(rx));
+ * ASSERT_TRUE(q->apply_master_approval(nlohmann::json::object()));
+ * @endcode
+ *
+ * An empty object is an ACK that names no peers — legal, and the right
+ * stub when the test does not care who the peers are.  Hand it a
+ * populated `producers` / `initial_allowlist` array when it does.  Do
+ * not reach for `start()` to skip this; and do not look for a way to
+ * hand the queue a peer at construction time, because there isn't one
+ * (that shortcut existed, was production surface serving only tests,
+ * and was deleted in #148).
+ *
+ * The L2 suite wraps both steps as `activate()` and
+ * `complete_deferred_dial()` in `test_hub_zmq_queue.cpp`.
+ *
+ * ## Two failures and what they mean
+ *
+ * - `start()` logs *"refused — queue is Standby, not yet Configured"*:
+ *   something tried to arm a queue before approval.  The fix is to
+ *   route through `apply_master_approval`, not to pre-fill fields until
+ *   the gate opens.
+ * - A fan-in producer reports `is_running() == false` after a
+ *   successful approval, and no data flows: step 3 is missing.
+ */
+
 /// String name for a `Mechanism` value — stable surface for script
 /// bindings + telemetry sinks (HEP-CORE-0035 §2 + HEP-CORE-0041
 /// §6.1 + AUTH_TODO §C5 follow-up #186 + task #279).  Used by
@@ -484,14 +630,24 @@ class PYLABHUB_UTILS_EXPORT QueueReader
     // Default implementations are no-ops (suitable for ShmQueue).
     // ZmqQueue overrides start()/stop() to manage its recv_thread_.
     //
-    // Contract: start() → use → stop(). Both are idempotent:
-    //   start() on already-running queue returns true (not false).
-    //   stop()  on already-stopped queue is a safe no-op.
+    // Contract: approve → use → stop().  See @ref queue_activation —
+    // `apply_master_approval` is what brings a queue up; `start()` is
+    // the step it performs internally.  Both start() and stop() are
+    // idempotent:
+    //   start() on an already-Active queue returns true (not false).
+    //   stop()  on an already-stopped queue is a safe no-op.
 
     /**
-     * @brief Start the reader (bind/connect socket, start background threads).
-     * @return true on success or if already running (idempotent).
-     *         false only on actual startup failure.
+     * @brief Arm the reader: bind/connect the socket, start background threads.
+     *
+     * **Not the entry point — see @ref queue_activation.**  Callers
+     * bring a queue up with `apply_master_approval`, which invokes this
+     * once the master's answer is in hand.  A queue below `Configured`
+     * is refused here (HEP-CORE-0036 §6.7.1), so calling it directly on
+     * a freshly built queue fails by design.
+     *
+     * @return true on success or if already Active (idempotent).
+     *         false on a state-gate refusal or an actual startup failure.
      */
     virtual bool start() { return true; }
 
@@ -511,8 +667,10 @@ class PYLABHUB_UTILS_EXPORT QueueReader
      *   - `ZmqQueue` (PULL side): reads `artifacts["producers"]` (array of
      *     `{role_uid, endpoint, pubkey_z85}` objects per HEP-0036 §6.4)
      *     and calls `set_producer_peers(...)`.
-     *   - `ZmqQueue` (PUSH side): reads `artifacts["allowlist"]` (per HEP-0036
-     *     §I11) and calls `set_peer_allowlist(...)`.
+     *   - `ZmqQueue` (PUSH side): reads `artifacts["initial_allowlist"]`
+     *     (REG_ACK's field name, HEP-0036 §6.2 — NOT `allowlist`, which is
+     *     the runtime-refresh field on GET_CHANNEL_AUTH_ACK §6.5) and calls
+     *     `set_peer_allowlist(...)`.
      *   - `ShmQueue`: no artifact field — SHM consumer/producer wiring
      *     runs through the capability-fd handshake at L2
      *     (HEP-CORE-0041 §5.5), not the broker-artifact channel.
@@ -641,16 +799,32 @@ class PYLABHUB_UTILS_EXPORT QueueReader
     /// queues override to reflect their configured direction.
     [[nodiscard]] virtual bool is_binding_side() const noexcept { return false; }
 
-    /// HEP-CORE-0021 §16 — resolved bind endpoint on the BINDING
-    /// side, after `start()` has completed the bind.  Non-empty when
-    /// this queue is the binding side (fan-in reader, fan-out /
-    /// one-to-one writer per HEP-CORE-0017 §3.3.0) and the queue is
-    /// Active; empty otherwise (dialing side, not started, or
-    /// non-ZMQ transport).  Role code passes the return value to
+    /// HEP-CORE-0021 §16 — where peers can actually reach this queue.
+    ///
+    /// Present only when this queue is the binding side for its
+    /// topology (fan-in reader, fan-out / one-to-one writer per
+    /// HEP-CORE-0017 §3.3.0) AND the bind has completed, so the OS has
+    /// resolved the port.  `std::nullopt` in every other case: a
+    /// dialing side has no address of its own to offer, and a queue
+    /// that has not bound does not yet know its own.
+    ///
+    /// The optional is the contract, not a convenience.  This used to
+    /// return a plain string and fall back to the CONFIGURED endpoint
+    /// when the bind had not happened — which handed callers
+    /// `tcp://host:0`, a value that looks like an address, passes every
+    /// non-empty test, and cannot be connected to.  A caller that must
+    /// know whether the address is real can no longer forget to ask;
+    /// see `BoundAddress` in `utils/net_address.hpp` and
+    /// HEP-CORE-0036 §6.7.2.
+    ///
+    /// Role code hands the result to
     /// `BrokerRequestComm::send_endpoint_update` so the broker can
-    /// advertise it to dialing peers via REG_ACK.  Default empty;
-    /// `ZmqQueue` overrides with `ZMQ_LAST_ENDPOINT`.
-    [[nodiscard]] virtual std::string actual_endpoint() const { return {}; }
+    /// advertise it to dialing peers.  Default `std::nullopt`;
+    /// `ZmqQueue` overrides using `ZMQ_LAST_ENDPOINT`.
+    [[nodiscard]] virtual std::optional<::pylabhub::BoundAddress> bound_address() const
+    {
+        return std::nullopt;
+    }
 
     /// HEP-CORE-0041 §6.1 + task #279 — negotiated transport-level
     /// authentication mechanism observed at `start()` time.  See the
@@ -787,14 +961,25 @@ class PYLABHUB_UTILS_EXPORT QueueWriter
     // Default implementations are no-ops (suitable for ShmQueue).
     // ZmqQueue overrides start()/stop() to manage its send_thread_.
     //
-    // Contract: start() → use → stop(). Both are idempotent:
-    //   start() on already-running queue returns true (not false).
-    //   stop()  on already-stopped queue is a safe no-op.
+    // Contract: approve → [finalize] → use → stop().  See
+    // @ref queue_activation.  The writer is the side where the extra
+    // step matters: a fan-in producer rests in `DialDeferred` after
+    // approval and needs `finalize_connect` to reach `Active`.  Both
+    // start() and stop() are idempotent:
+    //   start() on an already-Active queue returns true (not false).
+    //   stop()  on an already-stopped queue is a safe no-op.
 
     /**
-     * @brief Start the writer (bind/connect socket, start background threads).
-     * @return true on success or if already running (idempotent).
-     *         false only on actual startup failure.
+     * @brief Arm the writer: bind/connect the socket, start background threads.
+     *
+     * **Not the entry point — see @ref queue_activation.**  Callers
+     * bring a queue up with `apply_master_approval` (plus
+     * `finalize_connect` on a fan-in producer), which invokes this once
+     * the master's answer is in hand.  A queue below `Configured` is
+     * refused here (HEP-CORE-0036 §6.7.1).
+     *
+     * @return true on success or if already Active (idempotent).
+     *         false on a state-gate refusal or an actual startup failure.
      */
     virtual bool start() { return true; }
 
@@ -829,6 +1014,25 @@ class PYLABHUB_UTILS_EXPORT QueueWriter
      * QueueReader mirror for the full rationale.
      */
     virtual std::string_view binding_role_type() const noexcept { return {}; }
+
+    /// HEP-CORE-0021 §16 — where peers can actually reach this queue.
+    ///
+    /// The writer's mirror of `QueueReader::bound_address()`; read that
+    /// declaration for the full contract. Present only when this queue
+    /// binds (fan-out / one-to-one producer per HEP-CORE-0017 §3.3.0)
+    /// AND the bind has resolved the port; `std::nullopt` otherwise,
+    /// with no fallback to the configured request.
+    ///
+    /// This side had no such accessor at all until the binding producer
+    /// gained its endpoint publish — the base exposed it only on the
+    /// reader, because the fan-in consumer was the only side that ever
+    /// published. That asymmetry in the interface is what let the
+    /// producer's missing publish go unnoticed: there was no method to
+    /// notice the absence of.
+    [[nodiscard]] virtual std::optional<::pylabhub::BoundAddress> bound_address() const
+    {
+        return std::nullopt;
+    }
 
     /**
      * @brief HEP-CORE-0011 §"Loop-ready gate" + HEP-CORE-0036 §I9.1

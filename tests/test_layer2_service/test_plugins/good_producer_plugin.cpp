@@ -314,6 +314,45 @@ extern "C" PLH_EXPORT bool on_produce(const plh_tx_t *tx)
         if (v1.has_value() != v2.has_value())
             g_test_cpp_wrapper_ok = 0;
 
+        // ── v16 directory paths ───────────────────────────────────
+        // Lua and Python have exposed script_dir / logs_dir / run_dir
+        // since they shipped; native gained them in ABI v16.  The
+        // contract (native_engine_api.h, and RoleAPIBase::logs_dir /
+        // run_dir behind it) is:
+        //   - never NULL, empty string when the role has no directory
+        //   - logs_dir and run_dir are role_dir plus a fixed suffix
+        //   - all three are empty exactly when role_dir is
+        // Asserted as the invariant rather than as literal paths, so it
+        // holds whether or not this L2 role was given a directory.
+        const char *c_role = api.role_dir();
+        const char *c_script = api.script_dir();
+        const char *c_logs = api.logs_dir();
+        const char *c_run = api.run_dir();
+        if (!c_role || !c_script || !c_logs || !c_run)
+        {
+            g_test_cpp_wrapper_ok = 0;
+        }
+        else
+        {
+            const std::string role{c_role};
+            const std::string logs{c_logs};
+            const std::string run{c_run};
+            if (role.empty())
+            {
+                // No role directory → no children.  A non-empty child
+                // here would mean someone invented a default path.
+                if (!logs.empty() || !run.empty())
+                    g_test_cpp_wrapper_ok = 0;
+            }
+            else
+            {
+                if (logs != role + "/logs")
+                    g_test_cpp_wrapper_ok = 0;
+                if (run != role + "/run")
+                    g_test_cpp_wrapper_ok = 0;
+            }
+        }
+
         // ── v6 AllowedPeersHandle (#194 Phase C) ──────────────────
         // Without auth wiring, allowed_peers() returns an empty handle.
         // visit() returns 0 (count visited); contains() returns false;

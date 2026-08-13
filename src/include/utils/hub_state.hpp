@@ -285,8 +285,8 @@ struct ConsumerEntry
     /// producer-side `ProducerEntry::zmq_pubkey` field — populated from
     /// CONSUMER_REG_REQ wire body at REG accept (HEP-CORE-0036 §6.5).
     /// Used by the broker to admit into
-    /// `ChannelAccessEntry::ledger` via `_on_consumer_authorized`
-    /// (→ `ledger.admit`) and to revoke via `_on_consumer_revoked`
+    /// `ChannelAccessEntry::ledger` via `_on_channel_peer_admitted`
+    /// (→ `ledger.admit`) and to revoke via `_on_channel_peer_revoked`
     /// (→ `ledger.revoke`) at DEREG / heartbeat timeout — HEP-CORE-
     /// 0042 §5.5.2 unified 2026-07-13.  Wire admission HARD-REJECTS empty
     /// or non-40-char values per HEP-CORE-0035 §2 (unconditional CURVE);
@@ -2261,19 +2261,34 @@ class PYLABHUB_UTILS_EXPORT HubState
     /// Idempotent: no-op if no record exists.
     void _on_channel_access_closed(const std::string &channel_name);
 
-    /// Add a consumer pubkey to the channel's allowlist on
-    /// CONSUMER_REG_REQ accept.  Idempotent: no-op if `pubkey_z85` is
-    /// already in the allowlist.  No-op if no channel-access record
-    /// exists (callers should `_on_channel_access_opened` first, but
-    /// out-of-order calls are silently dropped per the safe-default
-    /// invariant).
-    void _on_consumer_authorized(const std::string &channel_name, const std::string &pubkey_z85);
+    /// Admit a peer's pubkey to this channel's allowlist.
+    ///
+    /// The peer is whichever side dials this channel, so this is called
+    /// with a CONSUMER key on consumer REG accept and with a PRODUCER
+    /// key on producer REG accept under fan-in.  It was named
+    /// `_on_consumer_authorized` until 2026-08-11, from a time when only
+    /// consumers were admitted; the producer call site was added later
+    /// and the name went unchanged, so the most important mutation in
+    /// this subsystem read as though it did half of what it does.
+    ///
+    /// Idempotent: re-admitting a key already present does not bump the
+    /// admission version.  No-op if no channel-access record exists
+    /// (callers should `_on_channel_access_opened` first; out-of-order
+    /// calls are dropped per the safe-default invariant).
+    void _on_channel_peer_admitted(const std::string &channel_name, const std::string &pubkey_z85);
 
-    /// Remove a consumer pubkey from the channel's allowlist on
-    /// CONSUMER_DEREG_REQ / consumer-presence pending-timeout /
-    /// consumer-PID-death.  Idempotent: no-op if `pubkey_z85` is not
-    /// in the allowlist, or no channel-access record exists.
-    void _on_consumer_revoked(const std::string &channel_name, const std::string &pubkey_z85);
+    /// Revoke a peer's pubkey from this channel's allowlist.
+    ///
+    /// Driven by DEREG and by presence pending-timeout.  Symmetric with
+    /// admit: the version advances only on a real state change, so
+    /// revoking a key that was never admitted is a complete no-op.  A
+    /// bump there would invalidate every role's confirmation to announce
+    /// that nothing happened.
+    ///
+    /// Per HEP-CORE-0036 §I5 revocation is FORWARD-LOOKING: it removes
+    /// the key from future admission decisions and does not tear down an
+    /// established session, which drops on its own transport error.
+    void _on_channel_peer_revoked(const std::string &channel_name, const std::string &pubkey_z85);
 
     // ── Schema-registry capability ops (HEP-CORE-0034 §11) ──────────────
     //

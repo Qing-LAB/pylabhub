@@ -36,6 +36,8 @@
 #include "utils/security/secure_subsystem.hpp"
 #include "utils/security/zap_router.hpp" // ZapPumpThread for CURVE roundtrip tests
 
+#include "queue_activation.h" // activate() / complete_deferred_dial()
+
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -191,6 +193,16 @@ make_pull_test(const std::string &endpoint, std::vector<pylabhub::hub::ZmqSchema
                                               max_buffer_depth, schema_tag, std::move(instance_id));
 }
 
+/// Drive a freshly-built queue to Active the way production does.
+///
+/// Queue activation is a shared contract, not a local convenience —
+/// `activate()` and `complete_deferred_dial()` live in
+/// `test_framework/queue_activation.h` (included above), which carries
+/// the rationale.  In one line: never call `q->start()`; hand the queue
+/// the master's answer and let it arm itself.
+using pylabhub::tests::activate;
+using pylabhub::tests::complete_deferred_dial;
+
 /// Test helper — wrap `ZmqQueue::push_to` with the seeded
 /// `kRoleIdentityName` and empty `zap_domain` (factory derives from
 /// instance_id at start time).  See `make_pull_test` for rationale.
@@ -306,7 +318,7 @@ TEST_F(ZmqQueueTest, Mechanism_AfterPushBind_IsCurve)
 {
     auto q = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_NE(q, nullptr);
-    ASSERT_TRUE(q->start());
+    ASSERT_TRUE(activate(*q));
     EXPECT_EQ(q->mechanism(), pylabhub::hub::Mechanism::Curve)
         << "HEP-CORE-0035 §2 invariant: every successfully-started "
            "ZmqQueue MUST be CURVE-authenticated.  If this fires, "
@@ -363,13 +375,180 @@ TEST_F(ZmqQueueTest, PullFrom_EmptyServerPubkey_ProducesStandbyQueue_StartRefuse
 // normal lifecycle and DELIVERS — content-verified against a writer
 // with the same schema.
 
+// ─── The binding side reaches Configured only via approval (§6.7.1) ────────
+//
+// This is the case the retired predicate got WRONG, pinned from both
+// ends, on both binding sides.
+//
+// `is_configured()` used to answer "have I reached Configured" with
+// `!endpoint.empty()` on the binding branch.  A binding queue takes its
+// endpoint from CONFIG at construction, so it reported Configured while
+// still in Standby — before the master had said anything.
+//
+// Three things this test needs in order to be the test it claims to be:
+//
+//   1. A **binding** queue.  Ten of the suite's eleven `is_configured()`
+//      assertions are `EXPECT_FALSE`, and the one positive assertion is
+//      on a DIALING consumer.  Nothing else asserts the TRUE case on a
+//      binding queue, which is the half that would silently rot.
+//   2. A **valid schema**.  With an empty schema the schema-pending
+//      gate short-circuited above the binding branch — that is exactly
+//      why five pre-existing assertions never reached the defect.
+//   3. **Both** binding sides.  Under the §3.3.0 truth table the
+//      binding role changes with topology: fan-in binds the consumer,
+//      one-to-one binds the producer.  A single side would leave the
+//      other free to regress.
+//
+// The trailing `stop()` assertions pin the second half of the same
+// defect: teardown does not blank the endpoint string, so the old
+// predicate answered Configured after `stop()` too, contradicting
+// "stop() is terminal".
+TEST_F(ZmqQueueTest, BindingSide_ConfiguredOnlyAfterApproval_AndNotAfterStop)
+{
+    // ── Binding READER: fan-in consumer, PULL bind ────────────────────
+    {
+        auto pull = make_pull_test(schema_ep(11), blob_schema(kItemSize), "aligned",
+                                   /*bind=*/true);
+        ASSERT_NE(pull, nullptr);
+
+        EXPECT_FALSE(pull->is_configured())
+            << "a binding reader holds its endpoint from config at construction; that is NOT "
+               "the master's approval and must not be reported as Configured";
+        EXPECT_FALSE(pull->is_running());
+
+        ASSERT_TRUE(activate(*pull));
+        EXPECT_TRUE(pull->is_configured())
+            << "approval applied — the binding reader must now report Configured";
+        EXPECT_TRUE(pull->is_running());
+
+        pull->stop();
+        EXPECT_FALSE(pull->is_running());
+        EXPECT_FALSE(pull->is_configured())
+            << "stop() is terminal (§6.7): the endpoint string survives teardown, the "
+               "Configured answer must not";
+    }
+
+    // ── Binding WRITER: one-to-one producer, PUSH bind ────────────────
+    {
+        auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned",
+                                   /*bind=*/true);
+        ASSERT_NE(push, nullptr);
+
+        EXPECT_FALSE(push->is_configured())
+            << "a binding writer holds its bind endpoint from config; not approval";
+        EXPECT_FALSE(push->is_running());
+
+        ASSERT_TRUE(activate(*push));
+        EXPECT_TRUE(push->is_configured())
+            << "approval applied — the binding writer must now report Configured";
+        EXPECT_TRUE(push->is_running());
+
+        push->stop();
+        EXPECT_FALSE(push->is_running());
+        EXPECT_FALSE(push->is_configured()) << "stop() is terminal (§6.7)";
+    }
+}
+
+TEST_F(ZmqQueueTest, WhenStopped_QueueRefusesAFreshApproval)
+{
+    // HEP-CORE-0036 §6.7 mutator table, `apply_master_approval` ×
+    // Uninitialized: refuse.  `stop()` is terminal and the hub-dead path
+    // destroys a queue rather than reviving it (§I3, §I12).
+    //
+    // This is not hypothetical tidiness.  Teardown deliberately does not
+    // reset the ring/send indices, so a revived queue re-delivers slots
+    // its previous life had already handed out — the reason
+    // `hub_zmq_queue.cpp` carries a standing note that the queue is not
+    // restartable.  Until this gate existed, nothing enforced it: apply
+    // checked only "already Active" and "schema pending", so a stopped
+    // queue would take a second approval and arm again.
+    // Must-fire: the refusal has to be diagnosed, not silent.  A caller
+    // that gets `false` with nothing in the log cannot tell this apart
+    // from a schema-pending refusal.
+    ExpectLogErrorMustFire("queue is Uninitialized (stopped)");
+
+    auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned",
+                               /*bind=*/true);
+    ASSERT_NE(push, nullptr);
+    ASSERT_TRUE(activate(*push));
+    ASSERT_TRUE(push->is_running());
+
+    push->stop();
+    ASSERT_FALSE(push->is_running());
+    ASSERT_FALSE(push->is_configured()) << "stop() is terminal";
+
+    EXPECT_FALSE(activate(*push))
+        << "a stopped queue accepted a fresh approval — it can now re-arm and "
+           "re-deliver stale ring slots (§6.7)";
+    EXPECT_FALSE(push->is_running()) << "the refused approval must leave the queue down";
+    EXPECT_FALSE(push->is_configured())
+        << "a refused approval must not move the state out of Uninitialized";
+}
+
+TEST_F(ZmqQueueTest, WhenStoppedWhileDeferringDial_QueueDoesNotArmAfterwards)
+{
+    // HEP-CORE-0036 §6.7 mutator table, `stop()` × DialDeferred:
+    // terminal.
+    //
+    // The fan-in producer is the one queue that sits approved-but-unarmed
+    // while `finalize_connect` waits for its peer.  `stop()` used to move
+    // ONLY `Active` to `Uninitialized`, so a stop landing in that window
+    // did nothing at all: the pending `finalize_connect` would call
+    // `start()` when its oracle answered and bring a stopped queue up.
+    // Stopping must win that race.
+    auto pull = make_pull_test(schema_ep(41), blob_schema(kItemSize), "aligned", /*bind=*/true);
+    ASSERT_NE(pull, nullptr);
+    ASSERT_TRUE(activate(*pull));
+    const std::string ep = ::pylabhub::tests::bound_endpoint_or_fail(*pull);
+
+    ZmqQueue::TxCreateOptions tx;
+    tx.endpoint = ep;
+    tx.server_pubkey = test_server_key();
+    tx.schema = blob_schema(kItemSize);
+    tx.packing = "aligned";
+    auto push = ZmqQueue::create_writer(ChannelTopology::FanIn, std::move(tx));
+    ASSERT_NE(push, nullptr);
+
+    ASSERT_TRUE(activate(*push));
+    ASSERT_FALSE(push->is_running()) << "fan-in producer must rest in DialDeferred after approval";
+    ASSERT_TRUE(push->is_configured()) << "DialDeferred is at or above Configured";
+
+    push->stop();
+    EXPECT_FALSE(push->is_configured())
+        << "stop() from DialDeferred left the queue armable — the deferred connect can "
+           "still complete and open a socket on a stopped queue (§6.7)";
+
+    // Now run the deferred completion the role host would have run.  The
+    // guarantee under test is the STATE, not the return value:
+    // `finalize_connect` reports success for any queue that is not
+    // waiting on a dial, which after a stop is the honest answer to
+    // "is there a deferred connect left to make?" — no.  What must never
+    // happen is the queue coming up.
+    //
+    // The other order — stop landing while `finalize_connect` is already
+    // polling — is closed by the `start()` gate rather than here: the
+    // poll ends, `start()` finds the queue below Configured, and refuses.
+    (void)complete_deferred_dial(*push);
+    EXPECT_FALSE(push->is_running()) << "a stopped queue must never reach Active";
+    EXPECT_FALSE(push->is_configured()) << "and must stay terminal";
+}
+
 TEST_F(ZmqQueueTest, PullFrom_EmptySchema_SchemaPending_ApplyAndStartRefused)
 {
     auto q = make_pull_test("tcp://127.0.0.1:0", {}, /*packing=*/"", /*bind=*/false, 100);
     ASSERT_NE(q, nullptr);
-    // Endpoint + serverkey are both populated, so WITHOUT the pending
-    // gate this connect-side queue would report Configured — the
-    // FALSE here is specifically the schema_pending gate.
+    // This FALSE is the Standby state, NOT the schema gate.  It used to
+    // be the schema gate: `is_configured()` opened with
+    // `if (schema_pending_) return false;` above a branch that would
+    // otherwise have said "endpoint + serverkey populated ⇒ Configured".
+    // Since #148 the predicate is a plain state read, and a queue is
+    // Standby out of the constructor whatever its artifacts look like —
+    // so this line no longer distinguishes a pending schema from any
+    // other unapproved queue.
+    //
+    // The schema gate itself is pinned live, below: apply is REFUSED
+    // with "slot schema still pending" (SI-6), and the state does not
+    // move.  That pair is this test's actual coverage.
     EXPECT_FALSE(q->is_configured());
     EXPECT_FALSE(q->is_running());
     EXPECT_FALSE(q->start());
@@ -392,10 +571,16 @@ TEST_F(ZmqQueueTest, ConfigureSlotSchema_SingleEstablishment_FactoryGradeValidat
     auto q = make_pull_test("tcp://127.0.0.1:0", {}, /*packing=*/"", /*bind=*/false, 100);
     ASSERT_NE(q, nullptr);
 
-    // Factory-grade validation: an invalid field list is refused and
-    // the queue STAYS pending (state unchanged on refusal).
+    // Factory-grade validation: an invalid field list is refused.
     ExpectLogError("invalid type_str 'nope'");
     EXPECT_FALSE(q->configure_slot_schema({{"nope", 1, 0}}, "aligned", std::nullopt));
+    // Since #148 this reads the lifecycle state, which is Standby for
+    // any unapproved queue — it does NOT report whether the schema is
+    // still pending, and so does not by itself show the refusal left
+    // the format untouched.  What shows that is the NEXT install
+    // succeeding: under single-establishment (SI-1) a schema that had
+    // been wrongly accepted here would make the valid install below
+    // fail.  Keep both lines; the second is the one with teeth.
     EXPECT_FALSE(q->is_configured());
 
     // Valid install succeeds…
@@ -430,9 +615,10 @@ TEST_F(ZmqQueueTest, ConfigureSlotSchema_ThenApply_RoundtripDelivers)
     // the delivered bytes are content-verified.
     auto push =
         make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
 
     auto pull = make_pull_test(ep, {}, /*packing=*/"", /*bind=*/false, 100);
     ASSERT_NE(pull, nullptr);
@@ -480,71 +666,22 @@ TEST_F(ZmqQueueTest, PushTo_MissingKeyStoreEntry_FailsValidation)
 }
 
 // ============================================================================
-// Dynamic producer-peer membership (HEP-CORE-0017 §3.3, #103 A2)
+// Producer peer set
 // ============================================================================
-
-TEST_F(ZmqQueueTest, AddProducerPeer_PullSide_AppendsAndDeduplicatesByRoleUid)
-{
-    // This test exercises dynamic-peer membership (HEP-0017 §3.3);
-    // CURVE itself isn't under test — the binary env seeds an
-    // identity so the factory succeeds.  Bind side: no `server_pubkey`
-    // needed (default sentinel accepted on bind path).
-    auto q = make_pull_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned",
-                            /*bind=*/true, 100);
-    ASSERT_NE(q, nullptr);
-    EXPECT_EQ(q->producer_peer_count(), 0u);
-
-    ProducerPeer p1{"prod.foo.uid01", "tcp://127.0.0.1:5001", ""};
-    EXPECT_TRUE(q->add_producer_peer(p1));
-    EXPECT_EQ(q->producer_peer_count(), 1u);
-
-    // Same role_uid = in-place overwrite (HEP-0036 §I5 forward-looking
-    // semantics: the latest descriptor wins; previously buffered frames
-    // are not affected).
-    ProducerPeer p1_new_ep{"prod.foo.uid01", "tcp://127.0.0.1:5005", ""};
-    EXPECT_TRUE(q->add_producer_peer(p1_new_ep));
-    EXPECT_EQ(q->producer_peer_count(), 1u);
-
-    ProducerPeer p2{"prod.bar.uid02", "tcp://127.0.0.1:5002", ""};
-    EXPECT_TRUE(q->add_producer_peer(p2));
-    EXPECT_EQ(q->producer_peer_count(), 2u);
-}
-
-TEST_F(ZmqQueueTest, RemoveProducerPeer_PullSide_ReturnsFalseWhenAbsent)
-{
-    auto q = make_pull_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned",
-                            /*bind=*/true, 100);
-    ASSERT_NE(q, nullptr);
-
-    ProducerPeer p{"prod.foo.uid01", "tcp://127.0.0.1:5001", ""};
-    EXPECT_TRUE(q->add_producer_peer(p));
-    EXPECT_EQ(q->producer_peer_count(), 1u);
-
-    EXPECT_TRUE(q->remove_producer_peer("prod.foo.uid01"));
-    EXPECT_EQ(q->producer_peer_count(), 0u);
-
-    // Removing again is a no-op + returns false (not found).
-    EXPECT_FALSE(q->remove_producer_peer("prod.foo.uid01"));
-    EXPECT_EQ(q->producer_peer_count(), 0u);
-
-    // Unknown uid is also a no-op + returns false.
-    EXPECT_FALSE(q->remove_producer_peer("prod.never.added"));
-}
-
-TEST_F(ZmqQueueTest, AddProducerPeer_PushSide_IsInert)
-{
-    // PUSH/bind side: producer doesn't track peers — admission is via
-    // the broker-pushed allowlist + the producer's ZAP handler.  The
-    // dynamic-peer API is inert; count stays 0.
-    auto q = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned",
-                            /*bind=*/true);
-    ASSERT_NE(q, nullptr);
-
-    ProducerPeer p{"prod.foo", "tcp://127.0.0.1:5001", ""};
-    EXPECT_FALSE(q->add_producer_peer(p));
-    EXPECT_FALSE(q->remove_producer_peer("prod.foo"));
-    EXPECT_EQ(q->producer_peer_count(), 0u);
-}
+//
+// Three tests lived here until 2026-08-11 pinning per-peer add / remove
+// (`add_producer_peer`, `remove_producer_peer`).  Both methods were deleted
+// with the contract they pinned: under the singular-side topology model no
+// dialing side has more than one peer, so incremental membership edits have
+// no caller and no meaning.  Membership arrives as whole sets and is applied
+// by replacement.  Task #133 carries the reasoning.
+//
+// This is a contract WITHDRAWAL, not a coverage handoff — there is no
+// destination test, because the behaviour no longer exists.  What survives
+// is coverage of the replacement path itself: `set_producer_peers` buffering
+// without transitioning, plus `producer_peer_count` observing it, in
+// `zmq_queue_auth_workers.cpp` (auth_standby_* scenarios), and the wire path
+// through `apply_master_approval` in the topology tests below.
 
 // ============================================================================
 // Lifecycle tests
@@ -553,7 +690,7 @@ TEST_F(ZmqQueueTest, AddProducerPeer_PushSide_IsInert)
 TEST_F(ZmqQueueTest, Start_SetsRunning)
 {
     auto q = make_pull_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
-    ASSERT_TRUE(q->start());
+    ASSERT_TRUE(activate(*q));
     std::this_thread::sleep_for(50ms); // recv_thread_ startup
     EXPECT_TRUE(q->is_running());
     q->stop();
@@ -562,7 +699,7 @@ TEST_F(ZmqQueueTest, Start_SetsRunning)
 TEST_F(ZmqQueueTest, Stop_ClearsRunning)
 {
     auto q = make_pull_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
-    ASSERT_TRUE(q->start());
+    ASSERT_TRUE(activate(*q));
     q->stop();
     EXPECT_FALSE(q->is_running());
 }
@@ -570,7 +707,7 @@ TEST_F(ZmqQueueTest, Stop_ClearsRunning)
 TEST_F(ZmqQueueTest, DoubleStop_NoThrow)
 {
     auto q = make_pull_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
-    ASSERT_TRUE(q->start());
+    ASSERT_TRUE(activate(*q));
     q->stop();
     EXPECT_NO_THROW(q->stop());
 }
@@ -587,11 +724,12 @@ TEST_F(ZmqQueueTest, Roundtrip_SingleItem)
     // production never does and the CURVE-only factory rejects.
     auto push =
         make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
     auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms); // connection setup
 
     // Write a pattern
@@ -621,11 +759,12 @@ TEST_F(ZmqQueueTest, Roundtrip_MultipleItems)
     // Production-mirror orientation — see Roundtrip_SingleItem.
     auto push =
         make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
     auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms); // connection setup
 
     constexpr int kCount = 5;
@@ -654,7 +793,7 @@ TEST_F(ZmqQueueTest, ReadTimeout_ReturnsNull)
 {
     auto pull =
         make_pull_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms);
 
     // No writer — read should time out
@@ -673,11 +812,12 @@ TEST_F(ZmqQueueTest, WriteAbort_NotSent)
     // Production-mirror orientation — see Roundtrip_SingleItem.
     auto push =
         make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
     auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms); // connection setup
 
     // Acquire then discard — no message should be sent
@@ -731,12 +871,13 @@ TEST_F(ZmqQueueTest, PullFrom_BufferFull_DropsOldest)
         make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true,
                        /*tag=*/std::nullopt, /*sndhwm=*/0, /*depth=*/64);
     ASSERT_NE(push, nullptr);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
     auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false, kBufDepth);
     ASSERT_NE(pull, nullptr);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms); // connection setup
 
     // Push kSend items — first byte of each slot = send index (1-based).
@@ -788,11 +929,12 @@ TEST_F(ZmqQueueTest, PullFrom_BufferFull_NoDeadlock)
     // Production-mirror orientation — see Roundtrip_SingleItem.
     auto push =
         make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
     auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false, kBufDepth);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms); // connection setup
 
     // Rapid push without reading
@@ -846,11 +988,12 @@ TEST_F(ZmqQueueTest, SchemaTag_Match_DeliversItem)
     // Production-mirror orientation — see Roundtrip_SingleItem.
     auto push =
         make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true, tag);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
     auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false, 64, tag);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms); // connection setup
 
     void *wbuf = push->write_acquire(1000ms);
@@ -883,11 +1026,12 @@ TEST_F(ZmqQueueTest, SchemaTag_Mismatch_DropsAndCountsErrors)
     // Production-mirror orientation — see Roundtrip_SingleItem.
     auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned",
                                /*bind=*/true, tag_a);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
     auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false, 64, tag_b);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms); // connection setup
 
     constexpr int kCount = 5;
@@ -924,11 +1068,12 @@ TEST_F(ZmqQueueTest, SchemaTag_NoTag_AcceptsAnyFrame)
     // Production-mirror orientation — see Roundtrip_SingleItem.
     auto push =
         make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true, tag);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
     auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false); // no tag
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms); // connection setup
 
     void *wbuf = push->write_acquire(1000ms);
@@ -965,11 +1110,12 @@ TEST_F(ZmqQueueTest, OverflowCounter_Increments)
     // Production-mirror orientation — see Roundtrip_SingleItem.
     auto push =
         make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
     auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false, kBufDepth);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms); // connection setup
 
     // Send kSend items without reading.
@@ -1021,11 +1167,12 @@ TEST_F(ZmqQueueTest, MultipleItems_Ordered)
     // Production-mirror orientation — see Roundtrip_SingleItem.
     auto push =
         make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
     auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms); // connection setup
 
     constexpr int kCount = 8;
@@ -1106,13 +1253,14 @@ TEST_F(ZmqQueueTest, Schema_Scalars_Roundtrip)
     auto push = make_push_test("tcp://127.0.0.1:0", schema, "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     EXPECT_EQ(push->item_size(), 16u);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
 
     auto pull = make_pull_test(ep, schema, "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms);
 
     void *wbuf = push->write_acquire(1000ms);
@@ -1148,13 +1296,14 @@ TEST_F(ZmqQueueTest, Schema_Array_Roundtrip)
 
     auto push = make_push_test("tcp://127.0.0.1:0", schema, "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
 
     auto pull = make_pull_test(ep, schema, "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms);
 
     const double sv[4] = {1.1, 2.2, 3.3, 4.4};
@@ -1191,13 +1340,14 @@ TEST_F(ZmqQueueTest, Schema_Mixed_Natural_Roundtrip)
     auto push = make_push_test("tcp://127.0.0.1:0", schema, "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     EXPECT_EQ(push->item_size(), 48u);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
 
     auto pull = make_pull_test(ep, schema, "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms);
 
     void *wbuf = push->write_acquire(1000ms);
@@ -1286,13 +1436,14 @@ TEST_F(ZmqQueueTest, Schema_FieldCountMismatch_Rejected)
 
     auto push = make_push_test("tcp://127.0.0.1:0", ss, "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
 
     auto pull = make_pull_test(ep, sr, "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms);
 
     void *wbuf = push->write_acquire(500ms);
@@ -1319,13 +1470,14 @@ TEST_F(ZmqQueueTest, Schema_ArraySizeMismatch_Rejected)
 
     auto push = make_push_test("tcp://127.0.0.1:0", ss, "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
 
     auto pull = make_pull_test(ep, sr, "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms);
 
     void *wbuf = push->write_acquire(500ms);
@@ -1376,17 +1528,21 @@ TEST_F(ZmqQueueTest, DataIntegrity_VariousSizes)
         ASSERT_NE(push, nullptr) << "push_to nullptr for size=" << sz;
         ASSERT_EQ(push->item_size(), sz);
 
-        ASSERT_TRUE(push->start());
+        ASSERT_TRUE(activate(*push));
         ASSERT_TRUE(seed_self_allowlist(*push));
         // Retrieve the actual OS-assigned endpoint for PULL to connect to.
-        const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
-        ASSERT_FALSE(ep.empty()) << "actual_endpoint empty for size=" << sz;
+        const std::string ep =
+            ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
+        // Resolved, not merely non-empty: `actual_endpoint()` falls back
+        // to the configured bind REQUEST until the bind resolves, and
+        // that request is non-empty here (#148 M2).
+        ASSERT_NE(ep, "tcp://127.0.0.1:0") << "bind did not resolve for size=" << sz;
 
         auto pull = make_pull_test(ep, blob_schema(sz), "aligned", /*bind=*/false);
         ASSERT_NE(pull, nullptr) << "pull_from nullptr for size=" << sz;
         ASSERT_EQ(pull->item_size(), sz);
 
-        ASSERT_TRUE(pull->start());
+        ASSERT_TRUE(activate(*pull));
         std::this_thread::sleep_for(50ms);
 
         // Fill with deterministic byte pattern.
@@ -1431,13 +1587,14 @@ TEST_F(ZmqQueueTest, Schema_AllScalarTypes_Roundtrip)
     auto push = make_push_test("tcp://127.0.0.1:0", schema, "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     EXPECT_EQ(push->item_size(), 48u);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
 
     auto pull = make_pull_test(ep, schema, "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms);
 
     // Write test values at the computed natural offsets.
@@ -1527,13 +1684,14 @@ TEST_F(ZmqQueueTest, Schema_LargeArrayOverPageSize_Roundtrip)
     auto push = make_push_test("tcp://127.0.0.1:0", schema, "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     EXPECT_EQ(push->item_size(), 600u * 8u);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
 
     auto pull = make_pull_test(ep, schema, "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms);
 
     void *wbuf = push->write_acquire(1000ms);
@@ -1567,13 +1725,14 @@ TEST_F(ZmqQueueTest, Schema_AlignmentPadding_FieldsPreserved)
     auto push = make_push_test("tcp://127.0.0.1:0", schema, "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     EXPECT_EQ(push->item_size(), 16u);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
 
     auto pull = make_pull_test(ep, schema, "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms);
 
     void *wbuf = push->write_acquire(1000ms);
@@ -1615,13 +1774,14 @@ TEST_F(ZmqQueueTest, Schema_MixedArrayFields_MultipleTypes_Roundtrip)
     auto push = make_push_test("tcp://127.0.0.1:0", schema, "packed", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     EXPECT_EQ(push->item_size(), 460u);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
 
     auto pull = make_pull_test(ep, schema, "packed", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms);
 
     void *wbuf = push->write_acquire(1000ms);
@@ -1863,14 +2023,15 @@ TEST_F(ZmqQueueTest, SendThread_DrainOnStop_CompletesWithoutHang)
                                /*bind=*/true, /*tag=*/std::nullopt, /*sndhwm=*/0,
                                /*depth=*/8, OverflowPolicy::Drop);
     ASSERT_NE(push, nullptr);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
 
     // Connect a PULL socket so ZMQ HWM is not a concern.
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
     auto pull = make_pull_test(ep, blob_schema(8), "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms); // allow TCP handshake
 
     // Write several items quickly (all fit in ring depth=8).
@@ -1901,14 +2062,15 @@ TEST_F(ZmqQueueTest, SendThread_Roundtrip_ThenStop)
                                /*bind=*/true, /*tag=*/std::nullopt, /*sndhwm=*/0,
                                /*depth=*/16, OverflowPolicy::Drop);
     ASSERT_NE(push, nullptr);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
 
-    auto pull = make_pull_test(static_cast<ZmqQueue *>(push.get())->actual_endpoint(),
-                               blob_schema(4), "aligned",
-                               /*bind=*/false);
+    auto pull = make_pull_test(
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get())),
+        blob_schema(4), "aligned",
+        /*bind=*/false);
     ASSERT_NE(pull, nullptr);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms);
 
     constexpr int kN = 3;
@@ -1950,17 +2112,18 @@ TEST_F(ZmqQueueTest, AbstractQueue_Roundtrip_ViaPushPullPtr)
         make_push_test("tcp://127.0.0.1:0", blob_schema(8), "aligned",
                        /*bind=*/true, /*tag=*/std::nullopt, /*sndhwm=*/0, /*depth=*/16);
     ASSERT_NE(push, nullptr);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     // Downcast for the seed; helper takes the concrete ZmqQueue& to
     // stay unambiguous against the abstract bases.
     ASSERT_TRUE(seed_self_allowlist(*static_cast<ZmqQueue *>(push.get())));
 
     // Downcast only to get actual_endpoint(); all other calls use Queue*.
-    std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
     std::unique_ptr<QueueReader> pull = make_pull_test(ep, blob_schema(8), "aligned",
                                                        /*bind=*/false);
     ASSERT_NE(pull, nullptr);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms);
 
     // Write via Queue*.
@@ -2118,11 +2281,11 @@ TEST_F(ZmqQueueTest, DoubleStart_IsIdempotent)
     auto q = make_pull_test("tcp://127.0.0.1:0", blob_schema(8), "aligned", /*bind=*/true);
     ASSERT_NE(q, nullptr);
 
-    ASSERT_TRUE(q->start());
+    ASSERT_TRUE(activate(*q));
     EXPECT_TRUE(q->is_running());
 
     // Second start() on running queue returns true without side effects.
-    EXPECT_TRUE(q->start()) << "start() on running queue must return true (idempotent)";
+    EXPECT_TRUE(activate(*q)) << "start() on running queue must return true (idempotent)";
     EXPECT_TRUE(q->is_running()) << "queue must remain running after idempotent start()";
 
     q->stop();
@@ -2160,25 +2323,36 @@ TEST_F(ZmqQueueTest, ReadAcquire_OnWriteModeQueue_ReturnsNull)
     EXPECT_NO_THROW(zpush->read_release());
 }
 
-TEST_F(ZmqQueueTest, ActualEndpoint_BeforeStart_ReturnsConfiguredEndpoint)
+TEST_F(ZmqQueueTest, WhenNotYetBound_QueueReportsNoBoundAddress)
 {
-    // actual_endpoint() before start() must return the configured endpoint string.
-    // This covers the fallback path: pImpl->actual_endpoint.empty() → pImpl->endpoint.
-    // After start() with port 0, it returns the OS-assigned port instead.
+    // HEP-CORE-0036 §6.7.2 — a bind REQUEST is not a bound ADDRESS, and a
+    // queue that has not bound has no address to report.
+    //
+    // This test used to assert the opposite, under the name
+    // `ActualEndpoint_BeforeStart_ReturnsConfiguredEndpoint`: it pinned
+    // the fallback `actual_endpoint.empty() ? endpoint : actual_endpoint`
+    // as though it were the contract.  It was pinning the defect.  The
+    // fallback handed callers `tcp://127.0.0.1:0` — a value that passes
+    // any non-empty check and that no peer can connect to — and the one
+    // production site that published a dial target guarded it with
+    // exactly such a check, which therefore could never fail.
     const std::string ep = "tcp://127.0.0.1:0";
     auto push = make_push_test(ep, blob_schema(8), "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     EXPECT_FALSE(push->is_running());
 
-    // Before start(), actual_endpoint() returns the configured endpoint.
-    EXPECT_EQ(static_cast<ZmqQueue *>(push.get())->actual_endpoint(), ep);
+    // Before the bind there is no answer, and the queue says so rather
+    // than substituting the configured request.
+    EXPECT_FALSE(static_cast<ZmqQueue *>(push.get())->bound_address().has_value())
+        << "a queue that has not bound reported an address anyway — the "
+           "configured bind request is being passed off as one";
 
-    // After start(), actual_endpoint() returns the OS-assigned port (differs from ":0").
-    ASSERT_TRUE(push->start());
+    // After the bind, the address exists and is NOT the configured request.
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string bound_ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
-    EXPECT_NE(bound_ep, ep)
-        << "After start(), actual_endpoint() should return the OS-assigned port";
+    const std::string bound_ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
+    EXPECT_NE(bound_ep, ep) << "port 0 was never resolved to a real port";
     EXPECT_TRUE(bound_ep.find("tcp://127.0.0.1:") == 0)
         << "Bound endpoint should be tcp://127.0.0.1:<port>";
     // Verify the assigned port is a valid non-zero port.
@@ -2202,15 +2376,16 @@ TEST_F(ZmqQueueTest, SchemaMismatch_TagMismatch_IncrementsFrameError)
     auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(8), "aligned",
                                /*bind=*/true, /*tag=*/tag_a);
     ASSERT_NE(push, nullptr);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
 
     auto pull = make_pull_test(ep, blob_schema(8), "aligned",
                                /*bind=*/false, /*max_buffer_depth=*/8,
                                /*schema_tag=*/tag_b);
     ASSERT_NE(pull, nullptr);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms);
 
     void *wbuf = push->write_acquire(500ms);
@@ -2266,23 +2441,28 @@ TEST_F(ZmqQueueTest, Block_WriteAcquire_Timeout_IncrementsOverrun)
 }
 
 // ============================================================================
-// J6 — actual_endpoint() after bind to port 0 resolves to real port
+// J6 — an ephemeral bind request becomes a real address, and only then
 // ============================================================================
 
-TEST_F(ZmqQueueTest, ActualEndpoint_BindPort0_ResolvesActualPort)
+TEST_F(ZmqQueueTest, WhenConfiguredWithPortZero_AddressAppearsOnlyAfterBind)
 {
     // Binding to port 0 requests an OS-assigned ephemeral port.
-    // After start(), actual_endpoint() must return the resolved address, NOT ":0".
+    // HEP-CORE-0036 §6.7.2: until the bind resolves it, the queue has no
+    // address — and after it, the address is never port 0.
     auto push = make_push_test("tcp://127.0.0.1:0", blob_schema(8), "aligned",
                                /*bind=*/true);
     ASSERT_NE(push, nullptr);
 
-    // Before start: still returns the configured ":0" endpoint.
-    EXPECT_EQ(static_cast<ZmqQueue *>(push.get())->actual_endpoint(), "tcp://127.0.0.1:0");
+    // Before start: no address.  This line asserted the reverse until the
+    // bind-request / bound-address split; it was pinning the fallback.
+    EXPECT_FALSE(static_cast<ZmqQueue *>(push.get())->bound_address().has_value())
+        << "reported an address before binding — that can only be the "
+           "configured ':0' request wearing the wrong hat";
 
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string actual = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string actual =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
 
     // After start: must NOT be the wildcard address.
     EXPECT_NE(actual, "tcp://127.0.0.1:0")
@@ -2351,14 +2531,15 @@ TEST_F(ZmqQueueTest, Packing_SameLogicalData_RoundtripsBitExactInBothModes)
         EXPECT_EQ(push->item_size(), expected_item_size)
             << "item_size mismatch for " << packing
             << " — schema math drifted from the expected layout";
-        ASSERT_TRUE(push->start());
+        ASSERT_TRUE(activate(*push));
         ASSERT_TRUE(seed_self_allowlist(*push));
-        const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+        const std::string ep =
+            ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
 
         auto pull = make_pull_test(ep, schema, packing, /*bind=*/false);
         ASSERT_NE(pull, nullptr);
         EXPECT_EQ(pull->item_size(), expected_item_size);
-        ASSERT_TRUE(pull->start());
+        ASSERT_TRUE(activate(*pull));
         std::this_thread::sleep_for(50ms);
 
         // (4) Pin the zero-padding contract: write_acquire must return
@@ -2428,14 +2609,15 @@ TEST_F(ZmqQueueTest, ChecksumEnforced_Roundtrip)
         make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     push->set_checksum_policy(ChecksumPolicy::Enforced);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
 
     auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
     pull->set_checksum_policy(ChecksumPolicy::Enforced);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms);
 
     void *wbuf = push->write_acquire(1000ms);
@@ -2463,14 +2645,15 @@ TEST_F(ZmqQueueTest, ChecksumManual_NoStamp_ReceiverRejects)
         make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     push->set_checksum_policy(ChecksumPolicy::Manual); // sender does NOT auto-stamp
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
 
     auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
     pull->set_checksum_policy(ChecksumPolicy::Enforced); // receiver verifies
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms);
 
     void *wbuf = push->write_acquire(1000ms);
@@ -2498,14 +2681,15 @@ TEST_F(ZmqQueueTest, ChecksumNone_Roundtrip)
         make_push_test("tcp://127.0.0.1:0", blob_schema(kItemSize), "aligned", /*bind=*/true);
     ASSERT_NE(push, nullptr);
     push->set_checksum_policy(ChecksumPolicy::None);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = static_cast<ZmqQueue *>(push.get())->actual_endpoint();
+    const std::string ep =
+        ::pylabhub::tests::bound_endpoint_or_fail(*static_cast<ZmqQueue *>(push.get()));
 
     auto pull = make_pull_test(ep, blob_schema(kItemSize), "aligned", /*bind=*/false);
     ASSERT_NE(pull, nullptr);
     pull->set_checksum_policy(ChecksumPolicy::None);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms);
 
     void *wbuf = push->write_acquire(1000ms);
@@ -2546,8 +2730,8 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanIn_ConsumerBinds)
     auto q = ZmqQueue::create_reader(ChannelTopology::FanIn, std::move(opts));
     ASSERT_NE(q, nullptr);
     // Consumer under fan-in is the BINDING side — start() should bind.
-    ASSERT_TRUE(q->start());
-    const std::string ep = q->actual_endpoint();
+    ASSERT_TRUE(activate(*q));
+    const std::string ep = ::pylabhub::tests::bound_endpoint_or_fail(*q);
     EXPECT_FALSE(ep.empty()) << "fan-in consumer must bind and publish its resolved endpoint";
     q->stop();
 }
@@ -2564,10 +2748,14 @@ TEST_F(ZmqQueueTest, TopologyFactory_OneToOne_ProducerBinds)
 
     auto q = ZmqQueue::create_writer(ChannelTopology::OneToOne, std::move(opts));
     ASSERT_NE(q, nullptr);
-    ASSERT_TRUE(q->start());
+    ASSERT_TRUE(activate(*q));
     ASSERT_TRUE(seed_self_allowlist(*q));
-    EXPECT_FALSE(q->actual_endpoint().empty())
-        << "one-to-one producer must bind and publish its resolved endpoint";
+    // `.empty()` would NOT test this claim: `actual_endpoint()` falls
+    // back to the configured bind request, which is non-empty.  The
+    // claim is that the ephemeral port RESOLVED, so assert that (#148 M2).
+    EXPECT_NE(::pylabhub::tests::bound_endpoint_or_fail(*q), "tcp://127.0.0.1:0")
+        << "one-to-one producer must bind and publish its RESOLVED endpoint, "
+           "not the unresolved bind request";
     q->stop();
 }
 
@@ -2588,9 +2776,9 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanInPlusOneToOne_Roundtrip)
     tx.packing = "aligned";
     auto push = ZmqQueue::create_writer(ChannelTopology::OneToOne, std::move(tx));
     ASSERT_NE(push, nullptr);
-    ASSERT_TRUE(push->start());
+    ASSERT_TRUE(activate(*push));
     ASSERT_TRUE(seed_self_allowlist(*push));
-    const std::string ep = push->actual_endpoint();
+    const std::string ep = ::pylabhub::tests::bound_endpoint_or_fail(*push);
     ASSERT_FALSE(ep.empty());
 
     // Consumer: OneToOne (DIALING) — connects to the producer's endpoint.
@@ -2601,7 +2789,7 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanInPlusOneToOne_Roundtrip)
     rx.packing = "aligned";
     auto pull = ZmqQueue::create_reader(ChannelTopology::OneToOne, std::move(rx));
     ASSERT_NE(pull, nullptr);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     std::this_thread::sleep_for(50ms);
 
     void *wbuf = push->write_acquire(1000ms);
@@ -2633,10 +2821,12 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_ProducerBinds_PubSocket)
 
     auto pub = ZmqQueue::create_writer(ChannelTopology::FanOut, std::move(opts));
     ASSERT_NE(pub, nullptr);
-    ASSERT_TRUE(pub->start());
+    ASSERT_TRUE(activate(*pub));
     ASSERT_TRUE(seed_self_allowlist(*pub));
-    EXPECT_FALSE(pub->actual_endpoint().empty())
-        << "fan-out producer must bind and publish its resolved endpoint";
+    // See the one-to-one case above — `.empty()` cannot fail here.
+    EXPECT_NE(::pylabhub::tests::bound_endpoint_or_fail(*pub), "tcp://127.0.0.1:0")
+        << "fan-out producer must bind and publish its RESOLVED endpoint, "
+           "not the unresolved bind request";
     pub->stop();
 }
 
@@ -2659,9 +2849,9 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_Roundtrip_PubSubSingleSubscriber)
     tx.packing = "aligned";
     auto pub = ZmqQueue::create_writer(ChannelTopology::FanOut, std::move(tx));
     ASSERT_NE(pub, nullptr);
-    ASSERT_TRUE(pub->start());
+    ASSERT_TRUE(activate(*pub));
     ASSERT_TRUE(seed_self_allowlist(*pub));
-    const std::string ep = pub->actual_endpoint();
+    const std::string ep = ::pylabhub::tests::bound_endpoint_or_fail(*pub);
     ASSERT_FALSE(ep.empty());
 
     // Consumer: FanOut (DIALING).
@@ -2672,7 +2862,7 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_Roundtrip_PubSubSingleSubscriber)
     rx.packing = "aligned";
     auto sub = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(rx));
     ASSERT_NE(sub, nullptr);
-    ASSERT_TRUE(sub->start());
+    ASSERT_TRUE(activate(*sub));
 
     // PUB/SUB has an inherent "slow joiner" window — messages sent before the
     // SUB completes its subscription round-trip are dropped.  Do NOT settle
@@ -2776,9 +2966,9 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_LateJoiner_ReceivesFramesAfterSubscr
     tx.packing = "aligned";
     auto pub = ZmqQueue::create_writer(ChannelTopology::FanOut, std::move(tx));
     ASSERT_NE(pub, nullptr);
-    ASSERT_TRUE(pub->start());
+    ASSERT_TRUE(activate(*pub));
     ASSERT_TRUE(seed_self_allowlist(*pub));
-    const std::string ep = pub->actual_endpoint();
+    const std::string ep = ::pylabhub::tests::bound_endpoint_or_fail(*pub);
 
     // Publish two frames BEFORE any SUB attaches.  These are NOT
     // guaranteed to be dropped: ZmqQueue buffers writes in an async
@@ -2807,7 +2997,7 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_LateJoiner_ReceivesFramesAfterSubscr
     rx.packing = "aligned";
     auto sub = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(rx));
     ASSERT_NE(sub, nullptr);
-    ASSERT_TRUE(sub->start());
+    ASSERT_TRUE(activate(*sub));
 
     // PUB/SUB slow-joiner coordination.  A plain PUB cannot observe when the
     // SUB's subscription has reached it, and a fixed "settle" sleep RACES the
@@ -2855,9 +3045,9 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_TwoSubscribers_BothReceive)
     tx.packing = "aligned";
     auto pub = ZmqQueue::create_writer(ChannelTopology::FanOut, std::move(tx));
     ASSERT_NE(pub, nullptr);
-    ASSERT_TRUE(pub->start());
+    ASSERT_TRUE(activate(*pub));
     ASSERT_TRUE(seed_self_allowlist(*pub));
-    const std::string ep = pub->actual_endpoint();
+    const std::string ep = ::pylabhub::tests::bound_endpoint_or_fail(*pub);
 
     auto make_sub = [&]()
     {
@@ -2868,7 +3058,7 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_TwoSubscribers_BothReceive)
         rx.packing = "aligned";
         auto s = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(rx));
         EXPECT_NE(s, nullptr);
-        EXPECT_TRUE(s->start());
+        EXPECT_TRUE(activate(*s));
         return s;
     };
 
@@ -2924,9 +3114,9 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_WrongServerPubkey_HandshakeFails)
     tx.packing = "aligned";
     auto pub = ZmqQueue::create_writer(ChannelTopology::FanOut, std::move(tx));
     ASSERT_NE(pub, nullptr);
-    ASSERT_TRUE(pub->start());
+    ASSERT_TRUE(activate(*pub));
     ASSERT_TRUE(seed_self_allowlist(*pub));
-    const std::string ep = pub->actual_endpoint();
+    const std::string ep = ::pylabhub::tests::bound_endpoint_or_fail(*pub);
 
     // Mismatched pubkey — freshly generated so it's a well-formed
     // Z85 key that passes factory validation but is NOT the seeded
@@ -2942,7 +3132,7 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_WrongServerPubkey_HandshakeFails)
     rx.packing = "aligned";
     auto sub = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(rx));
     ASSERT_NE(sub, nullptr);
-    ASSERT_TRUE(sub->start());
+    ASSERT_TRUE(activate(*sub));
 
     // Negative test — no ordering sleep needed.  The CURVE handshake fails
     // (wrong serverkey), so the SUB never authenticates and can never receive,
@@ -2975,9 +3165,9 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_PubStop_SubReadReturnsWithinTimeout)
     tx.packing = "aligned";
     auto pub = ZmqQueue::create_writer(ChannelTopology::FanOut, std::move(tx));
     ASSERT_NE(pub, nullptr);
-    ASSERT_TRUE(pub->start());
+    ASSERT_TRUE(activate(*pub));
     ASSERT_TRUE(seed_self_allowlist(*pub));
-    const std::string ep = pub->actual_endpoint();
+    const std::string ep = ::pylabhub::tests::bound_endpoint_or_fail(*pub);
 
     ZmqQueue::RxCreateOptions rx;
     rx.endpoint = ep;
@@ -2986,7 +3176,7 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanOut_PubStop_SubReadReturnsWithinTimeout)
     rx.packing = "aligned";
     auto sub = ZmqQueue::create_reader(ChannelTopology::FanOut, std::move(rx));
     ASSERT_NE(sub, nullptr);
-    ASSERT_TRUE(sub->start());
+    ASSERT_TRUE(activate(*sub));
 
     // Deterministically wait for the SUB's CURVE handshake to COMPLETE before
     // stopping the producer (no fixed settle sleep).  If we stop mid-handshake,
@@ -3057,7 +3247,7 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanIn_ConsumerIgnoresServerPubkey_WarnsAndS
 
     auto q = ZmqQueue::create_reader(ChannelTopology::FanIn, std::move(opts));
     ASSERT_NE(q, nullptr);
-    EXPECT_TRUE(q->start());
+    EXPECT_TRUE(activate(*q));
     q->stop();
 }
 
@@ -3147,12 +3337,17 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanInProducerBoundToConsumer_CurveRoundtrip
     // branch didn't extract it from REG_ACK, so `create_writer(FanIn)`
     // produced a queue whose `is_configured()` was permanently false
     // and `start()` refused.  This test drives the fixed path:
-    //   1. Fan-in consumer BINDING with allowlist seeded via
-    //      apply_master_approval(CONSUMER_REG_ACK with producers[] =
-    //      producer allowlist snapshot).
+    //   1. Fan-in consumer BINDING: approved, then its ZAP allowlist
+    //      seeded directly with the shared test pubkey.
     //   2. Fan-in producer DIALING via create_writer(FanIn) with
     //      opts.server_pubkey = consumer's data pubkey.
-    //   3. Producer sends, consumer receives.
+    //   3. Producer's dial is DEFERRED by apply and completed by
+    //      finalize_connect (§6.6.3) — the two-phase activation.
+    //   4. Producer sends, consumer receives.
+    //
+    // The sibling test below (`..._WireApplyMasterApproval`) drives the
+    // same end-to-end path with the serverkey arriving on the WIRE
+    // instead of in `opts`; both must clear the same §6.6.3 deferral.
     using pylabhub::hub::ChannelTopology;
     using pylabhub::hub::ZmqQueue;
 
@@ -3165,10 +3360,21 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanInProducerBoundToConsumer_CurveRoundtrip
     rx.packing = "aligned";
     auto pull = ZmqQueue::create_reader(ChannelTopology::FanIn, std::move(rx));
     ASSERT_NE(pull, nullptr);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     ASSERT_TRUE(seed_self_allowlist(*pull));
-    const std::string ep = pull->actual_endpoint();
-    ASSERT_FALSE(ep.empty());
+    const std::string ep = ::pylabhub::tests::bound_endpoint_or_fail(*pull);
+    // NOT `ASSERT_FALSE(ep.empty())` — that guard cannot fail.
+    // `actual_endpoint()` falls back to the CONFIGURED string when the
+    // bind has not resolved, and the configured string here is
+    // "tcp://127.0.0.1:0", which is non-empty.  The question that
+    // actually matters is whether the ephemeral port resolved, because
+    // this value is about to be handed to the producer as a dial
+    // target and nothing can connect to port 0.  Ask that instead.
+    // (#148 M2 turns this into a type distinction — a bound address is
+    // not a bind request — after which the check moves to the compiler.)
+    ASSERT_NE(ep, "tcp://127.0.0.1:0")
+        << "actual_endpoint() returned the unresolved bind REQUEST, not a bound address; "
+           "the producer would be told to dial port 0";
 
     // Producer: fan-in DIALING (PUSH connect) via create_writer(FanIn)
     // with opts.server_pubkey populated — the B1 fix path.
@@ -3179,8 +3385,15 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanInProducerBoundToConsumer_CurveRoundtrip
     tx.packing = "aligned";
     auto push = ZmqQueue::create_writer(ChannelTopology::FanIn, std::move(tx));
     ASSERT_NE(push, nullptr);
-    ASSERT_TRUE(push->start()) << "fan-in producer with opts.server_pubkey must reach Configured "
-                                  "at factory time and start successfully (B1 pin)";
+    ASSERT_TRUE(activate(*push)) << "fan-in producer carrying opts.server_pubkey must accept the "
+                                    "master's approval (B1 pin)";
+    // §6.6.3 — apply stops a fan-in producer at DialDeferred; it does
+    // NOT connect.  Pinned so the two-phase flow cannot silently
+    // collapse back into a connect-inside-apply.
+    EXPECT_FALSE(push->is_running())
+        << "apply_master_approval must DEFER the dial on fan-in DIALING PUSH";
+    ASSERT_TRUE(complete_deferred_dial(*push)) << "finalize_connect() runs the deferred start()";
+    EXPECT_TRUE(push->is_running()) << "finalize_connect() drives DialDeferred → Active";
     // CURVE handshake settle — same pattern as OneToOne round-trip test.
     std::this_thread::sleep_for(100ms);
 
@@ -3216,9 +3429,9 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanInProducer_WireApplyMasterApproval)
     rx.packing = "aligned";
     auto pull = ZmqQueue::create_reader(ChannelTopology::FanIn, std::move(rx));
     ASSERT_NE(pull, nullptr);
-    ASSERT_TRUE(pull->start());
+    ASSERT_TRUE(activate(*pull));
     ASSERT_TRUE(seed_self_allowlist(*pull));
-    const std::string ep = pull->actual_endpoint();
+    const std::string ep = ::pylabhub::tests::bound_endpoint_or_fail(*pull);
 
     // Producer: fan-in DIALING — construct WITHOUT opts.server_pubkey.
     // The queue stays in Standby until apply_master_approval seeds it.
@@ -3256,14 +3469,9 @@ TEST_F(ZmqQueueTest, TopologyFactory_FanInProducer_WireApplyMasterApproval)
         << "apply_master_approval on fan-in DIALING PUSH defers connect "
            "per §6.6.3 — queue must not be running yet";
 
-    struct AlwaysReadyOracle : public pylabhub::hub::PeerReadinessOracle
-    {
-        PollResult poll() noexcept override { return PollResult::Ready; }
-    } oracle;
-    ASSERT_TRUE(push->finalize_connect(oracle, /*timeout_ms=*/1000,
-                                       /*is_cancelled=*/{}, "[test]"))
+    ASSERT_TRUE(complete_deferred_dial(*push))
         << "finalize_connect() completes the deferred start()";
-    EXPECT_TRUE(push->is_running()) << "finalize_connect() drives Configured → Active";
+    EXPECT_TRUE(push->is_running()) << "finalize_connect() drives DialDeferred → Active";
     std::this_thread::sleep_for(100ms);
 
     void *wbuf = push->write_acquire(1000ms);
@@ -3303,8 +3511,14 @@ TEST_F(ZmqQueueTest, ApplyMasterApproval_FanOutDialingRejectsMultiPeer)
     const std::string pk{test_server_key().view()};
     nlohmann::json ack;
     ack["producers"] = nlohmann::json::array();
-    ack["producers"].push_back({{"endpoint", "tcp://127.0.0.1:1"}, {"pubkey_z85", pk}});
-    ack["producers"].push_back({{"endpoint", "tcp://127.0.0.1:2"}, {"pubkey_z85", pk}});
+    // Rows carry role_uid (HEP-CORE-0036 §6.2).  Named deliberately: with
+    // nameless rows this test would still refuse, but for the WRONG reason
+    // — the row check would fire before the cardinality rule it exists to
+    // pin, and the test would pass vacuously.
+    ack["producers"].push_back(
+        {{"role_uid", "prod.fanout.uid1"}, {"endpoint", "tcp://127.0.0.1:1"}, {"pubkey_z85", pk}});
+    ack["producers"].push_back(
+        {{"role_uid", "prod.fanout.uid2"}, {"endpoint", "tcp://127.0.0.1:2"}, {"pubkey_z85", pk}});
     EXPECT_FALSE(sub->apply_master_approval(ack))
         << "fan-out DIALING (SUB) must refuse N>1 peer list";
 }

@@ -1173,7 +1173,7 @@ void BrokerRequestComm::send_checksum_error(const nlohmann::json &report)
 std::optional<nlohmann::json>
 BrokerRequestComm::send_endpoint_update(const std::string &channel,
                                         const std::string &endpoint_type,
-                                        const std::string &endpoint, int timeout_ms)
+                                        const ::pylabhub::BoundAddress &endpoint, int timeout_ms)
 {
     // Sync REQ/REP per HEP-CORE-0007 §12.2.1 + HEP-CORE-0021 §16.3.
     // Broker handler (broker_service.cpp:handle_endpoint_update_req)
@@ -1186,7 +1186,7 @@ BrokerRequestComm::send_endpoint_update(const std::string &channel,
     nlohmann::json payload;
     payload["channel_name"] = channel;
     payload["endpoint_type"] = endpoint_type;
-    payload["endpoint"] = endpoint;
+    payload["endpoint"] = endpoint.str();
     return pImpl->do_request("ENDPOINT_UPDATE_REQ", "ENDPOINT_UPDATE_ACK", std::move(payload),
                              timeout_ms);
 }

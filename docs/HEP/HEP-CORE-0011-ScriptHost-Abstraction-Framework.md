@@ -469,11 +469,11 @@ init_done = Ops::default_init_ready(api) && script_hook_ready
     known peer set from `REG_ACK.producers[]`).  This is the
     layer-clean shape per HEP-CORE-0036 §I9.1 (topology and
     transport are queue-internal); the shipped 2026-07-11 code
-    reads via `api.admitted_peers_count(ch) >= 1` which snapshots
+    reads via `api.allowed_peer_count(ch) >= 1` which snapshots
     the role-side `allowlist_cache` (same answer, one indirection
     up).  The gate's read path consolidates to
     `channel_admission_populated` in the follow-on layer
-    cleanup; `allowed_peers` / `admitted_peers_count` remain as
+    cleanup; `allowed_peers` / `allowed_peer_count` remain as
     script-facing observability per HEP-CORE-0036 §I11 read-only
     surface.
   - **Processor** → same rule as Consumer on the rx side; tx side
@@ -540,13 +540,13 @@ on its pre-Ready cycle rate.
 
 **Idiomatic script pattern.**  A user script's `on_init` should
 be a fast state-check.  The framework already surfaces the state
-via `api.admitted_peers_count(channel)`, `api.allowed_peers(channel)`,
+via `api.allowed_peer_count(channel)`, `api.allowed_peers(channel)`,
 `api.producers(channel)`, `api.consumers(channel)`.  Idiomatic
 first check:
 
 ```python
 def on_init(api):
-    if api.admitted_peers_count(api.channel()) < 1:
+    if api.allowed_peer_count(api.channel()) < 1:
         return False    # explicit — matches framework default;
                         # trivially cheap
     # additional script-specific conditions
@@ -609,7 +609,7 @@ defines `on_init` MUST:
 - **Consume framework state; do not mutate the data plane.**  Safe
   to call from `on_init` under the new contract: `api.log*`,
   `api.uid()`, `api.channel()`, `api.allowed_peers(channel)`,
-  `api.admitted_peers_count(channel)`, `api.producers(channel)`,
+  `api.allowed_peer_count(channel)`, `api.producers(channel)`,
   `api.consumers(channel)`, `api.is_channel_ready(channel)`,
   `api.stop()` (immediate exit path).  Not safe: `api.write_acquire`,
   `api.read_acquire`, or any data-plane mutator — the loop has not
@@ -661,14 +661,14 @@ specific downstream consumer named `analytics.primary`:
 def on_init(api):
     ch_in = api.channel()
     ch_out = api.out_channel()
-    if api.admitted_peers_count(ch_in) < 3:
+    if api.allowed_peer_count(ch_in) < 3:
         return False    # additional requirement above framework default of >= 1
     if "analytics.primary" not in api.consumers(ch_out):
         return False    # tx-side condition; framework default alone would say True
     return True
 ```
 
-The framework default already enforces `admitted_peers_count(ch_in) >= 1`.
+The framework default already enforces `allowed_peer_count(ch_in) >= 1`.
 The script tightens this to `>= 3` and adds a tx-side requirement
 by returning `False` until both are met.  Neither the framework
 default nor the script alone would produce the correct behaviour;
@@ -2129,7 +2129,7 @@ yet wired when the callback fires.
 | `api.queue_mechanism(side)` (HEP-CORE-0035 §2) | ✓ | ✓ | ✓ | ✓ |
 | `api.is_channel_ready(channel)` (HEP-CORE-0036 §6.7) | ✓ (`true` from cycle 1 on paths that complete Step 6d) | ✓ | ✓ | ✓ |
 | `api.allowed_peers(channel)` (HEP-CORE-0036 §I11) | ✓ (seeded from REG_ACK on dialing side; may be empty at cycle 1 on binding-side and grow as CHANNEL_AUTH_CHANGED_NOTIFY drains — this is the state on_init is meant to observe) | ✓ | ✓ | ✓ |
-| `api.admitted_peers_count(channel)` (§I11) | ✓ (same source as `allowed_peers`; convenience count for the loop-ready gate) | ✓ | ✓ | ✓ |
+| `api.allowed_peer_count(channel)` (§I11) | ✓ (same source as `allowed_peers`; convenience count for the loop-ready gate) | ✓ | ✓ | ✓ |
 | `api.producers(channel)` / `api.consumers(channel)` (HEP-CORE-0017 §3.3.2 live-peer accessors) | ✓ (may be empty until first `phase=live` NOTIFY lands) | ✓ | ✓ | ✓ |
 | `api.band_join(band)` | ✓ (handler is up; BRC connected) | ✓ | ✓ | ✓ |
 | `api.band_leave(band)` | ✓ | ✓ | ✓ | ✓ |
@@ -2939,6 +2939,91 @@ the single most-cited source of cross-engine drift in past audits
 (#190 Stage 1C found Native lagging Lua/Python on `is_channel_ready`;
 #194 found 8 missing items on Native's hub-side wire).
 
+### Where a member goes — three categories
+
+Before the matrix says *how* to add a member, this says *where it
+belongs*.  Every script member is in exactly one category, and each has
+a visible home in each engine's binding file.  This is a contract about
+**placement**, satisfied by reading — there is no shared table, no
+dispatch layer and no cross-engine shape vocabulary.  Each engine
+implements everything in its own idiom.
+
+| Category | Owned by | Example |
+|---|---|---|
+| **General** | nothing outside this repository | `uid`, `log`, `stop`, `set_shared_data`, `report_metric` |
+| **Protocol-facing** | a wire protocol or broker state machine | `allowed_peers` (HEP-CORE-0036), `band_join` (HEP-CORE-0030), `open_inbox` (HEP-CORE-0027) |
+| **Loop-owned** | the data loop | slot access, `flexzone`, `spinlock`, the cycle callbacks |
+
+**The membership test.**  A member is *general* when its binding needs
+only a public accessor on the API object plus primitive packaging — a
+string, a number, a boolean, a small tagged value.
+
+It stops being general the moment the binding must reach into a library
+data structure or know a protocol.  `allowed_peers` returns a vector
+whose element shape is fixed by HEP-CORE-0036 §6.5, so a binding for it
+must know that shape; it belongs with the protocol.
+
+Loop-owned members fail an earlier test: they carry references into
+mapped memory, or they run per-sample.  `api.flexzone(side)` returns a
+raw pointer cast through a cached FFI type.  Nothing may wrap, copy or
+uniformly re-render those, and no general-purpose mechanism should
+describe them at all.
+
+**Why placement is a contract and not a preference.**  The categories
+have different change costs, and mixing them hides that.  A general
+member is local and cheap.  A protocol-facing one changes a contract
+another component depends on.  A loop-owned one costs latency on every
+sample.  A binding file that interleaves all three invites the cheapest
+habit to be applied to the most expensive case.
+
+**Per-engine expression.**  Same contract, each engine's own spelling:
+
+- **Native** — the model.  Its context struct is already sectioned, and
+  each protocol section names its owning HEP.  Keep the general section
+  free of protocol drift.
+- **Lua** — the general home is the shared closure-pushing helper, and it
+  must hold *only* general members.  Protocol closures belong in siblings
+  named for their subject.
+- **Python** — the `.def` chain splits into one helper per category, in
+  the same order.
+
+Anything whose semantics are set elsewhere stays out of the general
+section, however simple its signature looks.  If a member exists because
+a broker replies to a request, because a wire frame carries a field, or
+because a slot has a layout, it is not general.
+
+### Same reach, different shape
+
+The contract covers two things: **where a member lives** in each binding
+file, and **whether a script can reach it at all**.  It says nothing about
+what the value looks like on arrival.  Shape belongs to the engine, and each
+one should read naturally to someone writing in that language.
+
+`api.metrics()` is the clearest case — one tree of counters, three
+renderings:
+
+| Engine | What the script gets back |
+|---|---|
+| Lua | a table of nested tables — `m.queue.depth` |
+| Python | a `dict` — `m["queue"]["depth"]` |
+| Native | a snapshot handle plus a lookup — `metrics_get(snap, "queue.depth", &out)`, because C cannot return a map |
+
+No one of these is the right shape to standardise on.  Pushing Lua and
+Python into the native form would make both worse, and pushing native into
+theirs is not possible.  What has to match is that all three can read the
+same counters.
+
+**The rule: same reach, different shape.**  When a member is added, or a
+field appears inside an aggregate, every engine must be able to get at it —
+spelled however that language spells things.  A parity check asks *can a
+script reach this here?*, never *does it come back in the same container?*
+
+**The trap this creates.**  An engine that re-assembles an aggregate by hand
+instead of deriving it from the one place the framework builds it will drift
+the moment the source grows a field — silently, and in that language only.
+Derive where you can.  Where an engine has to build its own shape, that site
+is a standing drift risk and belongs in the parity checks by name.
+
 ### Sync Matrix
 
 | Engine | Source of truth | Update site for one new API method |
@@ -2995,6 +3080,80 @@ reviewing pybind11 binding changes.
 add a CI smoke test that imports every method named in the .pyi
 against the live pybind11 module and asserts presence; for now,
 maintenance is by review discipline.
+
+**And when that test is written, it must probe the live engine — never
+parse the binding source.**  An audit on 2026-08-10 tried to derive the
+three surfaces statically and got a different wrong answer four times,
+each correction moving the count:
+
+- grepping the native header for function pointers misses members that
+  are plain **data fields** on the context struct — six false gaps;
+- a single-line regex for pybind `.def` misses every **multi-line** form,
+  which made the hub surface look thirteen members short when it is in
+  fact at full parity;
+- bounding extraction to a binding class misses **module-level** `m.def`,
+  which is where `version_info` lives;
+- and grepping Lua for `push_closure` misses members set as direct
+  **`lua_setfield`** string entries — which inflated the Lua gap from
+  four members to six.
+
+Reading three binding files and diffing them by eye is exactly what a
+reviewer does, and it was wrong every time.  Review discipline is the
+interim measure; it is not a substitute, and the drift it missed is
+recorded below.
+
+**Drift found by that audit, all of it pre-existing, all of it now
+closed.**  Lua was missing `allowed_peer_count`, `allowed_peer_contains`,
+`band_member_count` and `band_member_contains`, which Python and Native
+both had.  Native was missing `run_dir`, `logs_dir` and `script_dir`,
+which Lua and Python both had — added as context fields, so the native
+plugin ABI moved to v16.  The hub surface was clean and stayed clean.
+
+Closing it moved four things into `RoleAPIBase`, which is where the
+drift had been hiding: `allowed_peer_contains`, `band_member_count`,
+`band_member_contains`, and the already-present `allowed_peer_count`.
+
+Each had been hand-written once per role API class **and again in the
+native C shims** — four or five implementations of each question, none of
+them the library's.  That is why a nesting bug in the band reply had to be
+fixed three times in 2026-06 rather than once.  Adding the members to Lua
+would have made it five or six, which is what turned a small gap into a
+consolidation.
+
+Every binding now forwards, and each engine decides only how to *say* the
+answer: Python raises on a failed round-trip, Lua returns nil, native
+returns its documented `-1`.  Derived paths moved the same way — `logs_dir`
+and `run_dir` come from the base rather than each engine re-joining
+`role_dir` with a suffix it hopes matches.
+
+One deliberate exception: the native engine keeps its own
+`fetch_band_members`, because it also feeds a visitor-based enumerator that
+the base has no equivalent for.  Its count and contains shims forward like
+everyone else's.
+
+**One name defect the audit found has since been repaired**, and it is
+worth keeping as an example of how this kind of drift reads.  The count of
+peers permitted on a channel existed under two names: `allowed_peer_count`,
+which scripts could actually call, and `admitted_peers_count`, which no
+engine bound but which this document and HEP-CORE-0036 named throughout —
+including two worked examples that would not have run.
+
+The names were not interchangeable.  Both returned the same number, but
+this system distinguishes three facts about a peer, and only one of them
+was being counted:
+
+| Fact | Where it lives | Accessor |
+|---|---|---|
+| Permitted to connect | the role's allowlist cache | `allowed_peer_count` |
+| Admitted through the handshake | the broker's admission ledger | not exposed to scripts |
+| Actually connected and live | the broker's live-peer stream | `producers` / `consumers` |
+
+`admitted_peers_count` was named after the middle row and returned the
+top one, so a script author checking whether a peer had "been admitted"
+would have got permission instead.  A second name for one fact is a
+nuisance; a second name borrowed from a neighbouring fact is a trap.
+The accessor is now `allowed_peer_count` everywhere, and the three role
+API classes forward to it rather than each recomputing the same size.
 
 ---
 

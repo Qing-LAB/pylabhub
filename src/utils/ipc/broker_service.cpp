@@ -26,7 +26,8 @@
 #include "plh_version_registry.hpp"          // HEP-CORE-0032 §8 ABI fingerprint
 #include "utils/timeout_constants.hpp"
 #include "utils/wire_dispatch.hpp" // HEP-CORE-0046 unified receive+validate
-#include "utils/wire_envelope.hpp" // HEP-CORE-0046 §14 typed envelope
+#include "utils/wire_envelope.hpp"
+#include "utils/wire_bodies.hpp" // HEP-CORE-0046 §14 typed envelope
 #include "utils/zmq_context.hpp"
 
 #include "cppzmq/zmq.hpp"
@@ -372,6 +373,75 @@ static AbiFingerprintOutcome log_peer_abi_fingerprint(const nlohmann::json &req,
     }
     return outcome;
 }
+
+/// The one channel from a peer source to the wire.
+///
+/// Callers declare WHICH peers and whether the reader will dial them.
+/// Everything else — resolving a key to its role name, the row shape, and
+/// the diagnostic when a key cannot be named — lives here, so the four
+/// messages that carry peers cannot drift apart again the way they did
+/// (HEP-CORE-0036 §6.2, "Why a peer entry always names its peer").
+class PeerListBuilder
+{
+  public:
+    PeerListBuilder(const pylabhub::utils::security::PeerAuthority &authority,
+                    pylabhub::wire::PeerDetail detail, std::string channel_for_log)
+        : authority_(authority), detail_(detail), channel_(std::move(channel_for_log))
+    {
+    }
+
+    /// Source holds only a key — a channel's admission ledger stores
+    /// nothing else.  The name comes from the authority.
+    void add_key(const std::string &pubkey_z85)
+    {
+        std::string uid = authority_.local_uid_for_key(pubkey_z85);
+        if (uid.empty())
+        {
+            // An INVARIANT BREAK, not an ordinary case: a key reaches a
+            // channel ledger only by passing the registration gate, which
+            // proves it against the handshake and resolves it to its
+            // roster owner first.  Logged at the source rather than
+            // emitted quietly; the row still goes out with the key, since
+            // dropping it would silently un-admit a peer the ledger holds,
+            // and the receiving role refuses the message and keeps its
+            // previous set.
+            LOGGER_ERROR("Broker: event=AdmittedKeyHasNoName channel='{}' pubkey_z85='{}' — "
+                         "this key is in the channel's admission ledger but the peer "
+                         "authority cannot name it; admission binds key to uid before the "
+                         "ledger sees it, so the two have diverged (HEP-CORE-0036 §6.2).",
+                         channel_, pubkey_z85);
+        }
+        rows_.push_back(pylabhub::wire::PeerRow::from_pair(std::move(uid), pubkey_z85));
+    }
+
+    /// Source already holds both halves — a channel snapshot does.
+    void add_pair(std::string role_uid, std::string pubkey_z85, std::string endpoint = {})
+    {
+        rows_.push_back(pylabhub::wire::PeerRow::from_pair(
+            std::move(role_uid), std::move(pubkey_z85), std::move(endpoint)));
+    }
+
+    /// Ordered by uid before serialising.  The ledger's iteration order is
+    /// explicitly unspecified, and an order that reshuffles per process
+    /// makes wire captures and test pins unstable for no reason — the
+    /// roster block has sorted for this reason since it shipped.
+    [[nodiscard]] nlohmann::json take_json()
+    {
+        std::sort(rows_.begin(), rows_.end(),
+                  [](const pylabhub::wire::PeerRow &a, const pylabhub::wire::PeerRow &b)
+                  { return a.role_uid() < b.role_uid(); });
+        nlohmann::json out = nlohmann::json::array();
+        for (const auto &r : rows_)
+            out.push_back(r.to_json(detail_));
+        return out;
+    }
+
+  private:
+    const pylabhub::utils::security::PeerAuthority &authority_;
+    pylabhub::wire::PeerDetail detail_;
+    std::string channel_;
+    std::vector<pylabhub::wire::PeerRow> rows_;
+};
 
 } // namespace
 
@@ -899,7 +969,7 @@ class BrokerServiceImpl
     /// Peers without a captured ZMQ identity are skipped (no
     /// transport to reach them).  Caller has already mutated the
     /// channel's allowlist via the matching
-    /// `_on_consumer_authorized` / `_on_consumer_revoked` HubState op
+    /// `_on_channel_peer_admitted` / `_on_channel_peer_revoked` HubState op
     /// (for admitted/left; live fires from first-heartbeat detection).
     void fire_channel_auth_changed_notify(zmq::socket_t &socket, const std::string &channel_name,
                                           const std::string &phase, const std::string &role_uid,
@@ -2399,14 +2469,18 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
     // HEP-0021 §16: reject registration if inbox_endpoint has unresolved port 0.
     if (!primary_producer.inbox_endpoint.empty())
     {
-        auto inbox_ep = pylabhub::validate_tcp_endpoint(primary_producer.inbox_endpoint);
-        if (inbox_ep.ok() && inbox_ep.port == 0)
+        // A published inbox endpoint must be an address peers can dial
+        // (HEP-CORE-0036 §6.7.2).  `BoundAddress::try_validate` rejects port 0
+        // AND malformed input; the hand-rolled `ok() && port == 0` test
+        // this replaced accepted anything that failed to parse.
+        if (!pylabhub::BoundAddress::try_validate(primary_producer.inbox_endpoint).has_value())
         {
-            LOGGER_WARN("Broker: REG_REQ for '{}' rejected — inbox_endpoint '{}' has port 0",
+            LOGGER_WARN("Broker: REG_REQ for '{}' rejected — inbox_endpoint '{}' is not a "
+                        "dialable address (unresolved port 0, or malformed)",
                         channel_name, primary_producer.inbox_endpoint);
             return make_error(corr_id, "INVALID_INBOX_ENDPOINT",
                               "inbox_endpoint '" + primary_producer.inbox_endpoint +
-                                  "' has unresolved port 0");
+                                  "' is not a dialable address");
         }
     }
 
@@ -2852,7 +2926,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
 
     // HEP-CORE-0036 §6.5: a freshly-opened channel needs a
     // `ChannelAccessEntry` so subsequent CONSUMER_REG_REQ accepts can
-    // populate the allowlist via `_on_consumer_authorized` (no-op
+    // populate the allowlist via `_on_channel_peer_admitted` (no-op
     // without an existing access record per its safe-default
     // invariant).  SHM secret stays zero — SHM auth wiring is tracked
     // separately (HEP-CORE-0036 §12 Phase 5 + task #106).
@@ -2934,6 +3008,13 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
     // authorized consumer pubkeys (endpoint empty on each entry).
     nlohmann::json allowlist = nlohmann::json::array();
     std::uint64_t snapshot_version = 0;
+    // Held for the whole build, and taken BEFORE any channel state is
+    // touched.  The authority is immutable and replaced by pointer swap
+    // (see `PeerAuthority`), so a bare reference could dangle mid-build
+    // once reload lands; holding the shared_ptr pins one snapshot.  Taking
+    // it first also means no new lock-acquisition order is introduced —
+    // reading it takes no lock at all.
+    const auto authority = peer_authority();
     auto ch_snapshot = hub_state_->channel(channel_name);
     const bool producer_is_dialing =
         ch_snapshot.has_value() &&
@@ -2944,11 +3025,14 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
         if (!ch_snapshot->consumers.empty() && !ch_snapshot->consumers.front().zmq_pubkey.empty() &&
             ch_snapshot->data_endpoint.has_value() && !ch_snapshot->data_endpoint->empty())
         {
-            nlohmann::json entry;
-            entry["role_uid"] = ch_snapshot->consumers.front().role_uid;
-            entry["endpoint"] = *ch_snapshot->data_endpoint;
-            entry["pubkey_z85"] = ch_snapshot->consumers.front().zmq_pubkey;
-            allowlist.push_back(std::move(entry));
+            // Exactly one consumer: fan-in is N producers to ONE consumer,
+            // enforced at admission as FAN_IN_IS_SINGLE_CONSUMER.
+            PeerListBuilder dial_row(*authority, pylabhub::wire::PeerDetail::WithEndpoint,
+                                     channel_name);
+            dial_row.add_pair(ch_snapshot->consumers.front().role_uid,
+                              ch_snapshot->consumers.front().zmq_pubkey,
+                              *ch_snapshot->data_endpoint);
+            allowlist = dial_row.take_json();
             // Source snapshot_version from the ledger, not the retired
             // `ChannelEntry.channel_version` field (dead pre-2026-07-13,
             // always 0).  Under fan-in the producer is DIALING so it
@@ -2972,13 +3056,14 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
         // for_each_admitted avoids the per-request vector allocation
         // that `admitted_snapshot()` would incur — this is a hot wire
         // path (every producer REG_ACK).
-        access->ledger.for_each_admitted(
-            [&](const std::string &pk)
-            {
-                nlohmann::json entry;
-                entry["pubkey_z85"] = pk;
-                allowlist.push_back(std::move(entry));
-            });
+        // The ledger stores keys; the wire carries pairs (HEP-CORE-0036
+        // §6.2, "Why a peer entry always names its peer").  `authority`
+        // is grabbed above, before the channel lock, and held for the
+        // whole build — it is immutable and lock-free to read, so asking
+        // it here does not nest a lock inside `for_each_admitted`.
+        PeerListBuilder rows(*authority, pylabhub::wire::PeerDetail::IdentityOnly, channel_name);
+        access->ledger.for_each_admitted([&](const std::string &pk) { rows.add_key(pk); });
+        allowlist = rows.take_json();
         snapshot_version = access->ledger.current_version();
     }
     resp["initial_allowlist"] = std::move(allowlist);
@@ -3039,7 +3124,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
     {
         // Admit producer's pubkey into the channel's unified ledger
         // (HEP-CORE-0042 §5.5.2 unified 2026-07-13).  The
-        // `_on_consumer_authorized` name is a pre-topology misnomer
+        // `_on_channel_peer_admitted` name is a pre-topology misnomer
         // — the underlying primitive (`ledger.admit`) is topology-
         // agnostic: it holds "pubkeys admitted to the binding side's
         // ZAP allowlist."  Under fan-out / one-to-one those are
@@ -3047,7 +3132,7 @@ nlohmann::json BrokerServiceImpl::handle_reg_req(const ::pylabhub::wire::WireEnv
         // ledger's `current_version_` so the consumer's follow-up
         // GET_CHANNEL_AUTH_REQ pulls the new pubkey with an updated
         // `snapshot_version`.
-        hub_state_->_on_consumer_authorized(channel_name, producer_pubkey);
+        hub_state_->_on_channel_peer_admitted(channel_name, producer_pubkey);
         fire_channel_auth_changed_notify(socket, channel_name,
                                          /*phase=*/"admitted",
                                          /*role_uid=*/role_uid,
@@ -3167,10 +3252,10 @@ nlohmann::json BrokerServiceImpl::handle_disc_req(const ::pylabhub::wire::WireEn
     if (entry_ref.data_transport == "zmq" && first_prod != nullptr &&
         !first_prod->zmq_node_endpoint.empty())
     {
-        auto ep_check = pylabhub::validate_tcp_endpoint(first_prod->zmq_node_endpoint);
-        if (ep_check.ok() && ep_check.port == 0)
+        if (!pylabhub::BoundAddress::try_validate(first_prod->zmq_node_endpoint).has_value())
         {
-            LOGGER_INFO("Broker: DISC_REQ channel '{}' ZMQ endpoint has port 0 (awaiting_endpoint)",
+            LOGGER_INFO("Broker: DISC_REQ channel '{}' ZMQ endpoint is not a dialable "
+                        "address (awaiting_endpoint)",
                         channel_name);
             return make_error(corr_id, "CHANNEL_NOT_READY",
                               "ZMQ endpoint for channel '" + channel_name +
@@ -3447,12 +3532,11 @@ BrokerServiceImpl::handle_consumer_reg_req(const ::pylabhub::wire::WireEnvelope 
     if (channel_entry.data_transport == "zmq" && cons_first_prod != nullptr &&
         !cons_first_prod->zmq_node_endpoint.empty())
     {
-        auto ep_check = pylabhub::validate_tcp_endpoint(cons_first_prod->zmq_node_endpoint);
-        if (ep_check.ok() && ep_check.port == 0)
+        if (!pylabhub::BoundAddress::try_validate(cons_first_prod->zmq_node_endpoint).has_value())
         {
-            LOGGER_INFO(
-                "Broker: CONSUMER_REG_REQ channel '{}' ZMQ endpoint has port 0 (awaiting_endpoint)",
-                channel_name);
+            LOGGER_INFO("Broker: CONSUMER_REG_REQ channel '{}' ZMQ endpoint is not a dialable "
+                        "address (awaiting_endpoint)",
+                        channel_name);
             auto err = make_error(corr_id, "CHANNEL_NOT_READY",
                                   "ZMQ endpoint for channel '" + channel_name +
                                       "' has unresolved port 0 (awaiting_endpoint)");
@@ -3874,7 +3958,7 @@ BrokerServiceImpl::handle_consumer_reg_req(const ::pylabhub::wire::WireEnvelope 
     entry.inbox_checksum = body.inbox_checksum();
     // HEP-CORE-0036 §6.5: the consumer's CURVE pubkey is REQUIRED on
     // the wire so the broker can populate the channel-scope
-    // authorized-consumer allowlist via `_on_consumer_authorized` and
+    // authorized-consumer allowlist via `_on_channel_peer_admitted` and
     // revoke it on DEREG / heartbeat timeout.  HEP-CORE-0035 §2 makes
     // CURVE unconditional.  Empty or wrong-length values are
     // programmer errors and rejected at wire admission, matching the
@@ -4011,7 +4095,7 @@ BrokerServiceImpl::handle_consumer_reg_req(const ::pylabhub::wire::WireEnvelope 
     //     of handle_reg_req.  Adding
     //     the consumer's own pubkey here would insert self into its
     //     own ZAP allowlist and — worse — inflate every subsequent
-    //     `admitted_peers_count(channel)` reading on the loop-ready
+    //     `allowed_peer_count(channel)` reading on the loop-ready
     //     gate (HEP-CORE-0011 §"Loop-ready gate") by 1, causing the
     //     consumer's gate to flip Ready before any producer has been
     //     admitted.  A self-targeted CHANNEL_AUTH_CHANGED_NOTIFY is
@@ -4030,7 +4114,7 @@ BrokerServiceImpl::handle_consumer_reg_req(const ::pylabhub::wire::WireEnvelope 
         pylabhub::hub::Queue::reader_is_binding_side(effective_topology);
     if (!consumer_is_binding)
     {
-        hub_state_->_on_consumer_authorized(channel_name, consumer_pubkey);
+        hub_state_->_on_channel_peer_admitted(channel_name, consumer_pubkey);
         fire_channel_auth_changed_notify(socket, channel_name,
                                          /*phase=*/"admitted",
                                          /*role_uid=*/role_uid,
@@ -4099,23 +4183,18 @@ BrokerServiceImpl::handle_consumer_reg_req(const ::pylabhub::wire::WireEnvelope 
     if (auto ch_opt = hub_state_->channel(channel_name); ch_opt.has_value())
     {
         resp["data_transport"] = ch_opt->data_transport;
-        nlohmann::json producers_array = nlohmann::json::array();
+        // The consumer is going to dial these, so the rows carry an
+        // endpoint; which endpoint depends on transport, which is the only
+        // thing this site decides for itself.
+        PeerListBuilder producer_rows(*peer_authority(), pylabhub::wire::PeerDetail::WithEndpoint,
+                                      channel_name);
         for (const auto &p : ch_opt->producers)
         {
-            nlohmann::json entry;
-            entry["role_uid"] = p.role_uid;
-            entry["pubkey_z85"] = p.zmq_pubkey;
-            if (ch_opt->data_transport == "shm")
-            {
-                entry["endpoint"] = p.shm_capability_endpoint;
-            }
-            else
-            {
-                entry["endpoint"] = p.zmq_node_endpoint;
-            }
-            producers_array.push_back(std::move(entry));
+            producer_rows.add_pair(p.role_uid, p.zmq_pubkey,
+                                   ch_opt->data_transport == "shm" ? p.shm_capability_endpoint
+                                                                   : p.zmq_node_endpoint);
         }
-        resp["producers"] = std::move(producers_array);
+        resp["producers"] = producer_rows.take_json();
 
         // Schema-at-establishment (HEP-CORE-0034 §10.3a): the channel's
         // established schema rides the success ACK — the consumer's view
@@ -4243,7 +4322,7 @@ BrokerServiceImpl::handle_consumer_dereg_req(const ::pylabhub::wire::WireEnvelop
     // ConsumerEntry MUST carry a 40-char Z85 key.  A value that
     // fails that invariant indicates HubState corruption — log
     // loudly and skip the revoke (passing a malformed pubkey to
-    // `_on_consumer_revoked` would be a no-op anyway).
+    // `_on_channel_peer_revoked` would be a no-op anyway).
     else if (closing_entry.zmq_pubkey.size() != 40)
     {
         LOGGER_ERROR("Broker: ConsumerEntry on channel='{}' role_uid='{}' has "
@@ -4256,7 +4335,7 @@ BrokerServiceImpl::handle_consumer_dereg_req(const ::pylabhub::wire::WireEnvelop
     }
     else
     {
-        hub_state_->_on_consumer_revoked(channel_name, closing_entry.zmq_pubkey);
+        hub_state_->_on_channel_peer_revoked(channel_name, closing_entry.zmq_pubkey);
         fire_channel_auth_changed_notify(socket, channel_name,
                                          /*phase=*/"left",
                                          /*role_uid=*/closing_entry.role_uid,
@@ -4365,7 +4444,7 @@ BrokerServiceImpl::handle_get_channel_auth_req(const ::pylabhub::wire::WireEnvel
     //   2. `ChannelEntry` present but `ChannelAccessEntry` missing →
     //      the channel exists but has no admitted peers on record.
     //      This is either (a) a legitimate observation (no
-    //      `_on_consumer_authorized` call has landed since channel
+    //      `_on_channel_peer_admitted` call has landed since channel
     //      open — normal at startup) or (b) a bug on some code path
     //      that opened a channel without wiring
     //      `_on_channel_access_opened`.  In both cases the
@@ -4379,6 +4458,11 @@ BrokerServiceImpl::handle_get_channel_auth_req(const ::pylabhub::wire::WireEnvel
     //      fail — refusing to serve a query whose answer is
     //      genuinely "zero" makes the wire semantics less truthful,
     //      not more.
+    // Grabbed before the channel state, held across the row build.
+    // Immutable and lock-free to read; pinning the shared_ptr keeps one
+    // snapshot alive for the whole reply even if the authority is
+    // republished mid-build once reload lands.
+    const auto auth_for_rows = peer_authority();
     auto access = hub_state_->channel_access(channel_name);
     if (!access.has_value())
     {
@@ -4398,19 +4482,27 @@ BrokerServiceImpl::handle_get_channel_auth_req(const ::pylabhub::wire::WireEnvel
     if (!corr_id.empty())
         resp["correlation_id"] = corr_id;
 
-    // HEP-CORE-0036 §6.5 (locked 2026-06-12): allowlist entries are
-    // bare Z85 pubkey strings — symmetric with §6.2
-    // `REG_ACK.initial_allowlist` and the role-side cache
-    // (`PeerAllowlist::peers` is `std::set<PeerIdentity>` keyed on
-    // pubkey).  The pubkey is the authoritative enforcement key at
-    // the producer's ZAP layer; `role_uid` is operator-side metadata
-    // and is not needed on the wire (a producer that wants the
-    // role_uid for the matching pubkey resolves it locally via its
-    // `known_roles` view, not via this ACK).  Earlier 2026-06-10
-    // `{role_uid, pubkey}` shape retired; see AUTH_TODO sub-6.1.
+    // HEP-CORE-0036 §6.5 — allowlist entries are `{role_uid, pubkey_z85}`
+    // rows, the SAME shape `REG_ACK.initial_allowlist` carries.
+    //
+    // They were bare Z85 strings until 2026-08-10, on the reasoning that
+    // the pubkey is the enforcement key at ZAP and the name could be
+    // resolved locally.  The receiving side never did that resolution, so
+    // every refresh silently blanked the names the seed had established
+    // and `api.allowed_peer_contains(channel, uid)` answered false for a
+    // peer that was admitted.  Seed and refresh must agree: a shape that
+    // differs between them is correct until the first membership change,
+    // which is the worst way to be wrong.  See §6.2 "Why a peer entry
+    // always names its peer".
+    //
+    // `authority` is taken before the channel access below and held for
+    // the whole build; reading it takes no lock, so asking it inside
+    // `for_each_admitted` does not nest one.
     nlohmann::json allowlist_arr = nlohmann::json::array();
-    access->ledger.for_each_admitted([&](const std::string &pk) { allowlist_arr.push_back(pk); });
-    resp["allowlist"] = std::move(allowlist_arr);
+    PeerListBuilder auth_rows(*auth_for_rows, pylabhub::wire::PeerDetail::IdentityOnly,
+                              channel_name);
+    access->ledger.for_each_admitted([&](const std::string &pk) { auth_rows.add_key(pk); });
+    resp["allowlist"] = auth_rows.take_json();
 
     // HEP-CORE-0042 §5.5.4: GET_CHANNEL_AUTH_ACK echoes
     // `snapshot_version` — the `channel_version[K]` value at the
@@ -5697,8 +5789,9 @@ BrokerServiceImpl::handle_endpoint_update_req(const ::pylabhub::wire::WireEnvelo
     }
 
     // Validate the new endpoint.
-    auto ep_check = pylabhub::validate_tcp_endpoint(endpoint);
-    if (!ep_check.ok() || ep_check.port == 0)
+    // The whole point of this request is to publish a dialable address,
+    // so the payload must BE one (HEP-CORE-0036 §6.7.2).
+    if (!pylabhub::BoundAddress::try_validate(endpoint).has_value())
     {
         return make_error(corr_id, "INVALID_ENDPOINT",
                           "Endpoint '" + endpoint + "' is invalid or has port 0");
@@ -5768,12 +5861,11 @@ BrokerServiceImpl::handle_endpoint_update_req(const ::pylabhub::wire::WireEnvelo
         {
             if (prod.inbox_endpoint.empty())
                 continue;
-            auto inbox_check = pylabhub::validate_tcp_endpoint(prod.inbox_endpoint);
-            if (inbox_check.ok() && inbox_check.port == 0)
+            if (!pylabhub::BoundAddress::try_validate(prod.inbox_endpoint).has_value())
             {
                 LOGGER_ERROR("Broker: ENDPOINT_UPDATE_REQ for '{}' inbox (producer '{}') — "
-                             "current port is 0; inbox endpoint should be resolved before "
-                             "registration",
+                             "stored inbox endpoint is not a dialable address; it should "
+                             "have been resolved before registration",
                              channel_name, prod.role_uid);
             }
         }
@@ -5801,8 +5893,9 @@ BrokerServiceImpl::handle_endpoint_update_req(const ::pylabhub::wire::WireEnvelo
         sender_is_consumer_binding
             ? entry->data_endpoint.value_or(std::string{})
             : entry->producer_zmq_node_endpoint(sender_role_uid).value_or(std::string{});
-    auto current = pylabhub::validate_tcp_endpoint(current_value);
-    const bool already_resolved = current.ok() && current.port != 0;
+    // "Resolved" means the stored value is an address, not a request —
+    // one predicate, not a re-derivation (HEP-CORE-0036 §6.7.2).
+    const bool already_resolved = pylabhub::BoundAddress::try_validate(current_value).has_value();
 
     if (already_resolved && current_value == endpoint)
     {
@@ -6553,7 +6646,7 @@ void BrokerServiceImpl::check_heartbeat_timeouts(zmq::socket_t &socket)
             // ConsumerEntry always carries a valid key.
             if (pre_drop_consumer.zmq_pubkey.size() == 40)
             {
-                hub_state_->_on_consumer_revoked(d.channel, pre_drop_consumer.zmq_pubkey);
+                hub_state_->_on_channel_peer_revoked(d.channel, pre_drop_consumer.zmq_pubkey);
                 fire_channel_auth_changed_notify(socket, d.channel,
                                                  /*phase=*/"left",
                                                  /*role_uid=*/pre_drop_consumer.role_uid,

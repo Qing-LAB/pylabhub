@@ -4251,11 +4251,11 @@ TEST(HubStateChannelAccess, EmptyPubkey_BumpsCounterAndNoOp)
 
 TEST(HubStateChannelAccess, ConsumerRevoked_AfterClose_NoOp)
 {
-    // Safety-net: after `_on_channel_closed`, a `_on_consumer_revoked`
+    // Safety-net: after `_on_channel_closed`, a `_on_channel_peer_revoked`
     // arrives (e.g. consumer-PID-death raced with the channel
     // teardown).  Must NOT crash; must NOT bump the invalid-id
     // counter (revoke-without-record is silent safe-default per the
-    // mutator contract — `hub_state.cpp:_on_consumer_revoked`).
+    // mutator contract — `hub_state.cpp:_on_channel_peer_revoked`).
     HubState s;
     HubStateTestAccess::on_channel_access_opened(s, "ch.gone");
     HubStateTestAccess::on_consumer_authorized(s, "ch.gone", "PUB-A");
@@ -4276,7 +4276,7 @@ TEST(HubStateChannelAccess, ConsumerRevoked_AfterClose_NoOp)
 
 TEST(HubStateChannelAccess, ConsumerAuthorized_AfterClose_DoesNotResurrect)
 {
-    // A regression where `_on_consumer_authorized` started
+    // A regression where `_on_channel_peer_admitted` started
     // `try_emplace`-ing the record (instead of `find` then
     // early-return) would silently resurrect a torn-down channel's
     // allowlist.  Pin the documented contract: authorize without
@@ -4295,7 +4295,7 @@ TEST(HubStateChannelAccess, EmptyPubkey_Revoke_BumpsCounter)
     // Symmetric to `EmptyPubkey_BumpsCounterAndNoOp`: the revoke
     // path also rejects empty pubkey with a counter bump.  A
     // regression that silently dropped empty pubkey from
-    // `_on_consumer_revoked` (no bump) would slip through without
+    // `_on_channel_peer_revoked` (no bump) would slip through without
     // this test.
     HubState s;
     HubStateTestAccess::on_channel_access_opened(s, "ch.auth");

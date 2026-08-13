@@ -1057,6 +1057,40 @@ endpoint into the broker's record has no path to being live, so
 it should not linger holding a bound port with no way to be
 reached.
 
+**Why fatal, and why not a retry.**  The alternative to exiting is to
+keep running and try again, and it does not survive contact with what
+can actually fail.  The refusals this request can return —
+`NOT_CHANNEL_OWNER`, `CHANNEL_NOT_FOUND`, `ENDPOINT_CHANGE_FORBIDDEN` —
+are deterministic: asking again re-asks a question the broker has
+already answered.  A transport failure or timeout means the control link
+is gone, and §3.5.1 already makes that fatal for registration.  Nothing
+is left for a retry to fix.
+
+The same reasoning rules out handing the decision to the role's script.
+A script coordinates work across roles; it has no standing to repair the
+framework's own registration handshake, and no information the framework
+lacks.  Exposing this as a script-visible condition would offer a choice
+whose only sound answer is the one the framework can already take.
+
+Note the contrast with §16.8, which is NOT fatal: a mid-life change
+refused by the broker leaves a role that is still correctly reachable at
+its existing address, so it keeps running.  The distinction is whether
+the role currently has a working published address, not whether the
+broker said no.
+
+> **Implementation status — the failure handling is in place; one
+> binding side still never publishes.**  A binding consumer publishes
+> and now treats every non-success outcome as fatal
+> (`src/utils/service/role_api_base.cpp:2130`): no bound address, no
+> usable control link, and a refused or unanswered request each return
+> `false` from `apply_consumer_reg_ack`, which makes the caller tear
+> down the infrastructure, skip `install_heartbeat`, and exit non-zero —
+> the four steps above.  A binding PRODUCER still never publishes at
+> all, because that call site remains the only one in the tree, so a
+> fan-out or one-to-one producer with an ephemeral port leaves the
+> broker holding its unresolved bind request.  That one is still a code
+> gap; the contract above stands.
+
 ### 16.7 Broker readiness gate — R6 extended
 
 The existing R6 gate (HEP-CORE-0036 §5.2 R6) blocks a consumer's
@@ -1152,10 +1186,30 @@ convention"):
 | `event=EndpointUpdateReqAccepted role='<uid>' channel='<ch>' endpoint='<ep>' transition='idempotent'` | broker | X == Y match. |
 | `event=EndpointUpdateReqAccepted role='<uid>' channel='<ch>' endpoint='<ep>' transition='resolved→resolved'` | broker | Y ≠ X, no consumers, accepted. |
 | `event=EndpointUpdateReqRejected role='<uid>' channel='<ch>' error='<code>' consumers_attached=<N>` | broker | Any rejection path. |
-| `event=EndpointUpdatePublished channel='<ch>' resolved_endpoint='<ep>'` | producer | After ACK ok. |
-| `event=EndpointUpdateFailed channel='<ch>' error='<code>'` | producer | On any error; precedes fatal exit. |
+| `event=EndpointUpdatePublished channel='<ch>' resolved_endpoint='<ep>'` | binding side | After ACK ok. |
+| `event=EndpointUpdateFailed channel='<ch>' error='<code>'` | binding side | On any error; precedes fatal exit. |
 
 L4 tests grep on these; changes require a HEP amendment.
+
+The `error` field on `event=EndpointUpdateFailed` carries the broker's
+`error_code` when one came back, `NO_REPLY` when the request went
+unanswered, `NO_BROKER_LINK` when there was no usable control link to
+send it on, and `NO_BOUND_ADDRESS` when the role had nothing to publish.
+The last two are local faults rather than broker verdicts, and are named
+distinctly so a reader of the log can tell which end failed.
+
+> **Implementation status — the two role-side markers exist; the four
+> broker-side ones do not.**  A binding side emits
+> `event=EndpointUpdatePublished` on success and
+> `event=EndpointUpdateFailed` on every failure path
+> (`src/utils/service/role_api_base.cpp`).  Until this table was
+> reconciled against the tree the code emitted
+> `event=BindingEndpointPublished`, a name this HEP never sanctioned,
+> and the one L4 test that greps this surface matched the code's name —
+> so the test and the code agreed with each other and both disagreed
+> with the design, and nothing failed until someone read this table.
+> Both follow it now.  The broker still emits no marker on any
+> `ENDPOINT_UPDATE_REQ` outcome.
 
 ### 16.11 Test surface
 

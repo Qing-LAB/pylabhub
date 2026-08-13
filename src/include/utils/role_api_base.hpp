@@ -80,8 +80,11 @@ struct TxQueueOptions
     /// Under `FanIn` the producer is the dialing side and does
     /// NOT bind; under `FanOut` and `OneToOne` the producer is the
     /// binding side.  The queue factory reads this field to pick
-    /// socket type + bind/connect direction; `zmq_bind` below is
-    /// redundant with it and retires alongside role code migration.
+    /// socket type + bind/connect direction.  There is no separate
+    /// bind/dial knob: a `*_zmq_bind` config key existed once, could
+    /// not be honoured (it can describe a channel with two binders and
+    /// no dialer), and is now a RETIRED key that config load rejects
+    /// with a migration hint.
     ChannelTopology topology{ChannelTopology::OneToOne};
 
     bool has_shm{false};
@@ -94,7 +97,6 @@ struct TxQueueOptions
     // Transport (HEP-CORE-0021)
     std::string data_transport{"shm"};
     std::string zmq_node_endpoint{};
-    bool zmq_bind{true};
     size_t zmq_buffer_depth{kZmqDefaultBufferDepth};
     OverflowPolicy zmq_overflow_policy{OverflowPolicy::Drop};
 
@@ -127,9 +129,9 @@ struct TxQueueOptions
     int shm_capability_fd{-1};
 };
 
-// `ProducerPeer` lives in `hub_zmq_queue.hpp` (next to the
-// `add_producer_peer` / `remove_producer_peer` API that consumes it)
-// to avoid an include cycle.  Imported here via the existing
+// `ProducerPeer` lives in `hub_zmq_queue.hpp` (next to
+// `set_producer_peers`, the queue API that consumes it) to avoid an
+// include cycle.  Imported here via the existing
 // `#include "utils/hub_zmq_queue.hpp"` at the top of this file.
 
 /// Configuration for RoleAPIBase::build_rx_queue().  Input side
@@ -159,12 +161,19 @@ struct RxQueueOptions
     /// `start()` directly — bypassing this field on the production
     /// path.
     ///
-    /// **Test path:** L2/L3 tests MAY pre-populate this field with
-    /// a synthetic memfd to build an Active SHM rx queue at
-    /// construction time (analogous to how `producer_peers` may be
-    /// pre-populated for ZMQ tests).  When set, `build_rx_queue`
-    /// drives Standby → Active immediately via set_shm_capability_fd
-    /// + start.
+    /// **Test path:** L2/L3 tests MAY pre-populate this field with a
+    /// synthetic memfd to build an Active SHM rx queue at construction
+    /// time.  When set, `build_rx_queue` drives Standby → Active
+    /// immediately via set_shm_capability_fd + start.
+    ///
+    /// This is NOT the ZMQ situation, where the equivalent shortcut was
+    /// deleted (#148).  An fd is a capability the caller already holds
+    /// — handing one over is the real §5.5 delivery, just sourced
+    /// locally — whereas a ZMQ peer endpoint + pubkey is an ASSERTION
+    /// about a third party that only the broker is entitled to make.
+    /// The tx side of this same field has a production writer
+    /// (`role_host_frame.cpp`); the rx side does not yet, pending the
+    /// SHM half of §10.3a.
     int shm_capability_fd{-1};
 
     /// Slot + flexzone schemas — single source for fields + packing.
@@ -185,17 +194,20 @@ struct RxQueueOptions
     /// bind.
     std::string zmq_node_endpoint{};
 
-    /// HEP-CORE-0017 §3.3 + HEP-CORE-0036 §4.1 + §6.4 dynamic-membership
-    /// producer set populated from `CONSUMER_REG_ACK.producers[]`.  At
-    /// `build_rx_queue` time, an empty `producer_peers` is the canonical
-    /// state — `pull_from` accepts empty endpoint + empty serverkey and
-    /// the queue enters Standby (HEP-CORE-0036 §6.7).
-    /// `apply_consumer_reg_ack(ack)` on the RoleAPIBase then drives
-    /// Standby → Configured → Active via the polymorphic
-    /// `QueueReader::apply_master_approval`.  Test/legacy paths MAY
-    /// pre-populate `producer_peers` here to enter Configured at
-    /// construction; production never does — the broker is the master.
-    std::vector<ProducerPeer> producer_peers;
+    // No peer field here, deliberately.  A dialing consumer learns its
+    // one peer from `CONSUMER_REG_ACK.producers[]` and from nowhere
+    // else: `build_rx_queue` constructs the queue in Standby with an
+    // empty endpoint + serverkey, and `apply_consumer_reg_ack(ack)`
+    // drives Standby → Configured → Active through the polymorphic
+    // `QueueReader::apply_master_approval` (HEP-CORE-0036 §6.7).
+    //
+    // A `producer_peers` vector used to live here, from the retired
+    // pre-topology multi-dial model.  Production never wrote it; it
+    // survived as a way for a test to reach Active without a broker,
+    // which meant `build_rx_queue` called `start()` itself and bypassed
+    // the approval gate.  Deleted 2026-08-12 (#148) — a test that needs
+    // an armed dialing reader hands the queue an ACK, which is the
+    // shape of the master's answer, not a broker.
 
     // Queue policy
     ChecksumPolicy checksum_policy{ChecksumPolicy::Enforced};
@@ -400,16 +412,29 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// internal lock so the caller may iterate without holding it.
     [[nodiscard]] std::vector<AllowedPeer> allowed_peers(const std::string &channel) const;
 
-    /// Count of admitted peers for the named channel — convenience
-    /// accessor equal to `allowed_peers(channel).size()`, provided for
-    /// the framework's default loop-ready gate (HEP-CORE-0011
-    /// §"Loop-ready gate") and for scripts that only need the cardinality
-    /// without materialising the full snapshot.  Reads the same
+    /// How many peers are ALLOWED on the named channel — convenience
+    /// accessor equal to `allowed_peers(channel).size()`, for the
+    /// framework's default loop-ready gate (HEP-CORE-0011 §"Loop-ready
+    /// gate") and for scripts that need only the cardinality without
+    /// materialising the full snapshot.  Reads the same
     /// transport-agnostic, side-agnostic `allowlist_cache` seeded by
     /// `apply_{producer,consumer}_reg_ack` and grown by
     /// `handle_channel_auth_notifies` per HEP-CORE-0036 §I11.1.
     /// Thread-safe.
-    [[nodiscard]] std::size_t admitted_peers_count(const std::string &channel) const;
+    ///
+    /// Permitted, NOT connected.  This counts peers the broker says may
+    /// connect; it says nothing about who has.  Admission is a different
+    /// fact tracked elsewhere (the broker's `VersionedAdmissionLedger`),
+    /// and who is actually live is `producers()` / `consumers()`.  This
+    /// accessor was formerly called `admitted_peers_count`, which named
+    /// the wrong one of those three.
+    [[nodiscard]] std::size_t allowed_peer_count(const std::string &channel) const;
+
+    /// Is @p role_uid among the peers ALLOWED on @p channel?  Same cache,
+    /// same "permitted, not connected" caveat as `allowed_peer_count`.
+    /// Answers without handing the caller a snapshot vector to scan.
+    [[nodiscard]] bool allowed_peer_contains(const std::string &channel,
+                                             const std::string &role_uid) const;
 
     /// HEP-CORE-0011 §"Loop-ready gate" + HEP-CORE-0036 §I9.1 —
     /// queue-owned admission fact for the loop-ready gate.  Forwards
@@ -418,7 +443,7 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
     /// admission-cache snapshot copy, no vector allocation for a
     /// simple boolean question.  Used by `ConsumerCycleOps::default_init_ready`
     /// and `ProcessorCycleOps::default_init_ready`; script-facing
-    /// observability keeps using `allowed_peers` / `admitted_peers_count`.
+    /// observability keeps using `allowed_peers` / `allowed_peer_count`.
     [[nodiscard]] bool channel_admission_populated(const std::string &channel) const noexcept;
 
     /// HEP-CORE-0036 §I9.1 + §6.6.3 — topology-agnostic finalize step.
@@ -654,6 +679,20 @@ class PYLABHUB_UTILS_EXPORT RoleAPIBase
 
     /// Query band member list.
     [[nodiscard]] std::optional<nlohmann::json> band_members(const std::string &channel);
+
+    /// Broker round-trip, same as `band_members`, reduced to the question
+    /// scripts usually ask.  `nullopt` means transport failure — NOT "no
+    /// members"; a reachable broker with an empty band answers 0 / false.
+    ///
+    /// These live here rather than in each binding because unwrapping the
+    /// reply is wire knowledge: BAND_MEMBERS_ACK carries
+    /// `{"members": [{role_uid, role_name}, ...]}` per HEP-CORE-0030, and
+    /// a binding that reaches into that shape has learned a protocol.
+    /// Every engine renders the answer in its own idiom — Python raises on
+    /// `nullopt`, Lua returns nil — but the unwrap happens once, here.
+    [[nodiscard]] std::optional<std::size_t> band_member_count(const std::string &channel);
+    [[nodiscard]] std::optional<bool> band_member_contains(const std::string &channel,
+                                                           const std::string &role_uid);
 
     /// Local introspection: returns true iff the role-side
     /// `band_index_` currently has a routing entry for @p channel.

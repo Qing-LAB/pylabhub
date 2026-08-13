@@ -285,7 +285,6 @@ int pattern4_consumer_lifecycle_producer_role(const char *temp_dir_arg)
             const std::string tx_endpoint = "tcp://127.0.0.1:" + std::to_string(tx_port);
             hub::TxQueueOptions tx_opts;
             tx_opts.data_transport = "zmq";
-            tx_opts.zmq_bind = true;
             tx_opts.zmq_node_endpoint = tx_endpoint;
             tx_opts.slot_spec.has_schema = true;
             tx_opts.slot_spec.fields.push_back(pylabhub::hub::FieldDef{"value", "uint32", 1u, 0u});

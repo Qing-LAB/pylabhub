@@ -6,6 +6,30 @@
 
 ## Archive batches
 
+### 2026-08-12 — peer-row unification draft cleared (#145)
+
+**Archived:** `DRAFT_peer_row_unification_2026-08.md` →
+`archive/transient-2026-08-12/`. The work it designed is complete and in
+the tree: one row type, one name lookup, all writers and readers on a
+single channel, contract amended in HEP-CORE-0036, L1 pins added.
+
+**Merged into a permanent doc before archiving:** the draft's §7 lesson —
+that a call site belongs to the chain of its **destination**, not the
+chain of the field it reads — is now `CODE_REVIEW_GUIDANCE.md` §3.1,
+with the 3→6→1→4 miscount table. It is a review rule, not a fact about
+peer rows: it applies wherever two mechanisms share a data shape. The
+same section records why it matters — the hardest site to classify was
+the one still carrying the live defect.
+
+**Not archived, and why.** `DRAFT_queue_state_is_inferred_2026-08.md`
+stays in `tech_draft/`: only M1 of its three mechanisms has shipped
+(HEP-CORE-0036 §6.7.1, implemented 2026-08-12). M2 (bind request vs
+bound address as distinct types, §6.7.2) and M3 (the binding producer's
+missing endpoint republish) are still proposal-only, and §6.7.2 carries
+an explicit NOT-IMPLEMENTED marker.
+`DRAFT_script_security_and_vault_access_2026-08.md` stays for the same
+reason — #136 has three open decisions.
+
 ### 2026-08-07 (pass 4 — design session: two features decided out, one abstraction filed)
 
 Not a cleanup pass — a design session, recorded here because it retired a HEP

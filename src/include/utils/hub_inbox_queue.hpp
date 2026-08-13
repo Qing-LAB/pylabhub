@@ -146,7 +146,7 @@ class PYLABHUB_UTILS_EXPORT InboxQueue : public pylabhub::utils::security::PeerA
      *
      * @param endpoint    ZMQ endpoint to bind (e.g. "tcp://0.0.0.0:5592" or "tcp://0.0.0.0:0").
      *                    Port 0 causes the OS to assign a free port; retrieve it via
-     * actual_endpoint().
+     * bound_address().
      * @param schema      Field list — must be non-empty; returns nullptr on error.
      * @param packing     "aligned" or "packed". Must match InboxClient packing.
      * @param rcvhwm      ZMQ_RCVHWM: max messages queued for this socket per
@@ -193,10 +193,19 @@ class PYLABHUB_UTILS_EXPORT InboxQueue : public pylabhub::utils::security::PeerA
     [[nodiscard]] bool is_running() const noexcept;
 
     /**
-     * @brief Actual bound endpoint after start().
-     * For port-0 binds, returns the OS-assigned endpoint (e.g. "tcp://127.0.0.1:54321").
+     * @brief Where senders can actually reach this inbox, once it binds.
+     *
+     * For port-0 binds, the OS-assigned endpoint (e.g.
+     * `tcp://127.0.0.1:54321`).  `std::nullopt` before the bind
+     * completes.
+     *
+     * The inbox is the clearest case for the distinction this return
+     * type enforces: its configured default IS `tcp://127.0.0.1:0`, so
+     * "unresolved" is its normal starting condition, and an accessor
+     * that fell back to the configured value would hand out port 0 as
+     * though it were an address.  See HEP-CORE-0036 §6.7.2.
      */
-    [[nodiscard]] std::string actual_endpoint() const;
+    [[nodiscard]] std::optional<::pylabhub::BoundAddress> bound_address() const;
 
     /** Size in bytes of one decoded item buffer. */
     [[nodiscard]] size_t item_size() const noexcept;

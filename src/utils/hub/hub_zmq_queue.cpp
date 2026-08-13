@@ -22,6 +22,7 @@
 #include "utils/security/key_store.hpp"
 #include "utils/security/zap_router.hpp"
 #include "utils/thread_manager.hpp"
+#include "utils/wire_bodies.hpp" // wire::parse_peer_list — the ONE reader of a peer list
 #include "utils/zmq_context.hpp"
 #include "utils/zmq_socket_policy.hpp" // apply_socket_policy (house ZMQ rules)
 #include "zmq_wire_helpers.hpp"
@@ -35,7 +36,6 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
-#include <algorithm>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -90,7 +90,9 @@ struct ZmqQueueImpl
     /// the role host invokes uniformly after apply for every role /
     /// topology (HEP-CORE-0036 §I9.1 locality invariant).  Reset to
     /// false once `finalize_connect()` completes.
-    bool dial_pending{false};
+    // dial_pending folded into `state_` as QueueState::DialDeferred
+    // (HEP-CORE-0036 §6.7.1) — it was a position on the lifecycle line
+    // stored as a loose bool beside it.
     size_t item_sz{0};
     size_t max_depth{64};
     std::string queue_name;
@@ -247,35 +249,61 @@ struct ZmqQueueImpl
     std::optional<pylabhub::utils::security::ZapDomainHandle> zap_handle_;
 
     // PULL/connect side producer-peer membership (HEP-CORE-0017 §3.3,
-    // #103 A2 + HEP-CORE-0036 §6.7 Standby state #188).  Two roles:
-    //   (a) Multi-endpoint connect target (HEP-CORE-0017 §3.3
-    //       Pattern B, closed 2026-07-08).  `start()` iterates
-    //       `producer_peers_` and issues per-peer `connect()` calls
-    //       with per-peer `curve_serverkey`, so libzmq's PULL
-    //       fair-queues data from all N connected PUSH peers.  Under
-    //       the canonical HEP-CORE-0036 §6.4 flow, `apply_master_approval
-    //       (CONSUMER_REG_ACK)` seeds this vector from `producers[]`
-    //       and drives Standby → Configured → Active.  `apply_master_
-    //       approval` also promotes peer[0] into `endpoint` +
-    //       `server_pubkey_z85_` as the `is_configured()` flag saying
-    //       "apply_master_approval has run" — bare `set_producer_peers`
-    //       must NOT transition the queue per HEP-0036 §6.7 Option B.
-    //   (b) Membership snapshot.  Dispatch layer on
-    //       `CHANNEL_PRODUCERS_CHANGED_NOTIFY` →
-    //       `GET_CHANNEL_PRODUCERS_ACK` (HEP-CORE-0036 §6.5.1 —
-    //       consumer-side equivalent of the producer-side §6.5
-    //       allowlist family) refreshes the list via
-    //       `set_producer_peers` on the Active PULL queue, so the
-    //       queue has a stable record of who's authorized.  Initial
-    //       seed: `apply_master_approval(CONSUMER_REG_ACK)` extracts
-    //       `ACK.producers[]` (§6.4) at S3 and drives Standby →
-    //       Configured → Active in one polymorphic call.
-    // Mutex-guarded since both broker thread and role thread may
-    // touch.  Locked during `set_producer_peers` snapshot replace
-    // and per-peer add/remove; `start()` reads `server_pubkey_z85_`
-    // + `endpoint` without taking this mutex because the state
-    // machine guarantees `set_*` mutators don't race with `start()`
-    // (sequenced by the role host per §I12).
+    // HEP-CORE-0036 §6.7 Standby state).  Seeded by
+    // `apply_master_approval(CONSUMER_REG_ACK)` from `ACK.producers[]`
+    // (§6.4) via `set_producer_peers`, which is a whole-set replace and
+    // the only mutator — there is no per-peer add/remove (those existed
+    // until 2026-08-11; see the header for why they cannot have a caller
+    // under the singular-side model).
+    //
+    // The set means different things on the two read-side roles, and
+    // this is the distinction to keep straight:
+    //   BINDING read side (fan-in consumer, PULL bind) — the admitted
+    //     producer set, N entries, and the SOURCE of this queue's ZAP
+    //     allowlist.  Nothing here is dialled; the producers dial in.
+    //   DIALING read side (one-to-one / fan-out consumer) — the dial
+    //     target, exactly one entry, fixed for the channel's lifetime.
+    //     `apply_master_approval` also promotes that entry into
+    //     `endpoint` + `server_pubkey_z85_`, which together are the
+    //     `is_configured()` flag meaning "apply_master_approval has
+    //     run"; bare `set_producer_peers` must NOT transition the queue
+    //     per §6.7 Option B.
+    //
+    // Mutex-guarded because the broker-facing thread and the role thread
+    // both touch it.  `set_producer_peers` takes it for the replace;
+    // `is_configured()` and `start()` take it to read
+    // `server_pubkey_z85_` + `endpoint`.
+    //
+    // WHY THE MUTEX IS HERE AT ALL — read this before removing it.
+    //
+    // Today nothing races.  A role's `worker_main_` registers, applies,
+    // finalizes the connect, and then runs the data loop, all in sequence
+    // on one thread.  Every entry point that touches these fields hangs
+    // off that thread: `apply_master_approval` writes them,
+    // `finalize_connect` → `start()` reads them a call later,
+    // `is_admission_populated()` reads them from the loop-ready gate later
+    // still, `is_configured()` is reached only from `start()`, and
+    // `producer_peer_count()` only from tests.  Program order does all the
+    // work; the mutex currently excludes nothing.
+    //
+    // It is kept, and every access takes it, because that safety is a
+    // property of the ROLE HOST, not of this class.  A queue cannot see
+    // who is calling it.  The moment anything queries a live queue from
+    // another thread — a monitoring or admin surface asking
+    // `is_admission_populated()`, a script accessor, a future re-apply
+    // driven by the BRC handler rather than the worker — these become
+    // genuine cross-thread reads of a `std::string`, and the only thing
+    // standing between that and a torn read is this lock.  Cost is a
+    // couple of `empty()` calls on a per-registration path.
+    //
+    // So: uniform locking is the contract.  Single-threading is why the
+    // contract is currently unobservable, NOT why it is unnecessary.  If
+    // you find an access that skips it, that is the bug — two such
+    // existed before 2026-08-11 (the write-side promotion, and
+    // `is_admission_populated`'s dialing-writer branch).
+    //
+    // (An earlier version of this comment claimed `start()` read the
+    // fields WITHOUT the mutex — the reverse of what the code does.)
     std::mutex producer_peers_mu_;
     std::vector<ProducerPeer> producer_peers_;
 
@@ -301,7 +329,14 @@ struct ZmqQueueImpl
     // ── Rate-limited mismatch warning [ZQ6] ──────────────────────────────────
     std::chrono::steady_clock::time_point last_mismatch_warn_{};
 
-    std::atomic<bool> running_{false};
+    // THE lifecycle state (HEP-CORE-0036 §6.7.1).  Holds it; does not
+    // infer it.  Atomic and lock-free because `is_running()` is read from
+    // outside the queue by RoleAPIBase::is_tx_active()/is_rx_active(),
+    // which sit beside write_acquire/read_acquire on the data path.
+    //
+    // A constructed queue is at least Standby — Uninitialized is the
+    // pre-construction value and where `stop()` lands (stop is terminal).
+    std::atomic<QueueState> state_{QueueState::Standby};
 
     // ────────────────────────────────────────────────────────────────────────
     // recv thread body — cppzmq message_t reused across iterations (no per-frame
@@ -1220,7 +1255,11 @@ bool ZmqQueue::is_peer_allowed(const pylabhub::utils::security::PeerIdentity &pe
     return snap->contains(peer);
 }
 
-// ── Dynamic producer-peer membership (HEP-CORE-0017 §3.3, #103 A2) ──────────
+// ── Producer peer set (HEP-CORE-0017 §3.3 + HEP-CORE-0036 §6.4) ─────────────
+//
+// Whole-set replacement only.  See the declaration in the header for what
+// the set MEANS on each side — admitted-producer set on the binding read
+// side, single dial target on the dialing read side.
 
 bool ZmqQueue::set_producer_peers(std::vector<ProducerPeer> list)
 {
@@ -1255,50 +1294,19 @@ bool ZmqQueue::set_producer_peers(std::vector<ProducerPeer> list)
     // transport-artifact fields (server_pubkey_z85_, endpoint), so
     // is_configured() stays false and start() stays refused.  The
     // single Standby → Configured → Active driver is
-    // apply_master_approval(CONSUMER_REG_ACK) (or set_producer_peers
-    // called on an already-Active queue, where it acts as a runtime
-    // refresh).
+    // apply_master_approval(CONSUMER_REG_ACK), which does that promotion
+    // itself after calling this.
     //
-    // For an already-running queue, runtime refresh is just the
-    // snapshot replace; the running socket is not touched (peer-swap
-    // would require teardown+rebuild per §6.7 "stop() is terminal" +
-    // §I12 "no cached-authority replay").
+    // On an already-running queue this is a snapshot replace and nothing
+    // more; the live socket is not touched (a peer swap would need
+    // teardown+rebuild per §6.7 "stop() is terminal" + §I12 "no
+    // cached-authority replay").  That costs nothing on the DIALING read
+    // side, whose single peer is fixed for the channel's life, and is
+    // correct on the BINDING read side, which does not dial from this
+    // set at all — it feeds the ZAP allowlist, and `apply_master_approval`
+    // reinstalls that from the replaced set on the very next lines.
     std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
     pImpl->producer_peers_ = std::move(list);
-    return true;
-}
-
-bool ZmqQueue::add_producer_peer(const ProducerPeer &peer)
-{
-    if (!pImpl)
-        return false;
-    if (pImpl->mode != ZmqQueueImpl::Mode::Read)
-        return false;
-    std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
-    for (auto &existing : pImpl->producer_peers_)
-    {
-        if (existing.role_uid == peer.role_uid)
-        {
-            existing = peer;
-            return true;
-        }
-    }
-    pImpl->producer_peers_.push_back(peer);
-    return true;
-}
-
-bool ZmqQueue::remove_producer_peer(const std::string &role_uid)
-{
-    if (!pImpl)
-        return false;
-    if (pImpl->mode != ZmqQueueImpl::Mode::Read)
-        return false;
-    std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
-    auto it = std::find_if(pImpl->producer_peers_.begin(), pImpl->producer_peers_.end(),
-                           [&](const ProducerPeer &p) { return p.role_uid == role_uid; });
-    if (it == pImpl->producer_peers_.end())
-        return false;
-    pImpl->producer_peers_.erase(it);
     return true;
 }
 
@@ -1325,7 +1333,7 @@ bool ZmqQueue::configure_slot_schema(std::vector<ZmqSchemaField> schema, std::st
                      pImpl->queue_name);
         return false;
     }
-    if (pImpl->running_.load(std::memory_order_acquire))
+    if (pImpl->state_.load(std::memory_order_acquire) == QueueState::Active)
     {
         LOGGER_ERROR("[hub::ZmqQueue::configure_slot_schema] queue='{}': queue "
                      "is Active — the format is immutable for the queue's "
@@ -1391,11 +1399,30 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json &artifacts) noexcept
         return false;
     try
     {
+        // §6.7 mutator table, `apply_master_approval` × Uninitialized:
+        // refuse.  `stop()` is terminal, and the hub-dead path destroys a
+        // queue and builds a fresh one rather than reviving this one
+        // (§I3, §I12).  The refusal is not defensive tidiness: teardown
+        // deliberately does NOT reset the ring/send indices (see the note
+        // above the move-assignment operator), so a revived queue would
+        // re-deliver slots its previous life had already handed out and
+        // re-send stale send-ring entries.
+        const QueueState entry_state = pImpl->state_.load(std::memory_order_acquire);
+        if (entry_state == QueueState::Uninitialized)
+        {
+            LOGGER_ERROR("[hub::ZmqQueue::apply_master_approval] queue='{}': "
+                         "refused — queue is Uninitialized (stopped).  A stopped "
+                         "queue is never re-armed; the caller must destroy it and "
+                         "build a fresh one (HEP-CORE-0036 §6.7).",
+                         pImpl->queue_name);
+            return false;
+        }
+
         // Already-running queues: apply runtime updates per §6.7 Active
         // column.  Either way no socket bind/connect — that already
         // happened in the prior apply_master_approval call that drove
         // Standby → Active.
-        const bool already_running = pImpl->running_.load(std::memory_order_acquire);
+        const bool already_running = (entry_state == QueueState::Active);
 
         // Schema-pending refusal (HEP-CORE-0034 §10.3a): never drive
         // Standby → Configured on an empty format.  The role host must
@@ -1416,24 +1443,26 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json &artifacts) noexcept
 
         // ── Unified peer-list wire field (HEP-CORE-0036 §6.2 + §6.4) ──
         //
-        // Both REG_ACK and CONSUMER_REG_ACK carry a peer-list under
-        // sender-specific historical field names.  The payload schema
-        // is unified: array of `{role_uid?, endpoint?, pubkey_z85}`
-        // objects.  Interpretation is topology-role driven:
+        // Both REG_ACK and CONSUMER_REG_ACK carry a peer list under
+        // sender-specific historical field names.  The row is the same
+        // on both: `{role_uid, pubkey_z85}`, plus `endpoint` when the
+        // reader is going to dial.  What differs is what THIS queue
+        // does with the list, which follows from its topology role:
         //
-        //   BINDING side (bind_socket == true):
-        //     - peers.size() == 0..N — allowlist snapshot
-        //     - each entry: pubkey_z85 REQUIRED; endpoint may be empty
-        //       (BINDING doesn't dial); role_uid optional metadata
+        //   BINDING side (bind_socket == true) — the rows are the ZAP
+        //     allowlist snapshot.  No endpoint is needed or expected; a
+        //     binding side does not dial anyone.
         //
-        //   DIALING side (bind_socket == false):
-        //     - peers.size() == 0..N — dial targets (legacy multi-
-        //       producer fan-in supported; post-Phase-G migration
-        //       converges to size == 1 for OneToOne/FanOut consumers
-        //       and fan-in producers, but that's a wire-shape
-        //       constraint enforced by the broker builder, NOT here)
-        //     - each entry: pubkey_z85 REQUIRED (curve_serverkey);
-        //       endpoint REQUIRED (dial target); role_uid optional
+        //   DIALING side (bind_socket == false) — the rows are dial
+        //     targets, so each one must say where.  Cardinality is the
+        //     broker builder's business, not this function's, with the
+        //     single exception of fan-out SUB below.
+        //
+        // The rows themselves are read by `wire::parse_peer_list`, the
+        // one reader every peer list on the wire goes through, so this
+        // queue and the role-side caches cannot drift about what a valid
+        // row is.  `PeerDetail` is how this side states which of the two
+        // jobs above it is doing.
         //
         // No-op tolerance: if the ACK lacks the peer field the queue
         // is unchanged.  Used by SHM ACKs (SHM branch doesn't touch
@@ -1447,12 +1476,19 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json &artifacts) noexcept
 
         if (artifacts.contains(field))
         {
-            const auto &arr = artifacts.at(field);
-            if (!arr.is_array())
+            const auto rows = ::pylabhub::wire::parse_peer_list(
+                artifacts.at(field), is_dialing ? ::pylabhub::wire::PeerDetail::WithEndpoint
+                                                : ::pylabhub::wire::PeerDetail::IdentityOnly);
+            if (!rows.has_value())
             {
-                LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
-                            "'{}' field is not an array — refusing",
-                            field);
+                // All-or-nothing, and the whole apply fails with it: this
+                // list REPLACES what the queue enforces, so installing
+                // the readable part of a bad message would quietly admit
+                // fewer peers than the broker approved.
+                LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] queue='{}': '{}' is not a "
+                            "list of {{role_uid, pubkey_z85{}}} rows (HEP-CORE-0036 §6.2) — "
+                            "refusing the whole field rather than applying part of it",
+                            pImpl->queue_name, field, is_dialing ? ", endpoint" : "");
                 return false;
             }
             // Fan-out (PubSub) enforces singular DIALING per
@@ -1460,106 +1496,93 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json &artifacts) noexcept
             // PushPull DIALING may still be multi (legacy fan-in
             // consumer / one-to-one after Phase G).
             if (is_dialing && pImpl->socket_pattern == ZmqQueueImpl::SocketPattern::PubSub &&
-                arr.size() > 1)
+                rows->size() > 1)
             {
                 LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
                             "'{}' on fan-out DIALING (SUB) must have at "
                             "most one entry per HEP-CORE-0017 §3.3.0; "
                             "got {}",
-                            field, arr.size());
+                            field, rows->size());
                 return false;
             }
-            peers.reserve(arr.size());
-            for (const auto &entry : arr)
-            {
-                if (!entry.is_object())
-                {
-                    LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
-                                "'{}' entry not an object — refusing",
-                                field);
-                    return false;
-                }
-                ProducerPeer p;
-                p.role_uid = entry.value("role_uid", std::string{});
-                p.endpoint = entry.value("endpoint", std::string{});
-                p.pubkey_z85 = entry.value("pubkey_z85", std::string{});
-                if (p.pubkey_z85.size() != 40)
-                {
-                    LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
-                                "'{}' entry pubkey_z85 wrong length: {} "
-                                "(expected 40 Z85 chars)",
-                                field, p.pubkey_z85.size());
-                    return false;
-                }
-                if (is_dialing && p.endpoint.empty())
-                {
-                    LOGGER_WARN("[hub::ZmqQueue::apply_master_approval] "
-                                "'{}' entry on DIALING side missing "
-                                "required endpoint",
-                                field);
-                    return false;
-                }
-                peers.push_back(std::move(p));
-            }
+            peers.reserve(rows->size());
+            for (const auto &r : *rows)
+                peers.push_back(ProducerPeer{/*role_uid=*/r.role_uid(),
+                                             /*endpoint=*/r.endpoint(),
+                                             /*pubkey_z85=*/r.pubkey_z85()});
             have_peers = true;
         }
 
         // Apply peers per (mode × bind_socket) role.
+        //
+        // Everything this block needs is derived from `peers`, the LOCAL
+        // vector, BEFORE it is handed to the queue.  That ordering is the
+        // whole trick: it was previously moved into `producer_peers_`
+        // first and then read back out under the mutex, twice, on this
+        // same thread — three acquisitions of one lock to look at data
+        // that never left this stack frame.  Reading the local copy needs
+        // no lock at all, which also removes the `is_read ?
+        // producer_peers_ : peers` ternary and the two conditional
+        // `defer_lock` dances that existed only to serve it.
         if (have_peers)
         {
+            // BINDING side (PULL bind and PUSH/PUB bind) — the peers ARE
+            // the ZAP allowlist.  `PeerIdentity` kind="curve" matches what
+            // handle_channel_auth_notifies and the ZAP router look up.
+            pylabhub::utils::security::PeerAllowlist allowlist;
+            if (pImpl->bind_socket)
+            {
+                for (const auto &p : peers)
+                {
+                    allowlist.peers.insert(pylabhub::utils::security::PeerIdentity{
+                        pylabhub::utils::security::kCurveMechanism, p.pubkey_z85});
+                }
+            }
+
+            // DIALING side — the transport artifacts to promote.  There is
+            // exactly one peer to dial (the binding side), so `front()` is
+            // the peer, not a choice among several.
+            std::string dial_pubkey;
+            std::string dial_endpoint;
+            if (!pImpl->bind_socket && !already_running && !peers.empty())
+            {
+                dial_pubkey = peers.front().pubkey_z85;
+                dial_endpoint = peers.front().endpoint;
+            }
+
             if (is_read)
             {
-                // Read side — buffer full peer list into producer_peers_
-                // regardless of bind/connect direction.  start() reads
-                // producer_peers_ directly for the connect loop on the
-                // DIALING side; BINDING side ignores it.
+                // Record the set on the queue.  Read side only: a writer
+                // keeps its single dial target in the scalars below, not
+                // as a peer set.
                 if (!set_producer_peers(std::move(peers)))
                     return false;
             }
+
             if (pImpl->bind_socket)
             {
-                // BINDING side (both PULL bind and PUSH/PUB bind) —
-                // peers are ZAP allowlist entries.  Snapshot from
-                // pubkey_z85 (PeerIdentity kind="curve" matches
-                // handle_channel_auth_notifies + ZAP router lookups).
-                pylabhub::utils::security::PeerAllowlist allowlist;
-                const auto &src = is_read ? pImpl->producer_peers_ : peers;
-                {
-                    std::unique_lock<std::mutex> lock(pImpl->producer_peers_mu_, std::defer_lock);
-                    if (is_read)
-                        lock.lock();
-                    for (const auto &p : src)
-                    {
-                        allowlist.peers.insert(
-                            pylabhub::utils::security::PeerIdentity{pylabhub::utils::security::kCurveMechanism,
-                                                        p.pubkey_z85});
-                    }
-                }
                 if (!set_peer_allowlist(std::move(allowlist)))
                     return false;
             }
             else if (!already_running)
             {
-                // DIALING side — promote peer[0] into is_configured()
-                // flag artifacts.  start() reads server_pubkey_z85_ +
-                // endpoint for the CURVE-authenticated connect (Read
-                // side also reads producer_peers_ for the per-peer
-                // connect loop; these fields are the "Standby ->
-                // Configured" flag per HEP-CORE-0036 §6.7 Option B).
-                // Only mutate on Standby; on Active, held stable for
-                // the socket's lifetime.
-                std::unique_lock<std::mutex> lock(pImpl->producer_peers_mu_, std::defer_lock);
-                if (is_read)
-                    lock.lock();
-                const auto &src = is_read ? pImpl->producer_peers_ : peers;
-                if (!src.empty())
-                {
-                    const auto &p0 = src.front();
-                    if (pImpl->server_pubkey_z85_.empty() && !p0.pubkey_z85.empty())
-                        pImpl->server_pubkey_z85_ = p0.pubkey_z85;
-                    if (pImpl->endpoint.empty() && !p0.endpoint.empty())
-                        pImpl->endpoint = p0.endpoint;
-                }
+                // These two fields together are the "Standby → Configured"
+                // flag per HEP-CORE-0036 §6.7 Option B, and `start()` reads
+                // them for the CURVE-authenticated connect.  Only mutated
+                // on Standby; on Active they are held stable for the
+                // socket's lifetime.
+                //
+                // Taken unconditionally now.  It was conditional on
+                // `is_read`, which asked whether the SOURCE was shared —
+                // but the DESTINATION is shared on both paths, so a writer
+                // mutated these two members with no lock held.  Benign
+                // today (see the member declaration: one thread), and the
+                // conditional saved nothing worth the puzzle it posed.
+                std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
+                if (pImpl->server_pubkey_z85_.empty() && !dial_pubkey.empty())
+                    pImpl->server_pubkey_z85_ = std::move(dial_pubkey);
+                if (pImpl->endpoint.empty() && !dial_endpoint.empty())
+                    pImpl->endpoint = std::move(dial_endpoint);
             }
         }
 
@@ -1568,6 +1591,11 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json &artifacts) noexcept
         // Option B; production code does not call start() directly.
         if (already_running)
             return true;
+
+        // Standby → Configured.  The state is SET here, not left to be
+        // inferred later from whether these artifacts happen to be
+        // non-empty (HEP-CORE-0036 §6.7.1).
+        pImpl->state_.store(QueueState::Configured, std::memory_order_release);
         LOGGER_INFO("[hub::ZmqQueue] event=QueueStateTransition side={} "
                     "from=Standby to=Configured queue='{}' endpoint='{}'",
                     socket_type_label(pImpl->mode, pImpl->socket_pattern), pImpl->queue_name,
@@ -1597,7 +1625,7 @@ bool ZmqQueue::apply_master_approval(const nlohmann::json &artifacts) noexcept
             (pImpl->mode == ZmqQueueImpl::Mode::Write) && !pImpl->bind_socket;
         if (is_fanin_dialing_push)
         {
-            pImpl->dial_pending = true;
+            pImpl->state_.store(QueueState::DialDeferred, std::memory_order_release);
             LOGGER_INFO("[hub::ZmqQueue] event=DialDeferred side={} endpoint='{}' "
                         "queue='{}' (HEP-CORE-0036 §6.6.3 — awaiting role-host "
                         "finalize_connect() with PeerReadinessOracle)",
@@ -1627,7 +1655,7 @@ bool ZmqQueue::finalize_connect(::pylabhub::hub::PeerReadinessOracle &oracle,
     // Non-deferred queues (fan-out producer, one-to-one binding-side
     // producer, dialing consumer, any already-running queue): no-op
     // success.  Oracle is untouched.
-    if (!pImpl->dial_pending)
+    if (pImpl->state_.load(std::memory_order_acquire) != QueueState::DialDeferred)
     {
         return true;
     }
@@ -1683,7 +1711,7 @@ bool ZmqQueue::finalize_connect(::pylabhub::hub::PeerReadinessOracle &oracle,
         std::this_thread::sleep_for(::pylabhub::kBrokerReadinessPollInterval);
     }
 
-    pImpl->dial_pending = false;
+    // No flag to clear — start()'s CAS moves DialDeferred → Active.
     LOGGER_INFO("[hub::ZmqQueue] event=FinalizeConnect side={} endpoint='{}' "
                 "queue='{}' elapsed_ms={} (peer confirmed ready, running "
                 "deferred start())",
@@ -1754,6 +1782,11 @@ bool ZmqQueue::is_admission_populated() const noexcept
     // Dialing writer (fan-in producer): server_pubkey_z85_ non-empty
     // means the peer to connect to is known.  Rarely queried
     // (producer's gate default is true) but symmetric.
+    //
+    // Under `producer_peers_mu_` like the reader branch above.  It was
+    // the one unlocked reader of this field until 2026-08-11, which made
+    // the locking look optional; it is not, see the note on the member.
+    std::lock_guard<std::mutex> lk(pImpl->producer_peers_mu_);
     return !pImpl->server_pubkey_z85_.empty();
 }
 
@@ -1761,48 +1794,32 @@ bool ZmqQueue::is_configured() const noexcept
 {
     if (!pImpl)
         return false;
-    // Server side (any bind): only needs endpoint — CURVE_SERVER
-    // artifacts (identity keypair + ZAP allowlist) are resolved at
-    // `start()` time from the KeyStore-seeded identity_key_name_ and
-    // the broker-pushed allowlist.  Applies to PUSH+bind (canonical
-    // producer) AND PULL+bind (test-only inverse pattern: see
-    // make_pull_test in test_hub_zmq_queue.cpp — production PULL
-    // always connects).
-    // Connect side: PULL+connect needs both endpoint AND serverkey
-    // (the connect-side artifact the master delivers via
-    // CONSUMER_REG_ACK / §6.5.1 pull).
+
+    // HEP-CORE-0036 §6.7.1 — READ the state; do not reconstruct it.
     //
-    // Thread-safety (post-#188 review fix M3): `server_pubkey_z85_`
-    // and `endpoint` are mutated by `set_producer_peers()` under
-    // `producer_peers_mu_`.  is_configured() takes the same mutex to
-    // see a consistent snapshot — without it a concurrent reader
-    // (e.g. `start()` called from the role-host main thread while
-    // `set_producer_peers` runs on the worker thread per §I12) could
-    // observe a torn read.  Contention is negligible: the lock is
-    // held for a couple of `std::string::empty()` calls.
-    std::lock_guard<std::mutex> lock(pImpl->producer_peers_mu_);
-
-    // Schema-pending build (HEP-0034 §10.3a): a reader without an
-    // installed format is never Configured, whatever its peer/endpoint
-    // state — apply_master_approval refuses the transition until
-    // configure_slot_schema() runs.
-    if (pImpl->schema_pending_)
-        return false;
-
-    if (pImpl->bind_socket)
-        return !pImpl->endpoint.empty();
-
-    // PULL/connect side: Configured iff `apply_master_approval` has
-    // run (or the legacy `pull_from(endpoint, key)` factory
-    // populated `endpoint` + `server_pubkey_z85_` at construction).
-    // The peer[0] promote block in `apply_master_approval` writes
-    // these fields as the "I have run" flag — HEP-CORE-0036 §6.7
-    // Option B requires that bare `set_producer_peers` NOT
-    // transition the queue; only `apply_master_approval` does.
-    // `start()` reads `producer_peers_` directly for the per-peer
-    // connect (HEP-CORE-0017 §3.3); these fields are used ONLY as
-    // the Standby→Configured flag here.
-    return !pImpl->server_pubkey_z85_.empty() && !pImpl->endpoint.empty();
+    // `Configured`, `DialDeferred` and `Active` all mean the master's
+    // answer has been applied, which is exactly what "configured" asks.
+    //
+    // What this replaced, and why it was wrong: the body used to be
+    //     if (schema_pending_)      return false;
+    //     if (bind_socket)          return !endpoint.empty();
+    //     return !server_pubkey_z85_.empty() && !endpoint.empty();
+    // A binding queue takes its endpoint from config at CONSTRUCTION, so
+    // that answered true while the queue was still in Standby — it was
+    // really answering "do I have a string to bind to", which coincides
+    // with "am I configured" on the dialing side by accident and not at
+    // all on the binding side.  It also answered true after `stop()`,
+    // because teardown does not blank those strings, which contradicted
+    // "stop() is terminal".  Both follow from asking data a question
+    // only the state can answer.
+    //
+    // The schema check is gone from here because it is a PRECONDITION,
+    // not a component of the answer: `apply_master_approval` refuses the
+    // Standby → Configured transition while the slot format is pending
+    // (HEP-CORE-0034 §10.3a), so reaching Configured already implies it.
+    //
+    // No lock.  The state is atomic, which is the point of holding it.
+    return pImpl->state_.load(std::memory_order_acquire) >= QueueState::Configured;
 }
 
 // ============================================================================
@@ -1844,33 +1861,51 @@ bool ZmqQueue::start()
 {
     if (!pImpl)
         return false;
-    if (pImpl->running_.load(std::memory_order_acquire))
+    if (pImpl->state_.load(std::memory_order_acquire) == QueueState::Active)
         return true; // already running — idempotent
 
-    // HEP-CORE-0036 §6.7 Standby gate: refuse to start a queue that
-    // is not Configured.  "Configured" means transport artifacts are
-    // populated: PULL needs serverkey + connect endpoint; PUSH needs
-    // bind endpoint.  Refusing here keeps `start()` honest as the
-    // §I12 "door opens" — partial / placeholder state cannot reach
-    // libzmq.  Refuse is silent w.r.t. running_ (do NOT exchange) so
-    // callers can re-call after `set_producer_peers(...)` populates
-    // the artifacts.
+    // HEP-CORE-0036 §6.7 state gate: refuse to start a queue that has
+    // not reached Configured.  The state is READ, not re-derived from
+    // whether the transport artifacts happen to be non-empty (§6.7.1) —
+    // that inference is exactly what let a binding queue report itself
+    // Configured straight out of the constructor.  Refusing here keeps
+    // `start()` honest as the §I12 "door opens": placeholder state
+    // cannot reach libzmq.  The refusal leaves the state untouched (no
+    // CAS), so a caller may re-enter once apply_master_approval has
+    // moved the queue to Configured.
     if (!is_configured())
     {
-        LOGGER_DEBUG("[hub::ZmqQueue::start] refused — queue in Standby "
-                     "(mode={}, endpoint='{}', server_pubkey_set={}); HEP-"
-                     "CORE-0036 §6.7 requires Configured state.  Call "
-                     "set_producer_peers() to populate transport artifacts "
-                     "before start().",
-                     socket_type_label(pImpl->mode, pImpl->socket_pattern), pImpl->endpoint,
-                     !pImpl->server_pubkey_z85_.empty());
+        // Report the state itself.  This used to take the peer mutex to
+        // print the endpoint and a serverkey-present flag — the two
+        // values it was inferring the state FROM.  With the state
+        // stored there is nothing to infer and nothing to lock.
+        LOGGER_DEBUG("[hub::ZmqQueue::start] refused — queue is {}, not yet "
+                     "Configured (mode={}, queue='{}'); HEP-CORE-0036 §6.7. "
+                     "The single driver is apply_master_approval(REG_ACK / "
+                     "CONSUMER_REG_ACK) — bare set_producer_peers only "
+                     "records the peer set and deliberately does NOT "
+                     "transition the queue (§6.7 Option B).",
+                     to_string(pImpl->state_.load(std::memory_order_acquire)),
+                     socket_type_label(pImpl->mode, pImpl->socket_pattern), pImpl->queue_name);
         return false;
     }
 
-    if (pImpl->running_.exchange(true, std::memory_order_acq_rel))
-        return true; // lost race — another thread started it
+    // Claim the Configured/DialDeferred → Active transition.  CAS rather
+    // than a plain store: exactly one caller may own the start, and the
+    // loser must learn it lost (this replaces `running_.exchange(true)`,
+    // which had the same job when Active was a bool).
+    QueueState prev_state = pImpl->state_.load(std::memory_order_acquire);
+    for (;;)
+    {
+        if (prev_state == QueueState::Active)
+            return true; // lost race — another thread started it
+        if (pImpl->state_.compare_exchange_weak(prev_state, QueueState::Active,
+                                                std::memory_order_acq_rel,
+                                                std::memory_order_acquire))
+            break;
+    }
 
-    // `running_` is true from here on, so every exit path that is not a
+    // The state says Active from here on, so every exit path that is not a
     // completed start has to put it back.  That obligation belongs to one
     // scope guard rather than to each `catch` handler.
     //
@@ -1884,11 +1919,15 @@ bool ZmqQueue::start()
     // never carry a byte.  A guard cannot be defeated by a throw whose
     // type nobody thought to enumerate.
     auto start_guard = pylabhub::basics::make_scope_guard(
-        [impl = pImpl.get()]() noexcept
+        [impl = pImpl.get(), prev = prev_state]() noexcept
         {
             impl->socket.close();
             impl->mechanism_.store(Mechanism::Uninitialized, std::memory_order_release);
-            impl->running_.store(false, std::memory_order_release);
+            // Restore the state we claimed the transition FROM.  The old
+            // code stored `running_ = false`, which could not distinguish
+            // Standby from Configured — a failed start silently demoted a
+            // Configured queue.  Capturing `prev_state` restores exactly.
+            impl->state_.store(prev, std::memory_order_release);
         });
 
     try
@@ -2060,21 +2099,32 @@ bool ZmqQueue::start()
             // libzmq option `ZMQ_CURVE_SERVERKEY` is set on the socket
             // and captured into the session state at the following
             // `connect()` call, so alternating (set, connect) pairs
-            // produce N independent CURVE-authenticated connections,
-            // one per producer.  Reference: ZMTP/CURVE handshake is
-            // per-connection; the option is a client-side input that
-            // libzmq snapshots at connect time.
+            // produce independent CURVE-authenticated connections.
+            // Reference: ZMTP/CURVE handshake is per-connection; the
+            // option is a client-side input libzmq snapshots at connect.
             //
-            // Two configuration sources feed the loop:
-            //   (a) `producer_peers_` (populated by
-            //       `set_producer_peers` / `apply_master_approval`)
-            //       — the HEP-CORE-0036 §6.4 canonical path.  Handles
-            //       multi-producer fan-in.
-            //   (b) `endpoint` + `server_pubkey_z85_` populated by
-            //       the legacy `pull_from(endpoint, key)` factory
-            //       — single-peer L2 test path.  This branch fires
-            //       ONLY when `producer_peers_` is empty; the two
-            //       sources are never used simultaneously.
+            // TWO SOURCES, and BOTH ARE PRODUCTION PATHS — which one
+            // fires is decided by role, not by test-vs-real:
+            //
+            //   (a) `producer_peers_`, populated by
+            //       `apply_master_approval` on the READ side.  This is
+            //       the DIALING CONSUMER (one-to-one PULL, fan-out SUB).
+            //       Both topologies are single-producer by cardinality,
+            //       so in production this set holds exactly ONE entry
+            //       and the loop runs once.  It is written as a loop
+            //       because the same code served the pre-singular-side
+            //       model where a consumer dialled N producers.  Nothing
+            //       delivers N>1 here any more — the ACK is the only
+            //       source, and the options field that used to let a
+            //       caller name peers locally is gone (#148).
+            //
+            //   (b) `endpoint` + `server_pubkey_z85_`.  This is the
+            //       DIALING PRODUCER (fan-in PUSH).  `apply_master_approval`
+            //       calls `set_producer_peers` only under `is_read`, so a
+            //       writer never populates `producer_peers_`; its single
+            //       dial target is promoted into these two scalars from
+            //       the REG_ACK row instead.  NOT a legacy or test-only
+            //       path — deleting it breaks every fan-in producer.
             //
             // Both branches take the same producer_peers_mu_ so a
             // concurrent `set_producer_peers` on the role-host thread
@@ -2303,8 +2353,42 @@ void ZmqQueue::stop()
 {
     if (!pImpl)
         return;
-    if (!pImpl->running_.exchange(false, std::memory_order_acq_rel))
+    // §6.7 mutator table, `stop()` row: terminal from every state at or
+    // above `Configured`; a no-op from `Standby` / `Uninitialized`.
+    //
+    // "At or above Configured", not "Active", and the difference is the
+    // point.  A queue that has been approved can still arm itself — from
+    // `Configured` via `start()`, from `DialDeferred` via the
+    // `finalize_connect` that is already polling its oracle on another
+    // thread.  Landing those two on `Uninitialized` is what makes
+    // "stop() is terminal" true rather than merely stated: after this
+    // exchange the `start()` gate refuses, so an in-flight
+    // `finalize_connect` whose oracle answers `Ready` a moment later
+    // cannot bring a stopped queue up.  It also keeps `is_configured()`
+    // answering false afterwards, which the state exists to guarantee.
+    //
+    // Only a queue that reached `Active` has anything to tear down — the
+    // states below it never opened a socket or spawned a worker — so the
+    // teardown past this point runs for that case alone.
+    QueueState prev = pImpl->state_.load(std::memory_order_acquire);
+    for (;;)
+    {
+        if (prev < QueueState::Configured)
+            return; // Standby / Uninitialized: nothing was ever armed.
+        if (pImpl->state_.compare_exchange_weak(prev, QueueState::Uninitialized,
+                                                std::memory_order_acq_rel,
+                                                std::memory_order_acquire))
+            break;
+    }
+    if (prev != QueueState::Active)
+    {
+        LOGGER_DEBUG("[hub::ZmqQueue] event=QueueStateTransition side={} "
+                     "from={} to=Uninitialized queue='{}' (stop() before the "
+                     "socket was ever opened — nothing to tear down)",
+                     socket_type_label(pImpl->mode, pImpl->socket_pattern), to_string(prev),
+                     pImpl->queue_name);
         return;
+    }
 
     // Signal all background threads to exit.  Each stop flag is published
     // under the mutex its waiters hold: a waiter owns that lock from its
@@ -2391,7 +2475,7 @@ void ZmqQueue::stop()
 
 bool ZmqQueue::is_running() const noexcept
 {
-    return pImpl && pImpl->running_.load(std::memory_order_relaxed);
+    return pImpl && pImpl->state_.load(std::memory_order_relaxed) == QueueState::Active;
 }
 
 Mechanism ZmqQueue::mechanism() const noexcept
@@ -2638,13 +2722,31 @@ std::string ZmqQueue::policy_info() const
                : (std::string{"zmq_"} + stype + "_block");
 }
 
-std::string ZmqQueue::actual_endpoint() const
+std::optional<::pylabhub::BoundAddress> ZmqQueue::bound_address() const
 {
     if (!pImpl)
-        return "";
-    // After start(): resolved (e.g. port-0 bind resolves to actual port).
-    // Before start() or on connect-mode: returns configured endpoint.
-    return pImpl->actual_endpoint.empty() ? pImpl->endpoint : pImpl->actual_endpoint;
+        return std::nullopt;
+
+    // Only a queue that BOUND has an address to offer, and only after the
+    // bind resolved it.  `actual_endpoint` is written in exactly one place
+    // — the post-bind read of ZMQ_LAST_ENDPOINT — so its emptiness here is
+    // a fact about the socket, not a proxy for a state.
+    //
+    // What this replaced: `actual_endpoint.empty() ? endpoint :
+    // actual_endpoint`.  On a dialing queue, and on a binding queue before
+    // start(), that returned the CONFIGURED string — so a caller asking
+    // "where can peers reach you?" got `tcp://host:0` and no way to tell
+    // it apart from a real answer.  The one production caller guarded it
+    // with `if (!ep.empty())`, a test that could therefore never fail
+    // (HEP-CORE-0036 §6.7.2).
+    if (!pImpl->bind_socket || pImpl->actual_endpoint.empty())
+        return std::nullopt;
+
+    // `parse` rejects port 0.  Reaching it with an unresolved port would
+    // mean libzmq reported a port-0 ZMQ_LAST_ENDPOINT after a successful
+    // bind, which does not happen — but the type refuses to represent it
+    // either way, which is the point of the type.
+    return ::pylabhub::BoundAddress::try_validate(pImpl->actual_endpoint);
 }
 
 bool ZmqQueue::is_binding_side() const noexcept

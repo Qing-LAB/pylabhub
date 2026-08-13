@@ -346,16 +346,23 @@ callers are gone — verify per surface, not against a phase gate.
   PULL loop from commit `2c604280`.
   **⚠ Split this row (checked 2026-08-07).** The two halves have opposite
   risk profiles and must not be deleted in one motion:
-  - The **multi-endpoint PULL loop is LIVE and load-bearing** — it is what
-    makes fan-in work, proven at L4 by `ZmqE2E_MultiProducer_TwoAuthorized`.
-    Deleting it needs the singular-side model to have genuinely replaced it,
-    which is a design question, not a caller count.
-  - `add_producer_peer` / `remove_producer_peer` / `set_producer_peers`
-    have **zero production callers** (only `test_hub_zmq_queue.cpp`), so
-    deleting them is safe on caller grounds — but they are also the
-    specified answer to "how does a dialing consumer learn about a producer
-    that joined later?", and nothing else answers it. Settle that under
-    **#133** as an explicit adopt-or-delete, not as a side effect of this
+  - **CORRECTED 2026-08-11.** The three bullets that stood here were wrong
+    in the same direction, and the corrections matter for what may be
+    deleted:
+  - The multi-endpoint PULL **connect** loop is NOT what makes fan-in work.
+    Under the §3.3.0 binding matrix a fan-in consumer PULL-**binds**; the
+    producers dial in. `ZmqE2E_MultiProducer_TwoAuthorized` proves fan-in
+    through the bind path and does not exercise the multi-connect loop at
+    all. That loop serves the DIALING consumer (one-to-one / fan-out), where
+    the peer count is one.
+  - `set_producer_peers` does NOT have zero production callers. It is called
+    by `apply_master_approval` (`hub_zmq_queue.cpp:1499`) and is how a fan-in
+    consumer's admitted-producer set — the source of its ZAP allowlist —
+    reaches the queue. Live and load-bearing; must not be deleted.
+  - `add_producer_peer` / `remove_producer_peer` **were deleted 2026-08-11**.
+    They were not "the specified answer to how a dialing consumer learns
+    about a producer that joined later" — that question cannot arise, because
+    no dialing side has more than one peer. Reasoning in **#133**.
     phase.
 - [ ] `src/utils/service/role_api_base.cpp` — Delete consumer's
   §7.1 pre-attach loop.  Delete `attach:begin/success/complete`

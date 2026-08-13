@@ -332,6 +332,32 @@ class PYLABHUB_UTILS_EXPORT PeerAuthority
     /// pins unstable for no reason.
     [[nodiscard]] std::set<RosterEntry> local_role_roster() const;
 
+    /// The local role this key belongs to, or empty if no local role does.
+    ///
+    /// The naming half of what `local_role_roster()` carries, asked one key
+    /// at a time.  It exists so a caller holding keys — a channel's
+    /// admission ledger stores nothing else — can write a peer down by name
+    /// without being handed the roster to search.  A caller that scans a
+    /// copy is a caller that can scan it slightly differently from the next
+    /// one, which is how the pair-carrying wire in HEP-CORE-0036 §6.2 came
+    /// to be built two ways.
+    ///
+    /// Empty means "this authority does not know this key as a local role"
+    /// — a federation peer's key answers empty too, because a peer hub is
+    /// not a local role (same kind test `attribute_sender` applies).
+    ///
+    /// **On a key taken from a channel's admission ledger, empty is an
+    /// invariant break, not an ordinary answer.**  A key reaches that
+    /// ledger only by passing the registration gate, which proves it
+    /// against the handshake and resolves it to its roster owner before
+    /// admitting it; so an admitted key is always nameable here.  Callers
+    /// on that path should treat empty as a defect rather than fall back to
+    /// an unnamed row.  The one way it could legitimately occur is a future
+    /// roster reload that republishes this authority without republishing
+    /// the ledger — see the replacement note on this class: they must swap
+    /// as one operation.
+    [[nodiscard]] std::string local_uid_for_key(std::string_view pubkey_z85) const;
+
     /// Is this key one this authority recognises at all?
     ///
     /// The admission question, answered directly rather than by handing out

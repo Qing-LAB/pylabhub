@@ -259,12 +259,12 @@ struct HubStateTestAccess
     static void on_consumer_authorized(HubState &s, const std::string &channel_name,
                                        const std::string &pubkey_z85)
     {
-        s._on_consumer_authorized(channel_name, pubkey_z85);
+        s._on_channel_peer_admitted(channel_name, pubkey_z85);
     }
     static void on_consumer_revoked(HubState &s, const std::string &channel_name,
                                     const std::string &pubkey_z85)
     {
-        s._on_consumer_revoked(channel_name, pubkey_z85);
+        s._on_channel_peer_revoked(channel_name, pubkey_z85);
     }
     // HEP-CORE-0042 §5.5.2 (unified 2026-07-13) — advance a role's
     // ledger confirmed_version.  Role-agnostic: works for

@@ -101,6 +101,222 @@ update the destination task's description, then delete the test.
 
 ## Current Focus — Open coverage gaps
 
+### ⚠ OPEN — #148 E1: finish auditing the tests that touch queue state
+
+> **E2 pass done 2026-08-12 (M2 + M1b).**  Four tests added or rewritten,
+> all verified by falsification rather than by passing.
+>
+> - `WhenNotYetBound_QueueReportsNoBoundAddress` and
+>   `WhenConfiguredWithPortZero_AddressAppearsOnlyAfterBind` — both are
+>   REWRITES of tests that **asserted the defect**.  The originals
+>   (`ActualEndpoint_BeforeStart_ReturnsConfiguredEndpoint`, and the J6
+>   port-0 test) pinned the fallback-to-configured-endpoint behaviour as
+>   though it were the contract, so the bug had two green guards
+>   protecting it.  This is the trivial-case trap's nastier cousin:
+>   not a test that cannot fail, but a test that fails when the code is
+>   FIXED.  Falsified: any fallback returning a plausible address fails
+>   both.
+> - `WhenStopped_QueueRefusesAFreshApproval` and
+>   `WhenStoppedWhileDeferringDial_QueueDoesNotArmAfterwards` — new,
+>   covering two §6.7 mutator-table cells that had no test at all.
+>   Falsified: reverting `stop()` to the Active-only CAS makes
+>   `is_running()` read **true** after the stop, which is the bug stated
+>   as plainly as it can be.
+> - The L4 fan-in marker assertion pinned `event=BindingEndpointPublished`,
+>   a name that appears in no HEP.  HEP-CORE-0021 §16.10 specifies
+>   `event=EndpointUpdatePublished`.  Code and test both follow §16.10
+>   now — worth noting as a pattern: the test agreed with the code and
+>   both disagreed with the design, so nothing failed until someone read
+>   the HEP.
+>
+> New facility: `bound_endpoint_or_fail()` in
+> `tests/test_framework/queue_activation.h`, replacing ~60 sites that
+> read the endpoint off a queue.  It fails the test when the queue has
+> no bound address, which the `.empty()` checks it replaces could not do.
+
+M1 shipped 2026-08-12 (queue holds its state; `start()` gates on it).
+The migration was forced rather than chosen: **58 tests failed the
+moment the gate became real**, every one of them calling `start()` on a
+Standby queue. They had passed because the predicate they leaned on was
+the bug. All 58 now go through `activate()` /
+`complete_deferred_dial()` (`tests/test_framework/queue_activation.h`),
+and the suite is 2794/2794.
+
+What that migration did NOT do is audit whether those tests are
+*testing the right thing*. Three traps to check each one for, all three
+observed live on this surface:
+
+- **Short-circuit trap.** An earlier guard makes the interesting branch
+  unreachable. S-8 (`FailedArm_LeavesQueueNotRunning_AndRetryStillFails`)
+  became an instance of this the moment the gate landed: `start()`
+  refused at the state gate before reaching the KeyStore lookup the
+  test exists to cover. Fixed by driving approval instead, and the
+  gate refusal is now pinned as its own first assertion.
+- **Trivial-case trap.** Asserting the empty/zero state — passes with
+  the feature deleted.
+- **Single-topology coverage** where the truth table has three. The
+  original defect hid here: of five `is_configured()` assertions, four
+  were `bind=false`, and the fifth was short-circuited by the schema
+  precondition above the branch it appeared to test.
+
+**E1 pass done 2026-08-12 — what it found and fixed.**
+
+- Three `actual_endpoint().empty()` guards that **cannot fail**: the
+  accessor falls back to the configured bind request, which is
+  non-empty. Two of them (`TopologyFactory_OneToOne…`,
+  `…FanOut…` producer) stated *"must bind and publish its resolved
+  endpoint"* and had no downstream check at all — their entire stated
+  purpose was unverified. All three now assert the port resolved.
+- `RoleApiFlexzoneTest.ZmqRx_NoFlexzone_StaysUnarmedUntilApproval`: three of its four assertions were
+  non-overridden base virtuals (`flexzone()`→nullptr,
+  `flexzone_size()`→0, `is_shm_backed()`→false; `ZmqQueue` overrides
+  none). Added the live one — `queue_mechanism(Rx) == Uninitialized`,
+  false exactly when something arms the queue outside approval. The
+  constant-folds are kept and labelled as a "stays null" guard.
+- Two comments falsified by M1 itself: both claimed an
+  `EXPECT_FALSE(is_configured())` pinned the schema-pending gate.
+  `is_configured()` no longer consults `schema_pending_`, so those
+  lines pass on the Standby state and say nothing about schemas. The
+  schema contract is still pinned live by the adjacent apply refusal.
+
+**E2 CLOSED 2026-08-12.** The gap the audit measured: of **11**
+`is_configured()` assertion sites, **10 were `EXPECT_FALSE`**, and the
+single `EXPECT_TRUE` was on a *dialing* consumer — nothing asserted
+`is_configured() == true` on a **binding** queue, the original defect's
+hole inverted.
+
+Closed by `ZmqQueueTest.BindingSide_ConfiguredOnlyAfterApproval_AndNotAfterStop`,
+which pins both binding sides (fan-in consumer PULL-bind, one-to-one
+producer PUSH-bind) across the full arc: not Configured before
+approval, Configured after, and NOT Configured after `stop()` — the
+second half of the same defect, since teardown leaves the endpoint
+string in place. A valid schema is used deliberately: with an empty one
+the schema-pending gate short-circuited above the binding branch, which
+is why five pre-existing assertions never reached it.
+
+**Verified by falsification, not by passing.** Restoring the pre-#148
+inferring body of `is_configured()` makes this test fail at four
+assertions — both sides, both halves. A test written against the
+current implementation would have passed either way.
+
+Source: `docs/tech_draft/DRAFT_queue_state_is_inferred_2026-08.md` §5 E.
+
+### ✅ CLOSED 2026-08-12 — deferred dial was exercised everywhere, asserted nowhere above L2
+
+**Do not re-propose Pattern 4 for rx-side CURVE arming — it already
+exists.** `ZmqE2E_AuthorizedConsumerReceivesAllSlots` is the designated
+L4 pin for HEP-0042 §7.1 ("consumer registers, pre-attaches, dials,
+receives data"), with a real hub, real role processes and real
+`--keygen` identities. Since the empty-CURVE fallback was killed
+(#90, `start()` PANICs), data arriving at all proves the consumer armed
+with CURVE.
+
+The layering is sound and worth recording so it is not re-litigated:
+
+| Layer | Drives | Proves |
+|---|---|---|
+| L2 `test_hub_zmq_queue`, `test_zmq_queue_auth` | queue API, one process | the state machine and its refusals |
+| L3 `test_layer3_pattern4/test_pattern4_attach_coordination` | real broker + `BrokerWireClient` per role | the **broker's half** of §7.1 (admit / deny×2 / wait×4 / stale-guard). No queue is armed |
+| L4 `test_plh_hub_role_zmq_e2e` | real hub + real role processes | the whole chain, per topology |
+
+The real gap was narrower: **no L3 or L4 test observed
+`event=DialDeferred` / `event=FinalizeConnect`.** The fan-in L4 tests
+depend on the deferral — their producers dial into a binding consumer —
+but nothing checked it happened. A regression to connect-inside-apply
+would have passed most runs and failed only when the producer's
+handshake beat the consumer's allowlist install: the #2480 signature,
+~14% under CPU stress.
+
+Closed by adding marker assertions to both existing fan-in L4 tests:
+`ZmqE2E_MultiProducer_TwoAuthorized` (both producers) and
+`ZmqE2E_Processor_FanInBothChannels_ThreeRoles` (the producer **and**
+the processor's tx — a role that is writer and reader at once, where
+only the writer half defers). Verified by falsification: a deliberately
+wrong marker fails and dumps the real log line
+(`event=DialDeferred side=PUSH endpoint='tcp://127.0.0.1:35423'`).
+
+Also fixed there: a comment claiming the fan-in producer "drives
+Standby → Configured → Active in one step", which §6.6.3 contradicts.
+
+### ✅ CLOSED 2026-08-12 — passing subprocess tests now persist their evidence
+
+A Pattern-3 worker writes stderr to a pipe the parent holds in memory.
+On FAILURE the `ADD_FAILURE`s quote it and gtest persists that in the
+XML. On SUCCESS it was dropped — so the one thing a reader most wants
+to confirm, that an assertion matched real output rather than passing
+vacuously, was the one thing not written down. Answering "did this
+actually fire?" cost a falsification cycle: break the expectation,
+rebuild, watch it fail, read the dump, revert.
+
+`expect_worker_ok` now collects the ERROR lines the multiset pairing
+CONSUMED and records them with `::testing::Test::RecordProperty`, which
+gtest writes into the per-process XML under `build/Testing/gtest/`.
+That API is public static precisely so utility functions outside a
+fixture can call it.
+
+Two deliberate limits:
+
+- **Consumed lines, not whole stderr.** That directory already holds
+  ~500k XMLs; the consumed lines are what the claim rests on.
+- **Keyed by scenario** (`matched_errors_<mode>`), because gtest keeps
+  only the last value per key — a test driving several workers would
+  otherwise keep only the last one's evidence.
+
+Verified on the case that motivated it: S-8's PASSING run now persists
+both KeyStore lines. 97 previously-silent tests carry evidence after a
+full sweep.
+
+
+### ✅ CLOSED 2026-08-12 — `*_zmq_bind` retired (was config-wired, read by nobody)
+
+The "Config field not wired" pitfall (CODE_REVIEW_GUIDANCE §3, first
+row), live until today:
+
+```
+role JSON "out_zmq_bind"  →  transport_config.hpp   (parsed)
+                          →  role_config_translation.cpp  (copied to opts)
+                          →  read by nothing
+```
+
+`build_tx_queue` takes the bind/dial direction from
+`writer_is_binding_side(opts.topology)`. An operator setting
+`out_zmq_bind: false` got silence — no effect and no error.
+
+The field could not have been honoured even in principle: under the
+singular-side model which side binds is a consequence of the topology,
+so a config asking a fan-in producer to bind describes a channel with
+two binders and nobody dialing. It had to go, not be wired up.
+
+Retired through the project's existing mechanism rather than silently
+deleted: `reject_retired_keys` now names both keys, cites
+HEP-CORE-0017 §3.3.0, and points at `in_channel_topology` /
+`out_channel_topology`. Deleted with it: the field on `TxQueueOptions`
+and `TransportConfig`, its parse, its translation, and both whitelist
+entries. Stripped from six shipped demo configs; seven test sites
+updated.
+
+New pin: `SetupInfrastructureTranslationTest.RetiredZmqBindKeysRejected`
+asserts the rejection names the key, the HEP, **and** the replacement —
+a message that omits the replacement just sends the operator hunting
+for a typo.
+
+### ⚠ OPEN — fan-out has no L4 end-to-end test at all (#146)
+
+`tests/test_layer4_plh_hub/test_plh_hub_role_zmq_e2e.cpp` drives one-to-one
+and fan-in.  Fan-out has nothing at L4.
+
+Not a routine gap.  Fan-out is the multi-entry BINDING case — one producer,
+several admitted consumers — so it is the only topology where the producer's
+peer list has more than one row.  The 2026-08-10 peer-row defect (an admitted
+peer the script could not name) was found because one-to-one and fan-in
+disagreed with each other; a defect that needs two rows to appear has nowhere
+to surface today.
+
+The pin to copy is already in the file: the producer script emits
+`prod_test: allowlist count=N has_peer=B has_ghost=B` and the test asserts on
+it.  `has_ghost` must be false — without it an accessor that answered true for
+everything would satisfy `has_peer`.
+
 ### ⚠ OPEN (LOW) — `start_handler_threads` phase 2-4 window: observable or not? (#135)
 
 The one finding in `REVIEW_Connection_Inbox_Band` never validated. Pulled
@@ -160,6 +376,43 @@ rule, each engine needs a test that a real script SENDS a channel broadcast and
 RECEIVES one, verified directly rather than inferred from a sibling engine.
 Send and receive must both be exercised: they are independent bindings and
 either could regress alone.
+
+### ⚠ OPEN — the peer/band inquiry family has almost no engine-level coverage (2026-08-10)
+
+Found while adding four missing Lua members (`allowed_peer_count`,
+`allowed_peer_contains`, `band_member_count`, `band_member_contains`).  The
+gap is wider than those four: **the whole family is nearly untested at the
+binding level.**  The only test touching `allowed_peers` is the native L2
+plugin (`good_producer_plugin.cpp`), and it only asserts the handle is empty
+when auth is unwired.  Python's four and Lua's new four are compile-verified
+only.
+
+Why it needs L3: all four read broker-fed state.  `allowed_peer_*` read the
+allowlist cache, which is seeded by REG_ACK and grown by auth-change
+notifies; `band_member_*` are broker round-trips.  The L2 engine suite says
+so itself — its Chunk 6a header scopes band and queue-state closures out to
+L3 for exactly this reason.  An L2 test could only ever assert the
+empty/zero case, which is the case least likely to regress.
+
+What a real test has to separate, and what makes this worth doing properly:
+
+| Situation | `band_member_count` must answer |
+|---|---|
+| Broker reachable, band has members | the count |
+| Broker reachable, band empty | 0 |
+| Broker unreachable | nil (Lua) / raises (Python) / −1 (native) |
+
+Nil and 0 are different answers and a script that conflates them mistakes a
+dead broker for an empty band.  A test that only covers the empty case
+cannot tell those apart, which is precisely the regression to guard.
+
+Same three-engine rule as the `channel_broadcast` item above: verify each
+engine directly, never infer one from a sibling.
+
+Native's side of the same change — the v16 `script_dir` / `logs_dir` /
+`run_dir` context fields — IS covered, in `good_producer_plugin.cpp`, as the
+invariant (children empty exactly when `role_dir` is; otherwise `role_dir`
+plus the fixed suffix) rather than as literal paths.
 
 ### L4 fixture scoreboard: startup sweep for crash-orphans (2026-07-12)
 

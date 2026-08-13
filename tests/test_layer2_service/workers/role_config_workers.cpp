@@ -119,7 +119,6 @@ nlohmann::json minimal_processor_json()
         {"in_transport", "shm"},
         {"out_transport", "zmq"},
         {"out_zmq_endpoint", "tcp://0.0.0.0:5599"},
-        {"out_zmq_bind", true},
         {"out_slot_schema",
          {{"packing", "aligned"}, {"fields", {{{"name", "result"}, {"type", "float64"}}}}}},
         {"checksum", "enforced"},
@@ -326,7 +325,6 @@ int load_processor_dual_transport(const std::string &dir)
             EXPECT_EQ(cfg.in_transport().transport, pylabhub::config::Transport::Shm);
             EXPECT_EQ(cfg.out_transport().transport, pylabhub::config::Transport::Zmq);
             EXPECT_EQ(cfg.out_transport().zmq_endpoint, "tcp://0.0.0.0:5599");
-            EXPECT_TRUE(cfg.out_transport().zmq_bind);
         },
         "role_config::load_processor_dual_transport", Logger::GetLifecycleModule(),
         FileLock::GetLifecycleModule(), JsonConfig::GetLifecycleModule());
@@ -842,7 +840,6 @@ int zmq_transport_valid(const std::string &dir)
             auto j = minimal_producer_json();
             j["out_transport"] = "zmq";
             j["out_zmq_endpoint"] = "tcp://0.0.0.0:5580";
-            j["out_zmq_bind"] = true;
             j["out_zmq_buffer_depth"] = 128;
             // Packing is schema-driven (removed from transport config
             // 2026-04-20) — no in/out_zmq_packing key here.  Pins that
@@ -851,7 +848,6 @@ int zmq_transport_valid(const std::string &dir)
             auto cfg = RoleConfig::load(path.string(), "producer");
             EXPECT_EQ(cfg.out_transport().transport, pylabhub::config::Transport::Zmq);
             EXPECT_EQ(cfg.out_transport().zmq_endpoint, "tcp://0.0.0.0:5580");
-            EXPECT_TRUE(cfg.out_transport().zmq_bind);
             EXPECT_EQ(cfg.out_transport().zmq_buffer_depth, 128u);
         },
         "role_config::zmq_transport_valid", Logger::GetLifecycleModule(),

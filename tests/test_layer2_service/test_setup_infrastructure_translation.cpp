@@ -12,9 +12,12 @@
  *     (data_transport / clear shm_name; pre-Stage-1D also zmq_node_endpoint)
  *     never copied when transport was zmq → build_rx_queue dispatched
  *     the SHM path on a zmq pipeline.  Stage 1D (#193, 2026-06-15)
- *     retired RxQueueOptions::zmq_node_endpoint — the consumer's
- *     connect target now lives ONLY in producer_peers, populated by
- *     CONSUMER_REG_ACK.producers[] per HEP-CORE-0036 §6.4 + §6.7.
+ *     retired RxQueueOptions::zmq_node_endpoint for the dialing
+ *     consumer — its connect target is not config-supplied at all.  It
+ *     arrives on CONSUMER_REG_ACK.producers[] and is installed by
+ *     apply_master_approval per HEP-CORE-0036 §6.4 + §6.7.  #148 then
+ *     removed the last way to name it locally (`producer_peers`), so
+ *     no translation from config to peer exists to test here.
  * Both lived in the inline body of `setup_infrastructure_` — the
  * "config-to-opts translation" layer.  Existing L3 tests
  * (role_api_flexzone_workers.cpp) hand-constructed `RxQueueOptions`
@@ -286,8 +289,8 @@ TEST_F(SetupInfrastructureTranslationTest, Producer_ZmqTransport_AllFieldsCopied
                                            // Fan-out puts the producer on the binding side and
                                            // exercises the topology→enum translator path.  The role
                                            // host reads `opts.topology` to pick the queue-factory
-                                           // matrix row; the legacy `zmq_bind` field is no longer
-                                           // consulted by `build_tx_queue`.
+                                           // matrix row.  There is no separate bind knob —
+                                           // `*_zmq_bind` is a retired config key.
                                            j["out_channel_topology"] = "fan-out";
                                            j["out_transport"] = "zmq";
                                            j["out_zmq_endpoint"] = "tcp://127.0.0.1:5599";
@@ -356,8 +359,11 @@ TEST_F(SetupInfrastructureTranslationTest, Consumer_ShmTransport_AllFieldsCopied
 
     // SHM transport must NOT activate the ZMQ branch.
     EXPECT_NE(opts.data_transport, "zmq");
-    EXPECT_TRUE(opts.producer_peers.empty())
-        << "SHM path must not populate producer_peers (ZMQ-only field)";
+    // There was a `producer_peers.empty()` assertion here, checking that
+    // the SHM path left the ZMQ-only peer vector alone.  The vector was
+    // deleted (#148) — no peer may be named on the options at all now,
+    // on either transport — so the type system carries what this line
+    // used to assert.
 
     EXPECT_EQ(opts.checksum_policy, cfg.checksum().policy);
     EXPECT_TRUE(opts.flexzone_checksum);
@@ -793,6 +799,78 @@ TEST_F(SetupInfrastructureTranslationTest, RetiredShmSecretKeysRejected)
         EXPECT_NE(msg.find("HEP-CORE-0041"), std::string::npos)
             << "rejection message must cite HEP-CORE-0041 for the "
                "migration path; got: "
+            << msg;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// `*_zmq_bind` retired — bind/dial is a consequence of topology
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Under the singular-side model (HEP-CORE-0017 §3.3.0) which side binds
+// follows from the channel topology: fan-in binds the consumer; fan-out
+// and one-to-one bind the producer.  A separate operator knob cannot be
+// honoured — a config asking a fan-in producer to bind describes a
+// channel with two binders and nobody dialing.
+//
+// The field was worse than unhonoured, it was INERT: parsed, carried
+// into the queue options, and then read by nothing, because
+// `build_tx_queue` takes the direction from
+// `writer_is_binding_side(opts.topology)`.  An operator who set it got
+// silence rather than either effect or error — the "config field not
+// wired" pitfall.  Retiring the key converts that silence into a
+// message that names the replacement.
+TEST_F(SetupInfrastructureTranslationTest, RetiredZmqBindKeysRejected)
+{
+    EXPECT_THROW(
+        {
+            (void)generate_and_load("producer", "producer.json", "TestProdBindRetired",
+                                    [](nlohmann::json &j)
+                                    {
+                                        j["out_channel"] = "test.retired.bind.prod";
+                                        j["out_transport"] = "zmq";
+                                        j["out_zmq_endpoint"] = "tcp://127.0.0.1:5599";
+                                        j["out_zmq_bind"] = true; // <- retired
+                                    });
+        },
+        std::runtime_error);
+
+    EXPECT_THROW(
+        {
+            (void)generate_and_load("consumer", "consumer.json", "TestConsBindRetired",
+                                    [](nlohmann::json &j)
+                                    {
+                                        j["in_channel"] = "test.retired.bind.cons";
+                                        j["in_transport"] = "zmq";
+                                        j["in_zmq_bind"] = false; // <- retired
+                                    });
+        },
+        std::runtime_error);
+
+    // The message must name the key AND point at the replacement.  A
+    // bare "unknown config key" would send the operator looking for a
+    // typo instead of for `out_channel_topology`.
+    try
+    {
+        (void)generate_and_load("producer", "producer.json", "TestProdBindRetiredMsg",
+                                [](nlohmann::json &j)
+                                {
+                                    j["out_channel"] = "test.retired.bind.msg";
+                                    j["out_transport"] = "zmq";
+                                    j["out_zmq_endpoint"] = "tcp://127.0.0.1:5599";
+                                    j["out_zmq_bind"] = true;
+                                });
+        FAIL() << "expected throw on retired out_zmq_bind key";
+    }
+    catch (const std::runtime_error &e)
+    {
+        const std::string msg{e.what()};
+        EXPECT_NE(msg.find("out_zmq_bind"), std::string::npos)
+            << "rejection must name the retired key; got: " << msg;
+        EXPECT_NE(msg.find("HEP-CORE-0017"), std::string::npos)
+            << "rejection must cite the topology model that replaced it; got: " << msg;
+        EXPECT_NE(msg.find("out_channel_topology"), std::string::npos)
+            << "rejection must name the replacement key, not just say the old one is gone; got: "
             << msg;
     }
 }

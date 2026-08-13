@@ -1,6 +1,7 @@
 #include "utils/wire_bodies.hpp"
 
 #include "utils/schema_utils.hpp" // hub::parse_schema_json — the ONE inbox-schema parser (HEP-0046 B.2)
+#include "utils/security/curve_keypair.hpp" // Z85PublicKey::try_validate — the ONE rule for a well-formed key
 
 #include <nlohmann/json.hpp>
 
@@ -638,6 +639,76 @@ AdminErrorBody::AdminErrorBody(nlohmann::json body)
     d::require(body_, "code", d::JsonKind::String);
     d::require(body_, "message", d::JsonKind::String);
     d::require_envelope_hash(body_);
+}
+
+// ── Peer rows and lists (HEP-CORE-0036 §6.2 / §6.5) ─────────────────────────
+
+PeerRow PeerRow::from_pair(std::string role_uid, std::string pubkey_z85, std::string endpoint)
+{
+    PeerRow row;
+    row.role_uid_ = std::move(role_uid);
+    row.pubkey_z85_ = std::move(pubkey_z85);
+    row.endpoint_ = std::move(endpoint);
+    return row;
+}
+
+std::optional<PeerRow> PeerRow::parse(const nlohmann::json &entry, PeerDetail detail)
+{
+    // A bare string is the retired pre-2026-08 shape.  It is rejected
+    // rather than accommodated: accepting it would mean carrying a row
+    // that names nobody, which is the state this shape exists to end.
+    if (!entry.is_object())
+        return std::nullopt;
+
+    PeerRow row;
+    row.role_uid_ = entry.value("role_uid", std::string{});
+    row.pubkey_z85_ = entry.value("pubkey_z85", std::string{});
+    row.endpoint_ = entry.value("endpoint", std::string{});
+    if (row.role_uid_.empty())
+        return std::nullopt;
+    // The key is judged by the one authority on what a well-formed Z85
+    // public key is, not by a length test written out again here.  Every
+    // reader of these lists then agrees on which keys are readable — a
+    // reader with its own weaker rule accepts rows the others refuse,
+    // which is the same divergence, one layer down.
+    if (!pylabhub::utils::security::Z85PublicKey::try_validate(row.pubkey_z85_).has_value())
+        return std::nullopt;
+    // A reader that is about to dial has nowhere to go without this, and
+    // would find that out at connect time instead of at parse time.
+    if (detail == PeerDetail::WithEndpoint && row.endpoint_.empty())
+        return std::nullopt;
+    return row;
+}
+
+nlohmann::json PeerRow::to_json(PeerDetail detail) const
+{
+    nlohmann::json out;
+    out["role_uid"] = role_uid_;
+    out["pubkey_z85"] = pubkey_z85_;
+    // Emitted only when the reader will dial.  A binding side that
+    // received one would be carrying a transport detail it must not act
+    // on, and a reader cannot tell "absent because binding" from
+    // "dropped by mistake" if the field is always present but sometimes
+    // empty — so absence is the signal.
+    if (detail == PeerDetail::WithEndpoint)
+        out["endpoint"] = endpoint_;
+    return out;
+}
+
+std::optional<std::vector<PeerRow>> parse_peer_list(const nlohmann::json &arr, PeerDetail detail)
+{
+    if (!arr.is_array())
+        return std::nullopt;
+    std::vector<PeerRow> rows;
+    rows.reserve(arr.size());
+    for (const auto &entry : arr)
+    {
+        auto row = PeerRow::parse(entry, detail);
+        if (!row.has_value())
+            return std::nullopt; // all-or-nothing; see the header
+        rows.push_back(std::move(*row));
+    }
+    return rows;
 }
 
 } // namespace pylabhub::wire

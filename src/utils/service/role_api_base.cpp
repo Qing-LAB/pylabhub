@@ -2,6 +2,7 @@
  * @file role_api_base.cpp
  * @brief RoleAPIBase implementation — unified role API (pure C++).
  */
+#include "utils/wire_bodies.hpp"
 #include "utils/role_api_base.hpp"
 #include "utils/broker_request_comm.hpp"
 #include "utils/role_handler.hpp"  // handler-mode ctrl threads
@@ -259,33 +260,34 @@ struct RoleAPIBase::Impl
     ///     hadn't fired the SHM branch when the role tears down).
     std::unique_ptr<utils::security::IShmCapabilityConsumer> shm_consumer;
 
-    // HEP-CORE-0036 §I11 — symmetric script-observable peer caches.
-    // Both stay independent PeerCache instances per HEP-CORE-0011
-    // §"Cross-Engine Surface Parity" Read-only observation surface
-    // principle: producer-side and consumer-side observation are
-    // independent surfaces; the internal caches mirror that
-    // separation.  See the file-local PeerCache helper above for the
-    // lock + snapshot/put contract.
+    // HEP-CORE-0036 §I11 — the script-observable view of "who is on this
+    // channel with me", one cache per role regardless of side.
     //
-    //   * allowlist_cache (producer-side):
-    //     channel-allowlist cache for `api.allowed_peers(channel)`
-    //     polling + `on_allowlist_changed` callback.  The authoritative
-    //     enforcement set lives in `ZmqQueue::peer_allowlist_snapshot()`
-    //     — this cache is a SCRIPT-CONVENIENCE COPY enriched with
-    //     role_uid (which PeerIdentity doesn't carry).  Updated only by
-    //     `handle_channel_auth_notifies` after `set_peer_allowlist`
-    //     succeeds, so the cache and the ZAP enforcement state move
-    //     together.
+    // Backs `api.allowed_peers(channel)`, `allowed_peer_count`,
+    // `allowed_peer_contains` and the `on_allowlist_changed` callback.
+    // It is a SCRIPT-CONVENIENCE COPY, not the enforcement set: what
+    // actually admits or denies a handshake is the `PeerAllowlist`
+    // installed on the queue, which ZAP consults per connection.  This
+    // copy exists because the enforcement set is keyed on `PeerIdentity`,
+    // which carries no `role_uid`, and a script that cannot name a peer
+    // cannot do anything useful with the list.
     //
-    //   * producer_peer_cache (consumer-side):
-    //     per-channel snapshot of the AUTHORIZED PRODUCERS that the
-    //     broker delivered via `CONSUMER_REG_ACK.producers[]` (HEP-0036
-    //     §6.4).  Updated by `apply_consumer_reg_ack` after the queue's
-    //     `apply_master_approval` succeeds, so the cache and the queue's
-    //     producer_peers_ move together.  Empty when SHM transport
-    //     (CONSUMER_REG_ACK has no `producers[]` field per §5.6).
+    // Written wherever the role learns a new membership set, which is
+    // three places, all of them whole-set replacements:
+    //   - `apply_producer_reg_ack`   ← REG_ACK.initial_allowlist
+    //   - `apply_consumer_reg_ack`   ← CONSUMER_REG_ACK.producers[]
+    //   - the auth-change notify handler ← GET_CHANNEL_AUTH_ACK.allowlist
+    // Only the third runs after `set_peer_allowlist`; the two seeds run
+    // alongside `apply_master_approval`, which installs enforcement from
+    // the same rows.  So cache and enforcement always come from one
+    // message, but the ordering differs by path.
+    //
+    // A second cache (`producer_peer_cache`) mirrored this one on the
+    // consumer side until 2026-08-11.  It was written on every consumer
+    // registration and read by nothing — the "legacy accessors" its
+    // comment named did not exist.  Deleted rather than wired up: the
+    // membership question has one answer, so it takes one cache.
     PeerCache allowlist_cache;
-    PeerCache producer_peer_cache;
 
     // HEP-CORE-0027 §3.5 — the roster each hub sends, for the inbox ZAP.
     // The inbox is a hub-wide role<->role facility (any role may message any
@@ -1389,12 +1391,12 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
         // Post-2026-07-08 topology model: the broker delivers the
         // dialing-side endpoint on CONSUMER_REG_ACK.data_endpoint +
         // .data_pubkey (HEP-CORE-0036 §6.4 amendment).  The pre-topology
-        // multi-producer connect model (opts.producer_peers vector,
-        // per-peer connect + curve_serverkey) is being retired; while
-        // the vector still exists for test scaffolding, the first entry
-        // is treated as "the peer" if pre-populated.  Production leaves
-        // it empty and the queue enters Standby until
-        // apply_consumer_reg_ack(ack) drives Standby → Active.
+        // multi-producer connect model (a `producer_peers` vector on the
+        // options, per-peer connect + curve_serverkey) is GONE: no
+        // dialing side ever has more than one peer, and nothing outside
+        // the broker's answer may name it.  A dialing reader is always
+        // built in Standby and apply_consumer_reg_ack(ack) drives it to
+        // Active.
         //
         // CURVE is unconditional per HEP-CORE-0035 §2.  Consumer
         // presents its identity keypair via identity_key_name (KeyStore
@@ -1411,15 +1413,6 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
 
         const bool is_binding = hub::Queue::reader_is_binding_side(opts.topology);
 
-        // Test-legacy path: pre-populated producer_peers on the dialing
-        // side lets the queue enter Configured at construction (no
-        // broker round-trip).  Only applies to fan-out and one-to-one
-        // (dialing).  On fan-in (binding) the consumer never has a peer
-        // pre-known.
-        const bool have_peer = !is_binding && !opts.producer_peers.empty() &&
-                               !opts.producer_peers.front().endpoint.empty() &&
-                               !opts.producer_peers.front().pubkey_z85.empty();
-
         hub::RxOptions rx_opts;
         // Runtime-resolved build passes EMPTY fields (the queue's
         // schema-pending signal, HEP-0034 §10.3a); gate the conversion
@@ -1431,17 +1424,13 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
         // Binding side (fan-in consumer): endpoint_hint from config
         // (opts.zmq_node_endpoint).  May be tcp://host:0 for
         // ephemeral bind.
-        // Dialing side (fan-out / one-to-one consumer): endpoint_hint
-        // must be empty; peer endpoint arrives on CONSUMER_REG_ACK.
-        // Test-legacy exception: if producer_peers is pre-populated on
-        // dialing side, take the first peer's endpoint (drives queue
-        // to Configured at construction).
-        rx_opts.endpoint_hint =
-            is_binding ? opts.zmq_node_endpoint
-                       : (have_peer ? opts.producer_peers.front().endpoint : std::string{});
-        rx_opts.server_pubkey =
-            have_peer ? sec::Z85PublicKey::validate(opts.producer_peers.front().pubkey_z85)
-                      : sec::Z85PublicKey{};
+        //
+        // Dialing side (fan-out / one-to-one consumer): NOTHING about
+        // the peer is knowable here.  Both the endpoint and the
+        // serverkey arrive on CONSUMER_REG_ACK, so the hint stays empty
+        // and `server_pubkey` keeps its empty default — that pair is
+        // what builds the queue in Standby (HEP-CORE-0036 §6.7).
+        rx_opts.endpoint_hint = is_binding ? opts.zmq_node_endpoint : std::string{};
         rx_opts.identity_key_name = sec::kRoleIdentityName;
         rx_opts.max_buffer_depth = opts.zmq_buffer_depth;
         rx_opts.schema_tag = make_schema_tag(expected_hash);
@@ -1450,16 +1439,10 @@ bool RoleAPIBase::build_rx_queue(const hub::RxQueueOptions &opts)
         reader = hub::Queue::create_reader(opts.topology, hub::Transport::Zmq, std::move(rx_opts));
         if (!reader)
             return false;
-        // Pre-populated test path: start immediately.  Empty peers:
-        // queue stays Standby; apply_consumer_reg_ack drives it Active
-        // per HEP-CORE-0036 §6.7.
-        if (have_peer && !reader->start())
-        {
-            LOGGER_ERROR("[{}] ZMQ reader start() failed on test-pre-populated "
-                         "path for channel='{}'",
-                         pImpl->short_tag, rx_channel);
-            return false;
-        }
+        // No start() here, on either side.  Building a queue and arming
+        // it are separate steps, and only the master's answer may take
+        // the second one: apply_consumer_reg_ack → apply_master_approval
+        // (HEP-CORE-0036 §6.7).
     }
     else
     {
@@ -1521,25 +1504,37 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
             script_view.reserve(producers.size());
             for (const auto &p : producers)
             {
-                if (!p.is_object())
+                // One rule for what a peer row IS — `PeerRow::parse`, the
+                // same rule the allowlist readers and the queue use, so a
+                // row nobody else would accept cannot enter the script's
+                // membership view here (HEP-CORE-0036 §6.2).  Read as
+                // `IdentityOnly`: this view is who is on the channel, and
+                // nothing dials from it — the endpoint is transport
+                // detail scripts do not see (§I11).
+                //
+                // The DISPOSITION of a bad row is this caller's, and it
+                // differs from the allowlist readers on purpose.  They
+                // refuse the whole message, because their list REPLACES a
+                // set and a dropped row is a peer silently denied.  Here
+                // the message is the attach batch, where HEP-CORE-0042
+                // §7.1 states the loop always runs to completion so one
+                // unusable peer cannot strand the rest — and the view
+                // built here is filtered down to the producers that
+                // actually confirmed anyway, so it was never "everything
+                // the message listed".
+                const auto row =
+                    pylabhub::wire::PeerRow::parse(p, pylabhub::wire::PeerDetail::IdentityOnly);
+                if (!row.has_value())
+                {
+                    LOGGER_WARN("[{}] apply_consumer_reg_ack: producers[] row is not a "
+                                "{{role_uid, pubkey_z85}} peer row (HEP-CORE-0036 §6.2) — "
+                                "skipping it per HEP-CORE-0042 §7.1 loop-to-completion.  A "
+                                "row the script could not name would answer 'not a peer' for "
+                                "a producer that is in fact sending.",
+                                pImpl->short_tag);
                     continue;
-                // Wire shape: {role_uid, pubkey, endpoint}.  Script
-                // view exposes only the IDENTITY half ({role_uid,
-                // pubkey}) — endpoint is transport-layer detail per
-                // §I11 (scripts read membership, not connection
-                // mechanics).
-                AllowedPeer entry;
-                entry.role_uid = p.value("role_uid", std::string{});
-                // HEP-CORE-0036 §5b B-4 (#289, 2026-06-25) — single
-                // canonical key `pubkey_z85`.  Pre-B-4 the broker
-                // emitted `pubkey` and we fell back to `pubkey_z85`
-                // here; B-4 unified the broker emit to `pubkey_z85`
-                // (matching the §I10 one-pubkey-per-uid invariant
-                // and the §5b unified shape), and the dual-name
-                // fallback is dropped.
-                entry.pubkey = p.value("pubkey_z85", std::string{});
-                if (!entry.pubkey.empty())
-                    script_view.push_back(std::move(entry));
+                }
+                script_view.push_back(AllowedPeer{row->role_uid(), row->pubkey_z85()});
             }
         }
         // HEP-CORE-0036 §5b B-5 (#290, 2026-06-26) — hard-error on
@@ -2078,26 +2073,21 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // `script_view` to the admitted subset; SHM branch's
         // script_view was never filtered (no §7.1 pre-attach loop).
         //
-        // Seed both caches from the same script_view.
-        //   * `allowlist_cache` — the transport-agnostic, side-agnostic
-        //     script-observable cache per HEP-CORE-0036 §I11.1
-        //     invariant #1.  Backs `api.allowed_peers(channel)` and
-        //     `api.admitted_peers_count(channel)`.  Symmetric with the
-        //     seed in `apply_producer_reg_ack` from REG_ACK's
-        //     `initial_allowlist`.  The consumer's REG_ACK carries the
-        //     admitted producers as `producers[]`; seeding both from
-        //     that keeps the two caches coherent under §I11.1.
-        //   * `producer_peer_cache` — the consumer-side per-channel
-        //     snapshot preserved for legacy accessors that read it.
-        // The two caches carry the same data by construction here; a
-        // future consolidation pass may collapse them.
+        // Seed the script-observable cache (HEP-CORE-0036 §I11.1
+        // invariant #1) — the same cache `apply_producer_reg_ack` seeds
+        // from REG_ACK's `initial_allowlist`, so both sides answer
+        // `api.allowed_peers(channel)` from one place.  The consumer's
+        // ACK carries its admitted peers as `producers[]`; that is the
+        // same membership set under a different field name.
+        //
+        // This used to write a second cache (`producer_peer_cache`) with
+        // identical contents.  Nothing read it — deleted 2026-08-11.
         std::vector<AllowedPeer> pending_initial_seed_view;
         bool have_initial_seed = false;
         if (has_producers)
         {
             pending_initial_seed_view = script_view; // copy for callback
-            pImpl->allowlist_cache.put(channel_name, script_view);
-            pImpl->producer_peer_cache.put(channel_name, std::move(script_view));
+            pImpl->allowlist_cache.put(channel_name, std::move(script_view));
             have_initial_seed = true;
             LOGGER_INFO("[{}] event=InitialAllowlistSeeded channel='{}' size={} "
                         "(HEP-CORE-0036 §3.6 + §I11.1; consumer-side)",
@@ -2112,38 +2102,82 @@ bool RoleAPIBase::apply_consumer_reg_ack(const nlohmann::json &ack)
         // subsequent REG_ACK.initial_allowlist carries a real
         // dial-target.  Non-binding consumers (fan-out / one-to-one
         // dial side) skip: `binding_role_type()` is empty, or
-        // `actual_endpoint()` returns empty.
+        // `bound_address()` reports nothing to publish.
         //
         // Uses the queue's own side-identity accessor per
         // HEP-CORE-0036 §I9.1 (no direct branch on
         // `is_binding_side()` — that raw predicate exists for
         // logging only under the locality invariant).
+        // Every exit from this block except the publish succeeding is
+        // FATAL, per HEP-CORE-0021 §16.6.  The reason is that a binding
+        // side whose address never reached the broker has no path to
+        // being reachable: no peer can dial it, no retry exists, and
+        // nothing will publish on its behalf later.  Returning `true`
+        // here — which this code did until the failure semantics were
+        // corrected — left the role Authorized, heartbeating, and
+        // reporting `is_channel_ready() == true`, while every producer
+        // on the channel eventually died on a `finalize_connect`
+        // timeout.  The role that failed stayed up; a different role
+        // took the failure.
+        //
+        // Returning `false` is the whole fix: the caller
+        // (`consumer_role_host.cpp` worker_main_) already tears down the
+        // infrastructure, never reaches `install_heartbeat`, and exits
+        // non-zero — which is precisely the four-step failure handling
+        // §16.6 prescribes.  Deliberately NOT retried: the refusals this
+        // can return are deterministic (`NOT_CHANNEL_OWNER`,
+        // `CHANNEL_NOT_FOUND`), and a transport failure here means the
+        // control link is gone, which §3.5.1 already makes fatal.
         if (pImpl->rx_queue && !pImpl->rx_queue->binding_role_type().empty())
         {
-            const std::string ep = pImpl->rx_queue->actual_endpoint();
-            if (!ep.empty())
+            // `bound_address()` is empty only when this queue did not bind
+            // or has not bound yet — a real condition, unlike the
+            // `if (!ep.empty())` this replaced, which tested an accessor
+            // that fell back to the configured string and so could never
+            // fail (HEP-CORE-0036 §6.7.2).
+            const auto bound = pImpl->rx_queue->bound_address();
+            if (!bound.has_value())
             {
-                if (auto *bc = pImpl->resolve_bc_for_channel(channel_name);
-                    bc && bc->is_connected())
-                {
-                    auto res = bc->send_endpoint_update(channel_name, "zmq_node", ep);
-                    if (!res.has_value() || res->value("status", std::string{}) != "success")
-                    {
-                        LOGGER_WARN("[{}] apply_consumer_reg_ack: "
-                                    "send_endpoint_update failed for channel='{}' "
-                                    "endpoint='{}' — producers dialing this "
-                                    "channel won't get a valid REG_ACK until the "
-                                    "publish succeeds",
-                                    pImpl->short_tag, channel_name, ep);
-                    }
-                    else
-                    {
-                        LOGGER_INFO("[{}] event=BindingEndpointPublished "
-                                    "channel='{}' endpoint='{}'",
-                                    pImpl->short_tag, channel_name, ep);
-                    }
-                }
+                LOGGER_ERROR("[{}] event=EndpointUpdateFailed channel='{}' "
+                             "error='NO_BOUND_ADDRESS' — this role is the binding "
+                             "side but its queue reports no bound address, so "
+                             "there is no dial target to publish "
+                             "(HEP-CORE-0021 §16.6)",
+                             pImpl->short_tag, channel_name);
+                return false;
             }
+
+            // A missing or disconnected control link used to fall through
+            // this block in SILENCE — no publish, no diagnostic, and a
+            // `true` return.  The ZMQ path already proved the handle
+            // non-null above, so reaching either case here means the link
+            // died between the acknowledgement and this point.
+            auto *bc = pImpl->resolve_bc_for_channel(channel_name);
+            if (!bc || !bc->is_connected())
+            {
+                LOGGER_ERROR("[{}] event=EndpointUpdateFailed channel='{}' "
+                             "error='NO_BROKER_LINK' endpoint='{}' — cannot "
+                             "publish the bound address (HEP-CORE-0021 §16.6)",
+                             pImpl->short_tag, channel_name, bound->str());
+                return false;
+            }
+
+            auto res = bc->send_endpoint_update(channel_name, "zmq_node", *bound);
+            if (!res.has_value() || res->value("status", std::string{}) != "success")
+            {
+                LOGGER_ERROR("[{}] event=EndpointUpdateFailed channel='{}' "
+                             "endpoint='{}' error='{}' — producers dialing this "
+                             "channel would never receive a valid dial target "
+                             "(HEP-CORE-0021 §16.6 / §16.10)",
+                             pImpl->short_tag, channel_name, bound->str(),
+                             res.has_value() ? res->value("error_code", std::string{"REFUSED"})
+                                             : std::string{"NO_REPLY"});
+                return false;
+            }
+
+            LOGGER_INFO("[{}] event=EndpointUpdatePublished channel='{}' "
+                        "resolved_endpoint='{}'",
+                        pImpl->short_tag, channel_name, bound->str());
         }
 
         // Fire `on_allowlist_changed(reason="initial_seed")` for
@@ -2445,6 +2479,66 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
                     "instance_id={} (HEP-CORE-0042 §5.5.3)",
                     pImpl->short_tag, channel_name, instance_id);
 
+        // HEP-CORE-0021 §16.6 endpoint publish on the BINDING side —
+        // the producer's half, symmetric with `apply_consumer_reg_ack`.
+        //
+        // Under fan-out and one-to-one the PRODUCER binds (HEP-CORE-0017
+        // §3.3.0), so it owns the address consumers dial.  It registers
+        // BEFORE it binds, so its REG_REQ could only carry a bind request;
+        // the bound address becomes knowable here, one step later, and is
+        // published now.  Until this existed, a producer configured with
+        // `tcp://host:0` left the broker holding the unresolved request:
+        // `ProducerEntry.zmq_node_endpoint` is what a dialing consumer
+        // receives in `CONSUMER_REG_ACK.producers[]`, so the consumer was
+        // handed port 0 and never arrived.
+        //
+        // Fan-in producers dial rather than bind and are skipped by
+        // `binding_role_type()` being empty — they are owed no address of
+        // their own.  Same accessor as the consumer path per §I9.1: role
+        // code does not ask "am I fan-out?".
+        //
+        // Failure is fatal for the same reason it is on the consumer side
+        // (§16.6): there is no retry that helps, and a producer nobody can
+        // dial is worse running than stopped.  Returning false makes the
+        // role host tear down and exit non-zero.
+        if (pImpl->tx_queue && !pImpl->tx_queue->binding_role_type().empty())
+        {
+            const auto bound = pImpl->tx_queue->bound_address();
+            if (!bound.has_value())
+            {
+                LOGGER_ERROR("[{}] event=EndpointUpdateFailed channel='{}' "
+                             "error='NO_BOUND_ADDRESS' — this producer is the "
+                             "binding side but its queue reports no bound address "
+                             "(HEP-CORE-0021 §16.6)",
+                             pImpl->short_tag, channel_name);
+                return false;
+            }
+            auto *pub_bc = pImpl->resolve_bc_for_channel(channel_name);
+            if (!pub_bc || !pub_bc->is_connected())
+            {
+                LOGGER_ERROR("[{}] event=EndpointUpdateFailed channel='{}' "
+                             "error='NO_BROKER_LINK' endpoint='{}' — cannot publish "
+                             "the bound address (HEP-CORE-0021 §16.6)",
+                             pImpl->short_tag, channel_name, bound->str());
+                return false;
+            }
+            auto res = pub_bc->send_endpoint_update(channel_name, "zmq_node", *bound);
+            if (!res.has_value() || res->value("status", std::string{}) != "success")
+            {
+                LOGGER_ERROR("[{}] event=EndpointUpdateFailed channel='{}' "
+                             "endpoint='{}' error='{}' — consumers dialing this "
+                             "channel would never receive a valid dial target "
+                             "(HEP-CORE-0021 §16.6 / §16.10)",
+                             pImpl->short_tag, channel_name, bound->str(),
+                             res.has_value() ? res->value("error_code", std::string{"REFUSED"})
+                                             : std::string{"NO_REPLY"});
+                return false;
+            }
+            LOGGER_INFO("[{}] event=EndpointUpdatePublished channel='{}' "
+                        "resolved_endpoint='{}'",
+                        pImpl->short_tag, channel_name, bound->str());
+        }
+
         // HEP-CORE-0027 §3.5 — adopt the roster this hub sent (replaces, never merges) from this
         // presence's REG_ACK before it seeds the inbox ROUTER ZAP arm.
         // Producing presence: this is the hub this role writes TO.
@@ -2481,25 +2575,24 @@ bool RoleAPIBase::apply_producer_reg_ack(const nlohmann::json &ack)
         {
             if (ack.contains("initial_allowlist") && ack.at("initial_allowlist").is_array())
             {
-                const auto &initial_allowlist = ack.at("initial_allowlist");
+                // Shared parse — the same one the refresh path uses, so the
+                // seed and the refresh can no longer disagree about what a
+                // row is (HEP-CORE-0036 §6.2).  `IdentityOnly`: this cache
+                // answers "who is allowed", and nothing dials from it.
                 std::vector<AllowedPeer> script_view;
-                for (const auto &entry : initial_allowlist)
+                if (const auto rows = pylabhub::wire::parse_peer_list(
+                        ack.at("initial_allowlist"), pylabhub::wire::PeerDetail::IdentityOnly))
                 {
-                    // HEP-CORE-0036 §6.2 (rev 2.3 2026-07-09) — payload
-                    // shape unified with CONSUMER_REG_ACK.producers[]:
-                    // array of {role_uid?, endpoint?, pubkey_z85} objects
-                    // (topology-driven size/endpoint per §3.3.0).  Script
-                    // view exposes IDENTITY half only ({role_uid, pubkey})
-                    // — endpoint is transport-layer detail per §I11
-                    // (scripts read membership, not connection mechanics).
-                    if (!entry.is_object())
-                        continue;
-                    AllowedPeer p;
-                    p.role_uid = entry.value("role_uid", std::string{});
-                    p.pubkey = entry.value("pubkey_z85", std::string{});
-                    if (p.pubkey.empty())
-                        continue;
-                    script_view.push_back(std::move(p));
+                    script_view.reserve(rows->size());
+                    for (const auto &r : *rows)
+                        script_view.push_back(AllowedPeer{r.role_uid(), r.pubkey_z85()});
+                }
+                else
+                {
+                    LOGGER_WARN("[{}] REG_ACK `initial_allowlist` for channel '{}' carries a "
+                                "malformed row — every row is {{role_uid, pubkey_z85}} per "
+                                "HEP-CORE-0036 §6.2.  Seeding empty rather than partially.",
+                                pImpl->short_tag, channel_name);
                 }
                 pImpl->allowlist_cache.put(channel_name, script_view);
                 LOGGER_INFO("[{}] event=InitialAllowlistSeeded channel='{}' size={} "
@@ -2683,9 +2776,50 @@ std::vector<AllowedPeer> RoleAPIBase::allowed_peers(const std::string &channel) 
     return pImpl->allowlist_cache.snapshot(channel);
 }
 
-std::size_t RoleAPIBase::admitted_peers_count(const std::string &channel) const
+std::size_t RoleAPIBase::allowed_peer_count(const std::string &channel) const
 {
     return pImpl->allowlist_cache.snapshot(channel).size();
+}
+
+bool RoleAPIBase::allowed_peer_contains(const std::string &channel,
+                                        const std::string &role_uid) const
+{
+    for (const auto &p : pImpl->allowlist_cache.snapshot(channel))
+        if (p.role_uid == role_uid)
+            return true;
+    return false;
+}
+
+// Band membership reduced to the two questions scripts ask.  Both are the
+// `band_members` broker round-trip plus the HEP-CORE-0030 BAND_MEMBERS_ACK
+// unwrap: `{"members": [{role_uid, role_name}, ...]}`.  `nullopt` is
+// transport failure only — a reachable broker with an empty band answers
+// 0 / false, and callers must keep those apart.
+
+std::optional<std::size_t> RoleAPIBase::band_member_count(const std::string &channel)
+{
+    const auto reply = band_members(channel);
+    if (!reply.has_value())
+        return std::nullopt;
+
+    std::size_t count = 0;
+    for (const auto &m : reply->value("members", nlohmann::json::array()))
+        if (!m.value("role_uid", std::string{}).empty())
+            ++count;
+    return count;
+}
+
+std::optional<bool> RoleAPIBase::band_member_contains(const std::string &channel,
+                                                      const std::string &role_uid)
+{
+    const auto reply = band_members(channel);
+    if (!reply.has_value())
+        return std::nullopt;
+
+    for (const auto &m : reply->value("members", nlohmann::json::array()))
+        if (m.value("role_uid", std::string{}) == role_uid)
+            return true;
+    return false;
 }
 
 bool RoleAPIBase::channel_admission_populated(const std::string &channel) const noexcept
@@ -3128,19 +3262,42 @@ void RoleAPIBase::handle_channel_auth_notifies(
                 }
                 else
                 {
-
+                    // HEP-CORE-0036 §6.5 — rows, not bare strings, and the
+                    // same shape the REG_ACK seed carries.  This used to
+                    // read strings and store `role_uid` as empty, which
+                    // silently blanked the names the seed had established
+                    // on the first membership change.
+                    //
+                    // One parse for every peer list on the wire, and
+                    // `IdentityOnly` because this is an allowlist: nothing
+                    // dials from it.  A malformed row REFUSES the whole
+                    // message rather than being skipped — this reply
+                    // REPLACES the local set, so a skipped row is a peer
+                    // silently denied, and refusing preserves the prior
+                    // snapshot exactly as the missing-field branch above
+                    // already does.
+                    const auto rows = pylabhub::wire::parse_peer_list(
+                        reply->at("allowlist"), pylabhub::wire::PeerDetail::IdentityOnly);
+                    if (!rows.has_value())
+                    {
+                        LOGGER_WARN("[{}/{}] GET_CHANNEL_AUTH_ACK for channel '{}' carries a "
+                                    "malformed allowlist row — every row must be "
+                                    "{{role_uid, pubkey_z85}} per HEP-CORE-0036 §6.5.  "
+                                    "Preserving prior allowlist_cache snapshot rather than "
+                                    "installing a partial set (a dropped row is a peer "
+                                    "silently denied).",
+                                    pImpl->short_tag, pImpl->uid, channel);
+                        ++it;
+                        continue;
+                    }
                     sec::PeerAllowlist allowlist;
                     std::vector<AllowedPeer> script_view;
-                    const auto &arr = reply->at("allowlist");
-                    for (const auto &entry : arr)
+                    script_view.reserve(rows->size());
+                    for (const auto &r : *rows)
                     {
-                        if (!entry.is_string())
-                            continue;
-                        const auto pk = entry.get<std::string>();
-                        if (pk.empty())
-                            continue;
-                        allowlist.peers.insert(sec::PeerIdentity{sec::kCurveMechanism, pk});
-                        script_view.push_back(AllowedPeer{/*role_uid=*/std::string{}, pk});
+                        allowlist.peers.insert(
+                            sec::PeerIdentity{sec::kCurveMechanism, r.pubkey_z85()});
+                        script_view.push_back(AllowedPeer{r.role_uid(), r.pubkey_z85()});
                     }
                     const auto reason = it->details.value("reason", std::string{"unknown"});
 
@@ -3666,7 +3823,25 @@ void RoleAPIBase::append_inbox_to_reg(nlohmann::json &opts,
     // separately via set_inbox_queue); skip the endpoint field rather
     // than emitting an empty string if no queue exists.
     if (pImpl->inbox_queue)
-        opts["inbox_endpoint"] = pImpl->inbox_queue->actual_endpoint();
+    {
+        // Only a resolved address may be advertised.  The inbox's
+        // configured endpoint defaults to port 0, so publishing the
+        // configured value would tell every peer to dial a port that does
+        // not exist (HEP-CORE-0036 §6.7.2).  Omitting the field is the
+        // honest alternative, and matches the `has_inbox()` skip above:
+        // the broker treats an absent `inbox_endpoint` as "no inbox".
+        if (auto bound = pImpl->inbox_queue->bound_address(); bound.has_value())
+        {
+            opts["inbox_endpoint"] = bound->str();
+        }
+        else
+        {
+            LOGGER_ERROR("[{}] append_inbox_to_reg: inbox queue reports no bound "
+                         "address — registering without an inbox endpoint rather "
+                         "than advertising an unresolved one",
+                         pImpl->short_tag);
+        }
+    }
     // Packing travels ONCE, inside the canonical schema object
     // (`serialize_inbox_spec_json` always emits it — HEP-0034 §6.2 /
     // HEP-0046 B.2).  The separate `inbox_packing` wire field is retired;

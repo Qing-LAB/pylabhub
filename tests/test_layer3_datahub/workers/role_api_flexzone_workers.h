@@ -20,16 +20,16 @@ int shm_roundtrip();
 
 /// ZMQ-only producer — api.flexzone(Tx) returns nullptr, size == 0,
 /// tx_has_shm() == false.
-int zmq_tx_null();
+int zmq_tx_has_no_flexzone_and_arms_curve();
 
 /// ZMQ-only consumer — api.flexzone(Rx) returns nullptr, size == 0,
 /// rx_has_shm() == false.
-int zmq_rx_null();
+int zmq_rx_has_no_flexzone_and_stays_unarmed();
 /// HEP-0034 §10.3a / SI-7 (slice 3c) — the five queue-builder gates for
 /// the `from-channel` runtime-resolved sentinel.  Lives in this worker
 /// TU because it reuses the same RoleAPIBase + CURVE-seeding scaffold
-/// as zmq_tx_null / zmq_rx_null.
-int from_channel_si7_gates();
+/// as zmq_tx_has_no_flexzone_and_arms_curve / zmq_rx_has_no_flexzone_and_stays_unarmed.
+int from_channel_startup_gates_refuse_illegal_configs();
 
 /// Round-trip + checksum: producer updates flexzone checksum after a
 /// sentinel write, consumer verifies checksum matches (verify_checksum

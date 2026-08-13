@@ -26,6 +26,7 @@
 
 #include <fmt/core.h>
 
+#include "queue_activation.h" // activate() — never call start() directly
 #include "shared_test_helpers.h"
 #include "test_entrypoint.h"
 
@@ -123,6 +124,11 @@ bool try_send_uint32(ZmqQueue *producer, uint32_t value)
 
 // ── Scenarios ──────────────────────────────────────────────────────────────
 
+/// Drive a freshly-built queue to Active the way production does —
+/// **use this instead of `q->start()`**.  Defined in
+/// `test_framework/queue_activation.h`, which carries the rationale.
+using pylabhub::tests::activate;
+
 int auth_round_trip_allowed_peer_delivers(const char * /*tmpdir*/)
 {
     return run_gtest_worker(
@@ -152,7 +158,7 @@ int auth_round_trip_allowed_peer_delivers(const char * /*tmpdir*/)
             // `set_peer_allowlist()` AFTER start() because start()
             // is what creates + registers the ZapRouter slot that
             // set_peer_allowlist writes into.
-            ASSERT_TRUE(producer->start());
+            ASSERT_TRUE(activate(*producer));
             ASSERT_TRUE(producer->set_peer_allowlist(initial_allow));
 
             // Pump ZAP from a side thread.
@@ -160,13 +166,13 @@ int auth_round_trip_allowed_peer_delivers(const char * /*tmpdir*/)
 
             // Consumer side: connect with CURVE_CLIENT.
             auto consumer =
-                ZmqQueue::pull_from(producer->actual_endpoint(),
+                ZmqQueue::pull_from(::pylabhub::tests::bound_endpoint_or_fail(*producer),
                                     pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                                     make_uint32_schema(), "aligned",
                                     /*identity_key_name=*/"consumer",
                                     /*bind=*/false);
             ASSERT_NE(consumer, nullptr);
-            ASSERT_TRUE(consumer->start());
+            ASSERT_TRUE(activate(*consumer));
 
             ASSERT_TRUE(try_send_uint32(producer.get(), 0xDEADBEEFu));
             EXPECT_TRUE(
@@ -213,19 +219,19 @@ int auth_unallowed_peer_blocked(const char * /*tmpdir*/)
             // `set_peer_allowlist()` AFTER start() because start()
             // is what creates + registers the ZapRouter slot that
             // set_peer_allowlist writes into.
-            ASSERT_TRUE(producer->start());
+            ASSERT_TRUE(activate(*producer));
             ASSERT_TRUE(producer->set_peer_allowlist(initial_allow));
 
             ZapPumpThread pump;
 
             auto denied_consumer =
-                ZmqQueue::pull_from(producer->actual_endpoint(),
+                ZmqQueue::pull_from(::pylabhub::tests::bound_endpoint_or_fail(*producer),
                                     pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                                     make_uint32_schema(), "aligned",
                                     /*identity_key_name=*/"denied",
                                     /*bind=*/false);
             ASSERT_NE(denied_consumer, nullptr);
-            ASSERT_TRUE(denied_consumer->start());
+            ASSERT_TRUE(activate(*denied_consumer));
 
             (void)try_send_uint32(producer.get(), 0x12345678u);
             EXPECT_FALSE(wait_for_one_uint32(denied_consumer.get(), 0x12345678u,
@@ -269,7 +275,7 @@ int auth_allowlist_swap_takes_effect_for_next_connection(const char * /*tmpdir*/
             // `set_peer_allowlist()` AFTER start() because start()
             // is what creates + registers the ZapRouter slot that
             // set_peer_allowlist writes into.
-            ASSERT_TRUE(producer->start());
+            ASSERT_TRUE(activate(*producer));
             ASSERT_TRUE(producer->set_peer_allowlist(initial_allow));
 
             ZapPumpThread pump;
@@ -292,13 +298,13 @@ int auth_allowlist_swap_takes_effect_for_next_connection(const char * /*tmpdir*/
 
             // Bob can now connect.
             auto bob_consumer =
-                ZmqQueue::pull_from(producer->actual_endpoint(),
+                ZmqQueue::pull_from(::pylabhub::tests::bound_endpoint_or_fail(*producer),
                                     pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                                     make_uint32_schema(), "aligned",
                                     /*identity_key_name=*/"bob",
                                     /*bind=*/false);
             ASSERT_NE(bob_consumer, nullptr);
-            ASSERT_TRUE(bob_consumer->start());
+            ASSERT_TRUE(activate(*bob_consumer));
 
             ASSERT_TRUE(try_send_uint32(producer.get(), 0xCAFEBABEu));
             EXPECT_TRUE(wait_for_one_uint32(bob_consumer.get(), 0xCAFEBABEu,
@@ -361,7 +367,7 @@ int auth_deny_then_allow_via_swap_pins_path(const char *)
                                               /*zap_domain=*/"test.zmq.auth.deny_then_allow",
                                               /*bind=*/true);
             ASSERT_NE(producer, nullptr);
-            ASSERT_TRUE(producer->start());
+            ASSERT_TRUE(activate(*producer));
 
             ZapPumpThread pump;
 
@@ -375,13 +381,13 @@ int auth_deny_then_allow_via_swap_pins_path(const char *)
             const auto deny_baseline = ZapRouter::instance().denied_count();
             {
                 auto consumer = ZmqQueue::pull_from(
-                    producer->actual_endpoint(),
+                    ::pylabhub::tests::bound_endpoint_or_fail(*producer),
                     pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                     make_uint32_schema(), "aligned",
                     /*identity_key_name=*/"client",
                     /*bind=*/false);
                 ASSERT_NE(consumer, nullptr);
-                ASSERT_TRUE(consumer->start());
+                ASSERT_TRUE(activate(*consumer));
 
                 // Wait for the deny path to surface.  The CURVE
                 // handshake driven by start() submits the ZAP REQ.
@@ -410,13 +416,13 @@ int auth_deny_then_allow_via_swap_pins_path(const char *)
             const auto allow_baseline = ZapRouter::instance().allowed_count();
             {
                 auto consumer = ZmqQueue::pull_from(
-                    producer->actual_endpoint(),
+                    ::pylabhub::tests::bound_endpoint_or_fail(*producer),
                     pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                     make_uint32_schema(), "aligned",
                     /*identity_key_name=*/"client",
                     /*bind=*/false);
                 ASSERT_NE(consumer, nullptr);
-                ASSERT_TRUE(consumer->start());
+                ASSERT_TRUE(activate(*consumer));
 
                 ASSERT_TRUE(try_send_uint32(producer.get(), 0xCAFEBABEu));
                 EXPECT_TRUE(wait_for_one_uint32(consumer.get(), 0xCAFEBABEu,
@@ -469,20 +475,20 @@ int auth_swap_blocks_old_peer_pins_data(const char *)
             // `set_peer_allowlist()` AFTER start() because start()
             // is what creates + registers the ZapRouter slot that
             // set_peer_allowlist writes into.
-            ASSERT_TRUE(producer->start());
+            ASSERT_TRUE(activate(*producer));
             ASSERT_TRUE(producer->set_peer_allowlist(initial_allow));
             ZapPumpThread pump;
 
             // ── Phase A: alice admitted, receives 0xAAAA0001u.
             {
                 auto alice = ZmqQueue::pull_from(
-                    producer->actual_endpoint(),
+                    ::pylabhub::tests::bound_endpoint_or_fail(*producer),
                     pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                     make_uint32_schema(), "aligned",
                     /*identity_key_name=*/"alice",
                     /*bind=*/false);
                 ASSERT_NE(alice, nullptr);
-                ASSERT_TRUE(alice->start());
+                ASSERT_TRUE(activate(*alice));
                 ASSERT_TRUE(try_send_uint32(producer.get(), 0xAAAA0001u));
                 EXPECT_TRUE(
                     wait_for_one_uint32(alice.get(), 0xAAAA0001u, std::chrono::milliseconds(2000)))
@@ -509,13 +515,13 @@ int auth_swap_blocks_old_peer_pins_data(const char *)
             const auto deny_baseline = ZapRouter::instance().denied_count();
             {
                 auto alice_again = ZmqQueue::pull_from(
-                    producer->actual_endpoint(),
+                    ::pylabhub::tests::bound_endpoint_or_fail(*producer),
                     pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                     make_uint32_schema(), "aligned",
                     /*identity_key_name=*/"alice",
                     /*bind=*/false);
                 ASSERT_NE(alice_again, nullptr);
-                ASSERT_TRUE(alice_again->start());
+                ASSERT_TRUE(activate(*alice_again));
 
                 const auto deadline =
                     std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
@@ -534,13 +540,13 @@ int auth_swap_blocks_old_peer_pins_data(const char *)
             // ── Phase D: bob connects, receives 0xBBBB0001u.
             {
                 auto bob = ZmqQueue::pull_from(
-                    producer->actual_endpoint(),
+                    ::pylabhub::tests::bound_endpoint_or_fail(*producer),
                     pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                     make_uint32_schema(), "aligned",
                     /*identity_key_name=*/"bob",
                     /*bind=*/false);
                 ASSERT_NE(bob, nullptr);
-                ASSERT_TRUE(bob->start());
+                ASSERT_TRUE(activate(*bob));
                 ASSERT_TRUE(try_send_uint32(producer.get(), 0xBBBB0001u));
                 EXPECT_TRUE(
                     wait_for_one_uint32(bob.get(), 0xBBBB0001u, std::chrono::milliseconds(2000)));
@@ -630,7 +636,7 @@ int auth_empty_allowlist_denies_all(const char *)
                                               /*zap_domain=*/"test.zmq.auth.empty.deny",
                                               /*bind=*/true);
             ASSERT_NE(producer, nullptr);
-            ASSERT_TRUE(producer->start());
+            ASSERT_TRUE(activate(*producer));
 
             // Pin the in-memory contract: snapshot is present (the
             // empty allowlist WAS installed), and is_peer_allowed
@@ -644,13 +650,13 @@ int auth_empty_allowlist_denies_all(const char *)
             const auto deny_baseline = ZapRouter::instance().denied_count();
 
             auto consumer =
-                ZmqQueue::pull_from(producer->actual_endpoint(),
+                ZmqQueue::pull_from(::pylabhub::tests::bound_endpoint_or_fail(*producer),
                                     pylabhub::utils::security::Z85PublicKey::validate(producer_pub),
                                     make_uint32_schema(), "aligned",
                                     /*identity_key_name=*/"client",
                                     /*bind=*/false);
             ASSERT_NE(consumer, nullptr);
-            ASSERT_TRUE(consumer->start());
+            ASSERT_TRUE(activate(*consumer));
 
             // The CURVE handshake fires on consumer->start() above —
             // the ZAP REQ submits independent of any data send.
@@ -853,11 +859,14 @@ int auth_apply_master_approval_seeds_initial_allowlist(const char *)
             //    allowlist onto the running queue.
             // HEP-CORE-0036 §6.2 (rev 2.3 2026-07-09) — initial_allowlist
             // payload shape unified with producers[]: array of
-            // {role_uid?, endpoint?, pubkey_z85} objects, not strings.
+            // {role_uid, endpoint?, pubkey_z85} objects, not strings —
+            // role_uid required per HEP-CORE-0036 §6.2.
             nlohmann::json reg_ack;
             reg_ack["initial_allowlist"] = nlohmann::json::array();
-            reg_ack["initial_allowlist"].push_back({{"pubkey_z85", alice_pub}});
-            reg_ack["initial_allowlist"].push_back({{"pubkey_z85", bob_pub}});
+            reg_ack["initial_allowlist"].push_back(
+                {{"role_uid", "cons.alice.uid00000001"}, {"pubkey_z85", alice_pub}});
+            reg_ack["initial_allowlist"].push_back(
+                {{"role_uid", "cons.bob.uid000000001"}, {"pubkey_z85", bob_pub}});
             ASSERT_TRUE(producer->apply_master_approval(reg_ack))
                 << "apply_master_approval(REG_ACK) with a non-empty "
                    "initial_allowlist MUST succeed on a Standby PUSH "
@@ -929,20 +938,21 @@ int auth_misconfig_connect_missing_serverkey_factory_returns_nullptr(const char 
             const auto [client_pub, client_sec] = make_keypair();
             pylabhub::utils::security::secure().keys().add_identity_from_z85("client", client_pub,
                                                                              client_sec);
-            // HEP-CORE-0036 §6.7 Standby state (#188): empty serverkey
-            // at construction is the Standby signal.  Factory MUST
-            // succeed.  The state machine surfaces the (formerly
-            // factory-time) "no serverkey" diagnostic at `start()`
-            // time instead — `start()` refuses on a Standby queue
-            // and logs `queue in Standby` at DEBUG.
+            // HEP-CORE-0036 §6.7 Standby state (#188): a queue leaves
+            // the constructor in Standby, and an empty serverkey is
+            // simply what a dialing queue has before its master answers.
+            // Factory MUST succeed.  The state machine surfaces the
+            // (formerly factory-time) "no serverkey" diagnostic at
+            // `start()` time instead — `start()` refuses any queue that
+            // has not reached Configured, and names the state at DEBUG.
             auto consumer = ZmqQueue::pull_from("tcp://127.0.0.1:5555",
                                                 pylabhub::utils::security::Z85PublicKey{}, // empty
                                                 make_uint32_schema(), "aligned",
                                                 /*identity_key_name=*/"client",
                                                 /*bind=*/false);
             ASSERT_NE(consumer, nullptr) << "Factory must accept empty serverkey post-#188; "
-                                            "queue is in Standby until set_producer_peers() "
-                                            "populates the artifact.";
+                                            "queue is in Standby until apply_master_approval() "
+                                            "transitions it.";
             EXPECT_FALSE(consumer->is_configured()) << "Standby queue must not report Configured.";
             EXPECT_FALSE(consumer->is_running()) << "Standby queue must not report running.";
             // start() refuses on a Standby queue — no socket setup,
@@ -1068,10 +1078,10 @@ int auth_null_mech_client_handshake_fails(const char * /*tmpdir*/)
                                               /*zap_domain=*/"test.zmq.auth.nullmech",
                                               /*bind=*/true);
             ASSERT_NE(producer, nullptr);
-            ASSERT_TRUE(producer->start());
+            ASSERT_TRUE(activate(*producer));
 
             ZapPumpThread pump;
-            const std::string ep = producer->actual_endpoint();
+            const std::string ep = ::pylabhub::tests::bound_endpoint_or_fail(*producer);
 
             // NULL-mech client: raw zmq PULL on the shared context,
             // NO CURVE setsockopts.  libzmq defaults the mechanism to
@@ -1149,25 +1159,49 @@ int auth_null_mech_client_handshake_fails(const char * /*tmpdir*/)
 
 // ── S-8 regression: a failed start must not leave the queue Active ─────────
 //
-// `start()` sets `running_ = true` BEFORE the work that can fail.  Its
+// `start()` claims the Active state BEFORE the work that can fail.  Its
 // original handler list was `std::invalid_argument` + `zmq::error_t`, and
 // `KeyStore::pubkey` throws `std::out_of_range` for a name that is not in
 // the store — neither of those.  The cleanup was skipped and the queue was
-// left `running_ == true` with nothing bound.
+// left claiming Active with nothing bound.
 //
 // Reaching that throw needs the key to go missing AFTER construction:
 // `validate_curve_factory_params` calls `ks.has(name)`, so a queue can
 // never be BUILT naming an absent key (the factory returns nullptr).  The
-// window is construct → `KeyStore::remove` → `start()`, and `remove` is
+// window is construct → `KeyStore::remove` → approval, and `remove` is
 // public API.  Narrow, but the consequence is not: `finalize_connect` is
 // `noexcept` and tail-calls `start()`, so an escaping throw crosses a
 // `noexcept` boundary into `std::terminate`.
 //
 // The assertion that distinguishes fixed from unfixed is the SECOND
-// `start()`.  `start()` opens with `if (running_) return true; // already
-// running`, so before the fix the retry reported SUCCESS for a queue that
-// had never bound.  A test checking only the first call would pass either
-// way.
+// approval.  `start()` opens with "already Active → return true", so
+// before the fix the retry reported SUCCESS for a queue that had never
+// bound.  A test checking only the first call would pass either way.
+// That short-circuit still exists (it is what makes `start()`
+// idempotent), so the regression this pins is still live: the failure
+// unwind must restore the PRIOR state rather than leave Active set.
+//
+// Approval, not `start()`, is what this drives.  Per §6.7.1 the queue
+// leaves the constructor in Standby and `start()` refuses that outright
+// — it would never reach the KeyStore lookup, and the test would pass
+// for the wrong reason (the short-circuit trap).  The first assertion
+// below pins that gate deliberately; the KeyStore path is then reached
+// the way production reaches it, through `apply_master_approval`.
+//
+// Where a failed approval leaves the queue: **Configured**, not Standby.
+// The approval WAS applied — artifacts are in hand — and only the arm
+// failed, so `start()`'s unwind guard restores the state it claimed the
+// transition FROM rather than demoting the queue.
+//
+// What makes the RETRY reach the arm again is a different fact, and the
+// one this test actually pins: the failed arm must not leave the queue
+// **Active**.  `apply_master_approval` re-stores Configured itself, so
+// the retry does not depend on what the guard restored — it depends on
+// `already_running` (state == Active) being false.  If a failed arm
+// left Active behind, apply would short-circuit and report success for
+// a queue that never bound.  That is the S-8 regression, and it shows
+// up twice: `EXPECT_FALSE` on the retry, and one missing ERROR line in
+// the driver's two-entry expectation.
 //
 // Design source: HEP-CORE-0036 §6.7 — a queue is Active only once its
 // socket is bound/connected.  "Half-started" is not a state the API may
@@ -1192,18 +1226,26 @@ int auth_failed_start_does_not_leave_queue_active(const char * /*tmpdir*/)
             // will now throw std::out_of_range from inside start().
             pylabhub::utils::security::secure().keys().remove(kKeyName);
 
-            EXPECT_FALSE(q->start()) << "start() must fail — and must not let the "
-                                        "std::out_of_range escape, since finalize_connect() "
-                                        "is noexcept and tail-calls start()";
-            EXPECT_FALSE(q->is_running()) << "a failed start must leave the queue in Standby, "
-                                             "not Active-looking";
+            // §6.7.1 gate, pinned first and on purpose: a Standby queue
+            // refuses `start()` before touching the KeyStore.  If the
+            // rest of this test were written against `start()` it would
+            // stop HERE and never reach the throw it exists to cover.
+            EXPECT_FALSE(q->start()) << "a queue fresh out of the constructor is in Standby; "
+                                        "start() must refuse it (HEP-CORE-0036 §6.7.1)";
+            EXPECT_FALSE(q->is_running());
+
+            EXPECT_FALSE(activate(*q)) << "approval must fail — and must not let the "
+                                          "std::out_of_range escape, since finalize_connect() "
+                                          "is noexcept and tail-calls start()";
+            EXPECT_FALSE(q->is_running()) << "a failed arm must not leave the queue "
+                                             "Active-looking";
             EXPECT_EQ(q->mechanism(), pylabhub::hub::Mechanism::Uninitialized)
                 << "no CURVE mechanism may be reported for a queue that never armed";
 
-            EXPECT_FALSE(q->start()) << "S-8: the retry must still fail.  Before the fix "
-                                        "`running_` was left set, so start()'s idempotence "
-                                        "check returned true here — reporting success for a "
-                                        "queue that had never bound";
+            EXPECT_FALSE(activate(*q)) << "S-8: the retry must still fail.  Before the fix the "
+                                          "Active state was left set, so start()'s idempotence "
+                                          "check returned true here — reporting success for a "
+                                          "queue that had never bound";
             EXPECT_FALSE(q->is_running());
         },
         "zmq_queue_auth::auth_failed_start_does_not_leave_queue_active",

@@ -198,7 +198,7 @@ inline constexpr uint8_t kShmMinor = 0;
 //     producer-side `zmq_pubkey` field already on REG_REQ) so the
 //     broker can record the consumer's CURVE pubkey into the
 //     channel's `authorized_consumer_pubkeys` allowlist via
-//     `HubState::_on_consumer_authorized`.  Old consumers that omit
+//     `HubState::_on_channel_peer_admitted`.  Old consumers that omit
 //     the field still register, but the channel allowlist stays
 //     empty for them — degrades to deny-all on producer pull, which
 //     matches the §4.8.4 empty-allowlist contract.

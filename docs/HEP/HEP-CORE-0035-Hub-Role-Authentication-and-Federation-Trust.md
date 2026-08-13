@@ -245,14 +245,24 @@ during Phase 1 review of `HubBrokerConfig`):
   ```cpp
   EXPECT_EQ(queue.mechanism(), pylabhub::hub::Mechanism::Curve);
   ```
-- **Admission gating is unconditional whenever CURVE is on.** The
+- **Admission gating is unconditional on every ROSTERED plane.** The
   Layer-1 ZAP allowlist (§4.1) is not a separable policy layer that
   operators or callers can toggle. Whenever a CURVE-server socket is
-  bound (broker CTRL ROUTER per §4.1; producer-side data ROUTER per
-  HEP-CORE-0036 §7), a `PeerAdmission` handler MUST be installed on
-  the shared ZAP inproc REP and MUST enforce against the relevant
-  allowlist. Empty allowlist = deny-all (§4.8.4 bootstrap); there is
-  no permissive-mode runtime flag.
+  bound on a plane whose peers are named by a roster — broker CTRL
+  ROUTER per §4.1, producer-side data ROUTER per HEP-CORE-0036 §7,
+  role inbox ROUTER per HEP-CORE-0027 §3.5 — a `PeerAdmission` handler
+  MUST be installed on the shared ZAP inproc REP and MUST enforce
+  against the relevant allowlist. Empty allowlist = deny-all (§4.8.4
+  bootstrap); there is no permissive-mode runtime flag.
+
+  **The admin plane is the one CURVE-server socket that is NOT
+  rostered, and this is deliberate** (§4.10.4).  An operator is not a
+  role and appears in no roster, so there is no list to enforce
+  against; client authority is the session token instead.  Stated as a
+  scope here because the earlier wording said "whenever a CURVE-server
+  socket is bound", which the admin ROUTER contradicts — it sets
+  `zap_enforce_domain` with no domain, deliberately short-circuiting
+  ZAP.  The invariant was always about rostered planes; it now says so.
 - **Identity comes from the handshake, never from the message.**
   The CURVE handshake proves which key is on the other end of a
   connection.  That answer is captured at ingress and carried to
@@ -338,10 +348,28 @@ during Phase 1 review of `HubBrokerConfig`):
 
 ---
 
-## 3. Current state — gap analysis
+## 3. Gap analysis — HISTORICAL SNAPSHOT, not current state
 
-This section catalogs what the code actually does today so that future
-implementers don't read the placeholder as authoritative design.
+> ⚠ **READ THIS FIRST.**  This section was written to catalogue what
+> the code did *at the time the HEP was drafted*, and it still says
+> "today".  It is now out of date and at least one of its findings is
+> the opposite of the truth.  Do not read §3 as a description of the
+> running system.
+>
+> | Sub | Claim | Status verified 2026-08-12 |
+> |---|---|---|
+> | §3.1 | Broker ROUTER has no pubkey allowlist | **CLOSED.**  `broker_service.cpp` installs `BrokerCtrlAdmission : PeerAdmission`, arms `arm_curve_server(router, kHubIdentityName)`, and sets `zap_domain = "broker.ctrl." + self_hub_uid` |
+> | §3.2 | Application gate is a string match with no provenance | **CLOSED.**  The pubkey origin index (§4.2) resolves the handshake key to a principal; §2's "identity comes from the handshake" is enforced |
+> | §3.3 | Federation socket rejects peers by string match | **Not re-verified.**  Federation work is parked, so this one may still hold |
+> | §3.4 | Net effect | Follows from the above; recompute rather than trust |
+>
+> Kept rather than deleted because the *reasoning* about why each gap
+> mattered is still the clearest statement of what the design is for.
+> The per-claim re-verification is the remaining work.
+
+This section catalogs what the code did when this HEP was drafted, so
+that future implementers don't read the placeholder as authoritative
+design.
 
 ### 3.1 Broker ROUTER — no pubkey allowlist
 
@@ -462,8 +490,10 @@ mandatory in production:
 │  Layer 3 — Data-plane peer authentication (HEP-CORE-0036)       │
 │                                                                 │
 │  Each producer attaches a per-context ZAP handler to its ZMQ     │
-│  data PUSH socket (SHM transport uses the existing DataBlock     │
-│  `shm_secret` mechanism per HEP-CORE-0002 — no ZAP for SHM).     │
+│  data PUSH socket.  SHM transport has no ZAP and no CURVE: the   │
+│  segment travels as an fd over SCM_RIGHTS, where possession IS   │
+│  authorization (§4.10.5).  The `shm_secret` this text once named │
+│  is RETIRED — it gated lookup, never attach (HEP-CORE-0041 §7).  │
 │  The handler reads from a per-channel allowlist                  │
 │  (`ChannelAccessIndex::authorized_consumer_pubkeys` in HubState  │
 │  per HEP-CORE-0036 §4.1) populated by the broker via             │
@@ -2481,6 +2511,219 @@ the string it wrote (§4.2.2).
 The federation propagation question in §1.6.3 is a different problem
 and is not answered here: this section defines replication from a hub
 to the roles it owns, not agreement between hubs.
+
+## 4.10 Every communication path, and how each one authenticates
+
+### 4.10.1 The question this answers
+
+A reader who has followed §4.1 knows the broker socket is
+CURVE-authenticated and the data socket is CURVE-authenticated.  What
+§4.1 does not say is that this system carries **five** distinct
+conversations, that they do **not** all authenticate the same way, and
+that the differences are deliberate.
+
+The differences are not inconsistency.  Each path authenticates
+according to **what it is able to know about its peer at the moment it
+must decide**, and those situations genuinely differ.  A path that can
+consult a roster uses the roster.  A path whose peer is not in any
+roster cannot, and must derive authority from something else.  Naming
+that principle is the point of this section, because the alternative —
+"make them all the same" — would either weaken the strict paths or
+demand a roster where none can exist.
+
+> **The governing rule.**  Authority comes from what the *transport*
+> proved, never from what the *payload* claims.  Every path below
+> obeys this.  They differ only in what the transport is able to prove.
+
+### 4.10.2 The five paths
+
+| # | Path | Sockets | What proves the peer | Authority scope |
+|---|---|---|---|---|
+| 1 | **Broker control** — role ↔ hub | DEALER → ROUTER | CURVE + ZAP against the vault's `known_roles` roster | Hub-wide: "you are a role this operator listed" |
+| 2 | **Channel data** — role ↔ role | PUSH/PULL, PUB/SUB | CURVE + ZAP against a **per-channel** allowlist the broker installs | One channel: "you may join *this* channel" |
+| 3 | **Inbox** — role ↔ role | DEALER → ROUTER | CURVE + ZAP under domain `<uid>:inbox`, against the hub-wide roster of **currently registered** roles | Hub-wide: "you are a role of this hub that is running now" |
+| 4 | **Admin** — operator ↔ hub | DEALER → ROUTER | CURVE (hub key) **with no ZAP domain** — authority is the session token | Per session: "you presented the admin secret" |
+| 5 | **SHM capability** — producer ↔ consumer | UNIX socket + `SCM_RIGHTS` | Kernel `SO_PEERCRED` uid; the fd itself is the capability | One segment: "you hold a descriptor only I could have sent you" |
+
+Paths 1–3 are CURVE with a roster.  Path 4 is CURVE without one.  Path
+5 uses no CURVE at all.  The next three subsections say why.
+
+### 4.10.3 Why paths 1–3 differ from each other, though all three use ZAP
+
+All three check a public key against a list.  The lists differ, and so
+does the moment the list becomes knowable.
+
+**Path 1 (broker control)** checks against the operator's `known_roles`,
+which is on disk in the encrypted vault (§4.8) before the hub starts.
+The list is knowable at bind time, so the ROUTER is armed and correct
+from its first byte.
+
+**Path 2 (channel data)** cannot work that way.  Who may join a channel
+is not an operator's static list — it is the broker's live decision,
+made per channel and revised as roles come and go.  A binding queue
+therefore arms with an **empty** allowlist and receives its contents
+from `apply_master_approval(REG_ACK)`.  This is the reason the queue
+has a state machine at all (HEP-CORE-0036 §6.7): the socket must not
+accept traffic between "bound" and "told who may connect", so it does
+not bind until it has been told.
+
+**Path 3 (inbox)** looks like path 2 — role to role — but authenticates
+like path 1, and the distinction matters.  An inbox is not scoped to a
+channel; any registered role of the hub may send to any other.  So its
+list is hub-wide rather than per-channel, replicated to the role by
+§4.9.
+
+It is **not identical** to path 1's list, and the difference is worth
+being exact about.  Path 1 admits against `known_roles` — everything
+the operator configured.  Path 3 admits against the roles **currently
+registered** (I-ROSTER-PRESENT, §4.9.2): a role that has never run, or
+has stopped, is named to nobody.  A configured-but-not-running role is
+therefore admitted by the broker and unknown to every inbox.  That is
+narrower on purpose, and it comes free — it is the same rule admission
+already needs.
+
+Because the roster is hub-wide rather than per-channel, the
+inbox does **not** need a queue state machine: it binds its own
+configured endpoint on its own authority, starting deny-all, and the
+roster arrives afterwards.  A four-state machine there would model an
+approval nobody grants.
+
+> **Consequence worth stating, because it is easy to get backwards.**
+> A role's data queue may refuse a peer the inbox would accept.  That is
+> correct: registration makes you reachable, admission to a channel is a
+> further decision.
+
+### 4.10.4 Why the admin plane has no ZAP domain
+
+The admin ROUTER is armed with the hub's own identity so the operator's
+client can verify *it is talking to the real hub* — CURVE is doing
+server authentication, not client authentication.  There is deliberately
+**no** `zap_domain` and no client roster, because an operator is not a
+role: they are not in `known_roles`, they may connect from anywhere, and
+enrolling every operator key would make the roster an access-control
+list for humans, which it is not.
+
+There is a second, structural reason.  ZAP on this hub is served by a
+single inproc pumper (HEP-CORE-0036 §7.4 single-pumper invariant).
+Giving the admin ROUTER a domain would put operator traffic on the same
+pumper that gates role registration and channel admission, coupling an
+interactive, human-paced plane to the one that must stay responsive for
+the data path.  Setting `zap_enforce_domain` with no domain keeps the
+socket CURVE-encrypted, server-authenticated, and off that pumper.
+
+Client authority instead comes from the admin secret, proven per session
+and compared without the secret leaving the security module (§"use, not
+export").  The trade is explicit: this path's client authentication is
+**as strong as the token and its storage**, not as strong as CURVE key
+possession.  It is the one path where compromising a shared secret is
+sufficient, which is why the token is sealed in the vault and why a
+replayed session id from a second connection is refused.
+
+### 4.10.5 Why the SHM capability path uses no CURVE
+
+Two processes on one host exchanging a shared-memory segment do not need
+a cryptographic handshake, because the kernel already provides a
+stronger primitive: a file descriptor passed over a UNIX socket cannot
+be forged or guessed.  Possession *is* authorization.  The receiver
+additionally checks `SO_PEERCRED` so the sender is the same uid.
+
+A CURVE handshake here would add ceremony without adding a guarantee —
+and, historically, adding one *appeared* to.  An earlier design carried
+a `shm_secret` in the segment header and was widely read as the SHM
+auth gate.  It never gated attach; it gated lookup only.  It has been
+removed (HEP-CORE-0041 §7), and the retired config keys reject with a
+message saying so.  The lesson is recorded here because the failure mode
+was not a weak mechanism but a **misread** one: a value that looks like
+a credential, in a path that never checked it as one.
+
+### 4.10.6 Sequence — the order is the security property
+
+For every path, the same shape holds: **arm before you listen, listen
+before you publish, publish before you are dialed.**  Getting the order
+wrong opens a window in which the socket is reachable and unguarded, and
+no later check closes it.
+
+```mermaid
+sequenceDiagram
+    participant Cfg as Config + vault
+    participant Q as Socket
+    participant B as Broker
+    participant P as Peer
+
+    Note over Cfg,Q: 1. ARM — identity + policy attached
+    Cfg->>Q: identity keypair (KeyStore, by name)
+    Cfg->>Q: ZAP handler + domain (paths 1-3)
+    Note over Q: allowlist is EMPTY here — deny-all
+
+    Note over Q: 2. LISTEN — bind/connect
+    Q->>Q: bind() resolves the ephemeral port
+
+    Note over Q,B: 3. PUBLISH — only a RESOLVED address may travel
+    Q->>B: register, carrying the bound address
+
+    Note over B,Q: 4. ADMIT — the master names who may connect
+    B->>Q: REG_ACK / roster snapshot
+    Q->>Q: install allowlist
+
+    Note over P,Q: 5. DIAL — peer's handshake is now decidable
+    P->>Q: CURVE handshake
+    Q-->>P: accept iff pubkey is on the installed list
+```
+
+Step 3 is where the endpoint contract bites.  A bind **request** may say
+`tcp://host:0`, meaning "any free port".  A bound **address** is what
+the OS chose.  Only the second may be published — nothing can connect to
+port 0 — which is why step 2 must complete before step 3.  HEP-CORE-0036
+§6.7.2 makes this a type distinction rather than a convention.
+
+Each path satisfies the shape differently:
+
+| Path | Arm | Listen | Publish | Admit |
+|---|---|---|---|---|
+| 1 broker control | hub key + roster at startup | ROUTER binds configured endpoint | hub endpoint is operator config | roster already loaded |
+| 2 channel data | identity key at construction; **no** ZAP yet | deferred — queue is in Standby | after `apply_master_approval` binds it | `REG_ACK.initial_allowlist`, then drift via notify-then-pull |
+| 3 inbox | identity key + `<uid>:inbox` domain **before** `start()` | binds immediately, deny-all | resolved endpoint in REG_REQ | roster seeded at REG_ACK (§4.9) |
+| 4 admin | hub key, no domain | ROUTER binds | operator config | per-session token |
+| 5 SHM capability | — | UNIX socket | endpoint on the ACK | `SO_PEERCRED` + fd possession |
+
+Path 2 is the only one that cannot bind at arm time, and that is exactly
+why it is the only one with a state machine.
+
+### 4.10.7 Format — what travels, and what must never
+
+Independent of path, three rules hold:
+
+1. **Keys on the wire are public keys, Z85-encoded, and always
+   40 characters.**  A secret key never appears in any message, any log,
+   or any config file; it lives in the process `KeyStore` in locked
+   memory and is used by *name* (§4.7, HEP-CORE-0040).
+2. **An endpoint on the wire is a bound address.**  See §4.10.6.
+3. **A `role_uid` in a body is a claim, never an identity.**  The
+   identity is the principal the handshake proved (§4.1 Layer 2).  A
+   handler that trusts `body["sender_uid"]` has reintroduced the exact
+   defect §4.2's origin index exists to remove.
+
+Rule 3 is the one that keeps being violated, because a claim is
+convenient and looks authoritative.  The typed envelope
+(HEP-CORE-0046) exists partly to make the distinction structural: the
+proven principal is a field of the envelope, filled by the transport
+layer; anything the sender wrote is body content.
+
+### 4.10.8 What is NOT a difference between the planes
+
+Recorded so the table above is not over-read:
+
+- **No path has an unauthenticated mode.**  There is no development
+  bypass, no "CURVE off" switch, and no empty-key fallback — `start()`
+  panics rather than arm a socket with no identity.  Tests use real
+  CURVE (§4.6.5).
+- **No path mints keys for its peers.**  Every participant presents its
+  own identity keypair on every plane; the broker never issues
+  per-channel credentials (HEP-CORE-0036 I6).
+- **No path treats absence of a list as permission.**  An empty
+  allowlist denies everyone.  This was once violated by a
+  `PeerAllowlist::unrestricted` helper, which is deleted.
+
 
 ## 5. hub.json fields when HEP-0035 lands
 

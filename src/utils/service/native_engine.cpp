@@ -1086,29 +1086,33 @@ int ctx_band_member_contains(const PlhNativeContext *ctx, const char *channel, c
     // query a local set.
     if (!ctx || !ctx->_api || !channel || !role_uid)
         return -1;
-    auto arr_opt = fetch_band_members(ctx, channel);
-    if (!arr_opt.has_value())
+    try
+    {
+        const auto found =
+            static_cast<RoleAPIBase *>(ctx->_api)->band_member_contains(channel, role_uid);
+        return found.has_value() ? (*found ? 1 : 0) : -1;
+    }
+    catch (...)
+    {
         return -1;
-    for (const auto &m : *arr_opt)
-        if (m.value("role_uid", std::string{}) == role_uid)
-            return 1;
-    return 0;
+    }
 }
 
 int ctx_band_member_count(const PlhNativeContext *ctx, const char *channel)
 {
     if (!ctx || !ctx->_api || !channel)
         return -1;
-    auto arr_opt = fetch_band_members(ctx, channel);
-    if (!arr_opt.has_value())
+    try
+    {
+        // The base skips malformed entries the same way, so this count
+        // still agrees with what ctx_band_members' visitor sees.
+        const auto count = static_cast<RoleAPIBase *>(ctx->_api)->band_member_count(channel);
+        return count.has_value() ? static_cast<int>(*count) : -1;
+    }
+    catch (...)
+    {
         return -1;
-    // Match ctx_band_members semantics — skip malformed entries so
-    // count agrees with what the visitor sees (audit A1).
-    int count = 0;
-    for (const auto &m : *arr_opt)
-        if (!m.value("role_uid", std::string{}).empty())
-            ++count;
-    return count;
+    }
 }
 
 // ── Channel-auth observability (HEP-CORE-0036 §I11 + §6.7) — API v6 ─────────
@@ -1147,11 +1151,8 @@ int ctx_allowed_peer_contains(const PlhNativeContext *ctx, const char *channel,
         return -1;
     try
     {
-        const auto peers = static_cast<RoleAPIBase *>(ctx->_api)->allowed_peers(channel);
-        for (const auto &p : peers)
-            if (p.role_uid == role_uid)
-                return 1;
-        return 0;
+        auto *api = static_cast<RoleAPIBase *>(ctx->_api);
+        return api->allowed_peer_contains(channel, role_uid) ? 1 : 0;
     }
     catch (...)
     {
@@ -1165,8 +1166,7 @@ int ctx_allowed_peer_count(const PlhNativeContext *ctx, const char *channel)
         return -1;
     try
     {
-        return static_cast<int>(
-            static_cast<RoleAPIBase *>(ctx->_api)->allowed_peers(channel).size());
+        return static_cast<int>(static_cast<RoleAPIBase *>(ctx->_api)->allowed_peer_count(channel));
     }
     catch (...)
     {
@@ -1499,6 +1499,9 @@ struct NativeEngine::NativeContextStorage
     std::string out_channel;
     std::string log_level;
     std::string role_dir;
+    std::string script_dir;
+    std::string logs_dir;
+    std::string run_dir;
     std::string log_label; ///< e.g. "[native libfoo.so]"
 
     // Flexzone — cached once at wire(), stable for SHM lifetime. C/C++
@@ -1529,6 +1532,9 @@ struct NativeEngine::NativeContextStorage
         ctx.out_channel = nullptr;
         ctx.log_level = log_level.c_str();
         ctx.role_dir = role_dir.c_str();
+        ctx.script_dir = script_dir.c_str();
+        ctx.logs_dir = logs_dir.c_str();
+        ctx.run_dir = run_dir.c_str();
 
         ctx._magic = PLH_CONTEXT_MAGIC;
         ctx._magic_end = PLH_CONTEXT_MAGIC;
@@ -1648,6 +1654,9 @@ struct NativeEngine::NativeContextStorage
         ctx.out_channel = out_channel.empty() ? nullptr : out_channel.c_str();
         ctx.log_level = log_level.c_str();
         ctx.role_dir = role_dir.c_str();
+        ctx.script_dir = script_dir.c_str();
+        ctx.logs_dir = logs_dir.c_str();
+        ctx.run_dir = run_dir.c_str();
 
         // Magic sentinels + opaque host data.
         ctx._magic = PLH_CONTEXT_MAGIC;
@@ -1930,6 +1939,10 @@ bool NativeEngine::build_api_(RoleAPIBase &api)
     native_ctx_->log_level = api.log_level();
     native_ctx_->log_label = "[native " + lib_path_.filename().string() + "]";
     native_ctx_->role_dir = api.role_dir();
+    // Derived by the base so all three engines report identical paths.
+    native_ctx_->script_dir = api.script_dir();
+    native_ctx_->logs_dir = api.logs_dir();
+    native_ctx_->run_dir = api.run_dir();
     native_ctx_->wire(api.core(), &api);
 
     if (!fn_init_(&native_ctx_->ctx))
@@ -1995,7 +2008,10 @@ bool NativeEngine::build_api_(hub_host::HubAPI &api)
     native_ctx_->name = api.name();
     native_ctx_->log_level = "info"; // hub doesn't expose per-script level today
     native_ctx_->log_label = "[native hub " + lib_path_.filename().string() + "]";
-    native_ctx_->role_dir = ""; // hub has no per-role dir
+    native_ctx_->role_dir = "";   // hub has no per-role dir
+    native_ctx_->script_dir = ""; // ... and therefore none of its children
+    native_ctx_->logs_dir = "";
+    native_ctx_->run_dir = "";
     native_ctx_->wire_hub(&api);
 
     if (!fn_init_(&native_ctx_->ctx))

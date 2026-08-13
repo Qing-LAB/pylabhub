@@ -564,9 +564,10 @@ class PYLABHUB_UTILS_EXPORT SecureSubsystem
     /// `box_encrypt_using`'s output.
     static constexpr std::size_t kBoxMacBytes = 16;
 
-    // Future encryption verbs land here as more protocols absorb
-    // (aead_encrypt / _decrypt, sealed_box_seal / _open).  All flat
-    // on `SecureSubsystem` — no separate class.
+    // Future encryption verbs land here as more protocols absorb.
+    // `aead_encrypt_using` / `aead_decrypt_using` have since shipped
+    // (see above); `sealed_box_seal` / `sealed_box_open` remain
+    // unclaimed.  All flat on `SecureSubsystem` — no separate class.
 
     /// Implementation state — forward-declared public so `KeyStore`
     /// can befriend `SecureSubsystem::Impl` to grant Impl's member-

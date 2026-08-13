@@ -267,16 +267,84 @@ not open another's). Step 4 additionally needs a committed fixture vault
 — a round-trip inside one build passes even if both sides changed
 together.
 
-### 🔨 CARRY FORWARD — design and finish the file/dir vault for user scripts
+### 🔨 CARRY FORWARD — the script-facing API surface, and persistence within it
 
 **Owner-requested 2026-08-08 as a standing follow-up. Task #136.** This
 entry is the durable record; the task list does not survive a context
 reset.
 
-**What it is.** A place a user script can persist a secret across role
-restarts — a token, a credential for some instrument the script talks to.
-The owner's framing is a **file/directory** store, held on disk the way
-the identity vault is, but as its own thing.
+**Design drafted 2026-08-10:**
+`docs/tech_draft/DRAFT_script_security_and_vault_access_2026-08.md`.
+Read that first — it supersedes most of what follows, which is kept for
+the rulings it records and the history of how the shape was reached.
+Five owner decisions remain open, listed in the draft's §15.
+
+**Scope widened 2026-08-10 on owner instruction** ("framework/holistic
+system design rather than patching things"). The security slice cannot be
+specified without deciding how the script surface is laid out, who
+defines it, and what shapes cross the boundary — and those questions are
+already producing defects in surfaces unrelated to security. The draft's
+§2 is the finding that drove the widening: the script API is a **declared
+ABI component** (`kScriptApiMajor` / `kScriptApiMinor`, with a per-axis
+change-log convention in the version registry) that **has no definition
+anywhere** — each engine's binding file is the definition, three times
+over. Parity is hand-maintained and has drifted; one concept
+(authorized-peer query) has three data shapes across the engines even
+though HEP-CORE-0028 §4 already ruled on one.
+
+**A "script API layer" was proposed on 2026-08-10 and WITHDRAWN the same
+day by the owner.** Recorded so it is not retried. It would have added a
+compiled table defining every script member and callback, a shape
+taxonomy, a dispatch path and per-engine shape adapters, phased over
+three commits. The problem it addressed is real but small — the three engines
+had drifted by a handful of names — and that is bookkeeping, not
+architecture. It
+also began re-describing the peer, band and inbox surfaces in a
+vocabulary of its own, which would have created a fourth description of
+contracts already specified in HEP-CORE-0027, 0030 and 0036. Strongest
+evidence against it: across three review passes the shape vocabulary
+never stabilised, each pass finding one engine's constraint promoted into
+the shared model.
+
+**What survives from that excursion, and stands on its own:** the drift
+audit. Lua lacks four peer/band inquiry accessors that Python and Native
+both have; Native lacks three directory accessors that Lua and Python
+both have; the hub surface is clean. Recorded in HEP-CORE-0011
+§ "Cross-Engine Binding Discipline" and tracked as **#141**, an ordinary
+defect.
+
+**The count moved three times before it settled**, every move caused by
+deriving the surface from source text rather than asking a running
+engine. HEP-CORE-0011 carries the four failure modes so the next audit
+does not repeat them.
+
+**What it is — REVISED 2026-08-10, and the revision is the point.** The
+original framing was "a place a user script can persist a **secret**
+across role restarts — a token, a credential for some instrument the
+script talks to." **That feature is withdrawn.** The owner ruled that
+P3 — secret bytes never leave the security module — binds scripts with
+no exception, and a credential store violates it on both legs: the put
+takes bytes the script already materialised in an unwipeable interpreter
+string, and the get hands them back. Encrypting that at rest is
+decorative, and naming it after the vault invites trust it cannot carry.
+
+What replaces it is a **data store**: the script's own operational state
+— calibration constants, run counters, device serials, cached instrument
+state — encrypted at rest against someone reading the disk, and honest
+about protecting nothing in-process. Keys never go in it. Credentials
+never go in it. **HEP-CORE-0038 is withdrawn in intent** rather than
+repaired, because its motivating use case in §1 is precisely the one the
+principle forbids.
+
+**The anchor — settled 2026-08-10.** Every piece of encrypted data a
+role keeps at rest is sealed to **the role's own identity keypair**, and
+nothing else. Rationale: one anchor makes migration total (there is no
+class of at-rest data that cannot be moved, because the vault password
+always recovers the one key) and makes the rule auditable — "everything
+at rest is sealed to the role identity" is a property a test can check.
+A runtime-minted session keypair is for messages in flight ONLY; sealing
+persistent data under it is guaranteed data loss at the next restart,
+which is why the anchor is a framework decision and not a script one.
 
 **Why it is not a small feature, and why every prior attempt understated
 it.** The long-standing framing (HEP-0038, and #89 before the split) was
@@ -288,42 +356,48 @@ There is no `save`, no setter (contrast `HubVault`, which has
 therefore needs a write path that does not exist, operating on the file
 that holds the role's CURVE identity key.
 
-**Design questions, none of them answered anywhere today:**
+**Design questions — status after 2026-08-10:**
 
-1. **Re-encryption without the password.** The vault is Argon2id +
-   secretbox. Writing back means having the key again. Retain the
-   password for the process lifetime (a new standing secret)? Re-prompt
-   (impossible for a daemon)? Or give the store its own key material?
+1. **Re-encryption without the password — DISSOLVED, not answered.** The
+   data store is not password-keyed at all; it is sealed to the role's
+   identity keypair, which the vault already deposits into the key store
+   at startup. There is no second derived key to retain and no password
+   to keep. The `add_raw`-for-a-KDF-derived-key investigation recorded
+   here on 2026-08-08 is therefore moot **for this store** — it may still
+   matter for the retained-key half of #89, which is a different item.
+2. **Atomicity — RESOLVED by the separate file.** A torn write can no
+   longer reach `<uid>.vault`, because the data store is its own file.
+   What remains is the migration case, covered by 7 below.
+3. **Crash mid-save — same.** Blast radius is the data store only; the
+   identity is untouched.
+4. **Authority — dissolved with 2 and 3.** Script writes never touch the
+   file holding the identity key, so the write-amplification surface
+   against that file is gone.
+5. **Quota — STILL OPEN.** An unbounded store is still a disk-fill
+   vector driven by user code. The draft does not settle this.
+6. **Naming.** Settled: see the ruling below. The 2026-08-10 revision
+   sharpens it — the thing is a *data store*, so its verbs should say
+   neither "vault" nor "secret".
+7. **Rotation — DESIGNED 2026-08-10.** `--keygen` over an existing vault
+   already refuses to clobber (`ExistingFilePolicy::Refuse`, because a
+   vault holds the only copy of an identity keypair). What is missing is
+   the sanctioned way through it: a `--rekey` sibling that mints a new
+   identity and re-seals every stored entry under it. Four properties,
+   detailed in the draft's §7.3 — the password opening the old vault IS
+   the ownership proof (the tag verifies or it does not); one command,
+   never keygen-then-migrate, because the halfway state is the
+   unrecoverable one; nothing commits until every entry re-seals; a
+   crash at any point leaves the old pair intact and openable.
 
-   **Owner input 2026-08-08 — the intended direction: keep the DERIVED
-   KEY in the security module's protected memory after the password is
-   validated once, rather than retaining the password at all.** SMS was
-   built for exactly this. `KeyStore` holds keys in `LockedKey`
-   (`sodium_malloc` — mlock, guard pages, canary) under the
-   use-not-export contract, and it already has a raw-symmetric-key path:
-   `add_raw` to store, `lookup_raw` to use the bytes in place without
-   copying them into an owning buffer.
-   **Working precedent to read first:** the admin console's session-seal
-   key (`admin.session.seal`) does precisely this shape — minted once,
-   held in `KeyStore`, and passed straight into `secretbox_encrypt` /
-   `_decrypt` within a single statement so the bytes never leave the
-   module. See `admin_session.cpp` and HEP-CORE-0033 §11.0.5.
-   **The difference that needs investigating, and it is the whole
-   question:** that key is *randomly minted per instance*; a vault key is
-   *derived from an operator password*. So: is `add_raw` the right home
-   for a KDF-derived key, what is its lifetime (process lifetime? until
-   first write? re-derive on password change?), and what happens on
-   rotation. **Owner direction: investigate when this item is picked up,
-   not before.** Recorded here so the investigation starts from the
-   existing facility instead of inventing a second one.
-2. **Atomicity.** A torn write to `<uid>.vault` destroys the role's
-   identity, not just its script data.
-3. **Crash mid-save.** Same file, same blast radius.
-4. **Authority.** May user script code compel repeated rewrites of the
-   file holding its own identity key? That is a write-amplification and
-   DoS surface driven by user code.
-5. **Quota.** An unbounded script store is a disk-fill vector.
-6. **Naming.** Settled: see the ruling below.
+**Rejected constructions — recorded so they are not re-proposed.**
+Deriving a symmetric key from the identity, and a wrapped data key
+(random key encrypted under the identity). Both introduce a second key
+with its own lifetime and its own migration story, defeating the
+one-anchor rule. The wrapped key also fails on security grounds:
+rotating the identity would re-wrap the envelope while the data key
+inside stayed the same, so anyone holding the old identity and a copy of
+the old wrapper would keep access forever — rotation would look like it
+re-protected the data and would not have.
 
 **Strong prior — a separate file, not the identity vault.** Its own
 failure domain, own key lifetime, own permissions. Removes questions 2,

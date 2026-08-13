@@ -9,7 +9,6 @@
   "out_channel":  "lab.demo.counter",
   "out_transport":           "zmq",
   "out_zmq_endpoint":        "tcp://127.0.0.1:5580",
-  "out_zmq_bind":            true,
   "out_zmq_buffer_depth":    256,
   "out_zmq_overflow_policy": "drop",
   "out_slot_schema": {

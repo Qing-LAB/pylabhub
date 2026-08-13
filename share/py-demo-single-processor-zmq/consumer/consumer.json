@@ -9,7 +9,6 @@
   "in_channel":   "lab.demo.processed",
   "in_transport":            "zmq",
   "in_zmq_endpoint":         "tcp://127.0.0.1:5581",
-  "in_zmq_bind":             false,
   "in_zmq_buffer_depth":     256,
   "in_zmq_overflow_policy":  "drop",
   "in_slot_schema": {

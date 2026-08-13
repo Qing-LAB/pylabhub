@@ -26,7 +26,9 @@ Current inventory and where each is tracked (checked 2026-08-07):
 | `DRAFT_HEP-0031-bounded-thread_2026-06.md` | task #108 |
 | `SCRIPT_RELOAD_DESIGN_2026-05-20.md` | task #107 |
 | `DRAFT_HEP-0036-implementation-guideline_2026-05.md` | `API_TODO.md` |
-| `DRAFT_keystore_ephemeral_and_script_crypto_2026-07.md` | `AUTH_TODO.md` |
+| `DRAFT_keystore_ephemeral_and_script_crypto_2026-07.md` | `AUTH_TODO.md` — **half superseded**; archive candidate (see below) |
+| `DRAFT_script_security_and_vault_access_2026-08.md` | task #136 |
+| `DRAFT_queue_state_is_inferred_2026-08.md` | task #148 — M1 (queue holds its state) SHIPPED 2026-08-12 and its contract is HEP-CORE-0036 §6.7.1; M2 (bind request vs bound address as types, §6.7.2) and M3 (binding producer's endpoint republish) are still proposal-only, so the draft stays |
 | `raii_layer_redesign.md` | `API_TODO.md` + `TODO_MASTER.md` (band 4) |
 | `engine_callback_tiers.md` | `API_TODO.md` + `TODO_MASTER.md` |
 | `future-persistence-and-discovery/` | **Not tracked, and correctly so** — see below |

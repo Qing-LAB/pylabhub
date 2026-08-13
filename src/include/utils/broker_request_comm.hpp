@@ -25,6 +25,7 @@
 
 #include "pylabhub_utils_export.h"
 #include "utils/json_fwd.hpp"
+#include "utils/net_address.hpp" // BoundAddress (send_endpoint_update)
 #include "utils/security/key_store.hpp"
 
 #include <cstdint>
@@ -237,9 +238,15 @@ class PYLABHUB_UTILS_EXPORT BrokerRequestComm
     /// wire ACK existed (`broker_service.cpp:1025`) but the BRC dropped
     /// it — a half-mix that HEP-0007 §12.2.1 now explicitly prohibits.
     /// Switched to sync REQ/REP per the design clarification.
+    ///
+    /// `endpoint` is a `BoundAddress`, not a string, and that is the
+    /// contract rather than a style choice: this call publishes an
+    /// address channel-wide, and every peer that dials the channel
+    /// receives what it sends.  A configured bind request — which may
+    /// carry port 0 — cannot be passed here (HEP-CORE-0036 §6.7.2).
     std::optional<nlohmann::json> send_endpoint_update(const std::string &channel,
                                                        const std::string &endpoint_type,
-                                                       const std::string &endpoint,
+                                                       const ::pylabhub::BoundAddress &endpoint,
                                                        int timeout_ms = 5000);
 
     // ── Request-reply (thread-safe, blocks until reply or timeout) ───────

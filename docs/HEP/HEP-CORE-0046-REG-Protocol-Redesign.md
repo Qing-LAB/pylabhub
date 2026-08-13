@@ -116,6 +116,35 @@ particular:
   it lands in the shared gate runner (`run_reg_family_gates` /
   `run_control_gates`) that `receive_and_validate` applies to
   every message, never re-implemented per handler.
+- **Adding a field that is a LIST of things** — type the element, not
+  just the list.  A typed body accessor that hands back a raw array
+  guards only that the field is present; every row inside it is then
+  unowned JSON, and the sender and receiver are free to disagree about
+  what a row contains.  That is not hypothetical: `initial_allowlist`
+  was typed at the list level, its rows were not, and the two ends
+  drifted into emitting keys-with-names on one path and keys-alone on
+  another.  Neither side was violating the guard, because the guard
+  stopped at the bracket.
+
+  The rule: a list field gets a row type with its own required fields,
+  and both the builder and the parser go through it.  The typed layer
+  should make a wrong row fail to compile, the same way a wrong
+  top-level field already fails to parse.
+
+  Two corollaries, both learned by getting them wrong first:
+
+  - **Where the rows legitimately vary, make that an argument of the row
+    type, not a second loop.**  Peer rows differ in exactly one respect —
+    whether the reader is going to dial — so `PeerDetail` is a parameter
+    of both `to_json` and `parse`.  A reader states what it needs and is
+    refused a row it cannot use, at parse time.  Copying the loop and
+    varying it by hand is how the two ends drifted the first time.
+  - **The row type decides what is VALID; the caller decides what to DO
+    about an invalid one.**  Those are different questions and the
+    answers differ legitimately: a list that replaces a set is taken
+    whole or not at all, while a batch of independent attempts skips the
+    bad row and continues.  Pushing the disposition into the row type
+    forces every caller into one policy and one of them will be wrong.
 - **Retiring a wire field** — do it under §3's retirement catalogue;
   the retirement must ship atomically with the broker_proto bump
   (§14.6, `I-WIRE-VERSION-ATOMIC`).
@@ -429,15 +458,33 @@ mechanisms were designed to answer.
 - `BrokerRequestComm::consumer_attach_zmq`
 
 **Options struct fields retired:**
-- `RxQueueOptions::producer_peers` (per-peer connect list)
-- `hub::ProducerPeer` struct
+- `RxQueueOptions::producer_peers` (per-peer connect list) — still present as
+  test scaffolding; production leaves it empty and every read of it takes
+  `.front()`
 - `TxQueueOptions::zmq_bind` / `RxQueueOptions::zmq_bind`
 - `RoleConfig::TransportConfig::zmq_bind` (source of the above)
 
 **Queue API retired:**
-- `ZmqQueue::add_producer_peer`
-- `ZmqQueue::remove_producer_peer`
-- `ZmqQueue::set_producer_peers`
+- `ZmqQueue::add_producer_peer` — **done 2026-08-11**
+- `ZmqQueue::remove_producer_peer` — **done 2026-08-11**
+
+**Withdrawn from the retirement list** (this list was wrong about them):
+
+- `ZmqQueue::set_producer_peers` — LIVE and load-bearing.  It is the one
+  production caller's route from `CONSUMER_REG_ACK.producers[]` into the
+  queue, invoked by `apply_master_approval`.  On a fan-in consumer the set it
+  writes is the SOURCE of that queue's ZAP allowlist, not a dial list.
+  Retiring it would remove the binding side's admission path.
+- `hub::ProducerPeer` — LIVE; it is what `set_producer_peers` carries.
+  Whether it should collapse into `wire::PeerRow` (identical fields) is a
+  separate question, and one that only became answerable once the mutators
+  above were gone.
+
+The two that were correctly listed are gone because the singular-side
+topology model leaves no dialing side with more than one peer, so per-peer
+membership edits have no caller and no meaning.  The two withdrawn were on
+the list by association — they share a name prefix with the retired pair and
+nothing else.
 
 ## 4. What consolidates or renames
 
@@ -448,7 +495,7 @@ binding side's ZAP allowlist.  Under fan-out / one-to-one those are
 consumers; under fan-in they are producers.  The current name is a
 pre-topology misnomer.
 
-**`HubState::_on_consumer_authorized` / `_on_consumer_revoked`** →
+**`HubState::_on_channel_peer_admitted` / `_on_channel_peer_revoked`** →
 `_on_peer_authorized` / `_on_peer_revoked`.  Same story — the mutator
 is topology-agnostic, the name lies.
 
@@ -1090,7 +1137,7 @@ consumer's APPLIED_REQ advances `confirmed_version[K][consumer]`.
 Producer's REG_ACK is released when `confirmed_version >=
 my_version`.  Same mechanism; just symmetrical role labeling.
 Verify: this is what the current broker code does when the
-`_on_consumer_authorized` call is invoked with a producer pubkey
+`_on_channel_peer_admitted` call is invoked with a producer pubkey
 under fan-in (the misnamed field mutation).
 
 **Q2 — Does the retire of `CONSUMER_ATTACH_REQ_ZMQ` break the
@@ -1317,7 +1364,7 @@ inbox-configured producer).
     Every `send_to_identity(x.zmq_identity, ...)` becomes
     `WireEnvelope::build_router_send(x.role_uid, ...)`.
 11. Rename misnomers: `authorized_consumer_pubkeys` →
-    `authorized_peer_pubkeys`, `_on_consumer_authorized` →
+    `authorized_peer_pubkeys`, `_on_channel_peer_admitted` →
     `_on_peer_authorized`.
 12. Retire attach protocol atomically: broker code + role code +
     BRC method + 10 Flavor-A tests + wire schema doc.
@@ -1328,9 +1375,11 @@ inbox-configured producer).
     `_set_producer_zmq_node_endpoint` + per-producer endpoint API.
 16. Symmetric R6 gate: extend pending-REG queue + wake triggers
     for the fan-in producer path.
-17. Retire `RxQueueOptions.producer_peers` + `ProducerPeer` struct
-    + `set_producer_peers` / `add_producer_peer` /
-    `remove_producer_peer` on `ZmqQueue`.
+17. Retire `RxQueueOptions.producer_peers`.  **Partly done 2026-08-11:**
+    `add_producer_peer` / `remove_producer_peer` deleted.  The rest of
+    this item as originally written is WITHDRAWN — `set_producer_peers`
+    and the `ProducerPeer` struct are live and load-bearing (see §3
+    "Withdrawn from the retirement list").
 18. Retire `zmq_bind` config field + `Rx/TxQueueOptions.zmq_bind`
     + `TransportConfig.zmq_bind`.
 

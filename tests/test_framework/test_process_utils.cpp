@@ -5,6 +5,7 @@
  */
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <list>
 #include <csignal>
@@ -792,6 +793,7 @@ void expect_worker_ok(const WorkerProcess &proc,
         // substring entry. Walk error lines in stderr order and remove
         // the first matching substring from the work list.
         std::vector<std::string> remaining = expected_error_substrings;
+        std::vector<std::string> matched_lines;
         for (const auto &err_line : error_lines)
         {
             auto it = std::find_if(remaining.begin(), remaining.end(), [&](const std::string &sub)
@@ -799,6 +801,7 @@ void expect_worker_ok(const WorkerProcess &proc,
             if (it != remaining.end())
             {
                 remaining.erase(it);
+                matched_lines.push_back(err_line);
             }
             else
             {
@@ -817,6 +820,48 @@ void expect_worker_ok(const WorkerProcess &proc,
             ADD_FAILURE() << "Expected error substring not found in worker stderr (or "
                              "not as many occurrences as entries in the list): \""
                           << unmatched << "\"";
+        }
+
+        // ── Preserve the evidence on SUCCESS, not only on failure ──────
+        //
+        // A worker subprocess writes its stderr to a pipe the parent
+        // holds in memory.  On failure the ADD_FAILUREs above quote it
+        // and gtest persists that in the XML.  On SUCCESS it was simply
+        // dropped — so the one thing a reader most wants to confirm,
+        // that the assertion matched real output rather than passing
+        // vacuously, was the one thing not written down.
+        //
+        // Answering "did this actually fire?" then required
+        // falsification: break the expectation, rebuild, watch it fail,
+        // read the dump, revert.  That works but costs a build cycle
+        // per question.  Recording the matched lines makes the passing
+        // run self-evidencing.
+        //
+        // Scope is deliberate — the lines the assertion CONSUMED, not
+        // the whole stderr.  Full stderr would bloat every XML in a
+        // directory that already holds half a million of them, and the
+        // consumed lines are what the claim rests on.
+        if (!matched_lines.empty())
+        {
+            std::string joined;
+            for (const auto &m : matched_lines)
+            {
+                if (!joined.empty())
+                    joined += " | ";
+                joined += m;
+            }
+            // gtest keeps only the LAST value per key, so key on the
+            // worker's scenario: a test driving several workers keeps
+            // each one's evidence instead of the last one overwriting
+            // the rest.  XML attribute names may not contain ':' (the
+            // namespace separator) or '.', so fold both to '_'.
+            std::string key = "matched_errors_" + proc.mode();
+            for (char &c : key)
+            {
+                if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_')
+                    c = '_';
+            }
+            ::testing::Test::RecordProperty(key, joined);
         }
     }
     // Always forbid FATAL, PANIC, and worker assertion failure.

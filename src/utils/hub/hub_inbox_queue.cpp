@@ -522,11 +522,14 @@ bool InboxQueue::is_running() const noexcept
     return pImpl && pImpl->running_.load(std::memory_order_relaxed);
 }
 
-std::string InboxQueue::actual_endpoint() const
+std::optional<::pylabhub::BoundAddress> InboxQueue::bound_address() const
 {
-    if (!pImpl)
-        return {};
-    return pImpl->actual_ep.empty() ? pImpl->endpoint : pImpl->actual_ep;
+    if (!pImpl || pImpl->actual_ep.empty())
+        return std::nullopt;
+    // No fallback to the configured endpoint: the inbox default IS
+    // port 0, so the fallback would have published an unconnectable
+    // address as the role's inbox (HEP-CORE-0036 §6.7.2).
+    return ::pylabhub::BoundAddress::try_validate(pImpl->actual_ep);
 }
 
 size_t InboxQueue::item_size() const noexcept

@@ -42,7 +42,17 @@ Working tree: `/home/qqing/Work/pylabhub`.
      ABI → `version_registry|check_abi|ComponentVersions|PLH_COMPONENT`;
      schema → `SchemaInfo|BLDS|schema_hash`;
      threading → `ThreadManager|jthread|spawn_bounded`;
-     keys → `KeyStore|LockedKey|SecureMemorySubsystem`.
+     keys → `KeyStore|LockedKey|SecureMemorySubsystem`;
+     validated values / strong types →
+       `Z85PublicKey|try_validate|BoundAddress|validate_tcp_endpoint`.
+  Ask "what is the PATTERN for this class of thing", not only
+  "does this exact thing exist". A grep for the thing can come back
+  empty while an established convention for its whole family is
+  sitting one header away. Source: 2026-08-12 — `BoundAddress` was
+  added after confirming no endpoint type existed, which was true,
+  while `Z85PublicKey` was already the worked example of the same
+  idea (validate-and-wrap, non-throwing factory, invalid states
+  unrepresentable) and the new type forked its vocabulary.
   New HEP text MUST compose with what's already there, not
   reinvent it under a different name.
   Failure modes this catches:

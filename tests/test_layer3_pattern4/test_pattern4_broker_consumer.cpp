@@ -854,15 +854,26 @@ TEST_F(Pattern4BrokerConsumerTest, GetChannelAuth_ReturnsAllowlist)
     auto cons = make_wire_client(ctx, setup, cons_uid);
     ASSERT_NO_FATAL_FAILURE(register_consumer(cons, setup, channel, cons_uid));
 
-    // Post-registration: allowlist = [consumer pubkey] (bare Z85 strings).
+    // Post-registration: allowlist = one `{role_uid, pubkey_z85}` row for
+    // the consumer.  Rows, not bare strings, per HEP-CORE-0036 §6.5 — the
+    // same shape `REG_ACK.initial_allowlist` carries, so a role's view
+    // does not change meaning between the seed and a refresh.
+    //
+    // Both halves are pinned.  Checking only the key would still pass with
+    // a nameless row, which is exactly the state this shape replaced: the
+    // receiver could enforce on the key but could not tell its script who
+    // the peer was.
     auto post = get_channel_auth(prod, channel, prod_uid);
     ASSERT_TRUE(post.has_value());
     EXPECT_EQ(post->value("status", std::string{}), "success");
     const auto &al = post->at("allowlist");
     ASSERT_TRUE(al.is_array());
     ASSERT_EQ(al.size(), 1u);
-    ASSERT_TRUE(al[0].is_string());
-    EXPECT_EQ(al[0].get<std::string>(), setup.curve.role(cons_uid).public_z85);
+    ASSERT_TRUE(al[0].is_object()) << "allowlist rows are objects, not bare Z85 strings";
+    EXPECT_EQ(al[0].value("pubkey_z85", std::string{}), setup.curve.role(cons_uid).public_z85);
+    EXPECT_EQ(al[0].value("role_uid", std::string{}), cons_uid)
+        << "the broker names the peer it admitted; a blank name here means the row was "
+           "built from the ledger without asking the roster";
 
     // Consumer dereg → allowlist empty again.
     auto dereg = dereg_consumer(cons, channel, cons_uid);
@@ -947,12 +958,18 @@ TEST_F(Pattern4BrokerConsumerTest, ConsumerAttach_Authorized)
     auto auth = get_channel_auth(prod, channel, prod_uid);
     ASSERT_TRUE(auth.has_value());
     ASSERT_TRUE(auth->contains("allowlist") && auth->at("allowlist").is_array());
+    // Rows carry `{role_uid, pubkey_z85}` (HEP-CORE-0036 §6.5).  Matching
+    // on BOTH halves is the point: the key proves the ledger admitted it,
+    // the name proves the broker resolved that key back to the role it
+    // belongs to rather than emitting an anonymous entry.
     bool admitted_in_ledger = false;
     for (const auto &e : auth->at("allowlist"))
-        if (e.is_string() && e.get<std::string>() == setup.curve.role(cons_uid).public_z85)
+        if (e.is_object() &&
+            e.value("pubkey_z85", std::string{}) == setup.curve.role(cons_uid).public_z85 &&
+            e.value("role_uid", std::string{}) == cons_uid)
             admitted_in_ledger = true;
     EXPECT_TRUE(admitted_in_ledger)
-        << "success reply must reflect ledger admission; body=" << auth->dump();
+        << "success reply must reflect ledger admission as a NAMED row; body=" << auth->dump();
 
     broker.signal_quit();
 }
@@ -1002,7 +1019,7 @@ TEST_F(Pattern4BrokerConsumerTest, ConsumerAttach_Denied)
 // REVIEW-D (#277): the revoke → DENY entry-gate transition.  A consumer that
 // was admitted (attach pre-confirm succeeds) and then deregistered must have
 // its NEXT attach pre-confirm DENIED — `handle_consumer_dereg_req` calls
-// `_on_consumer_revoked` → `ledger.revoke`, and the attach gate reads the same
+// `_on_channel_peer_revoked` → `ledger.revoke`, and the attach gate reads the same
 // ledger via `admission_version_of`.  `GetChannelAuth_ReturnsAllowlist` proves
 // the allowlist empties on dereg; THIS proves the gate then refuses a fresh
 // attach.  Deterministic, no data plane: REG → attach(success) → dereg →

@@ -17,7 +17,7 @@
 | **Transport scope** | **ZMQ data plane ONLY** (CURVE + ZAP on PUSH / PULL).  SHM data plane is HEP-CORE-0041 — see §1 Amendment 2026-06-16.  Cross-transport invariants (§3.5 + §I1-§I12) apply to both; transport-specific clauses in this HEP (SHM rows in §6 tables, §5.6 SHM diagram, §I4 SHM bullet, §I6 SHM exception, §6.8.2 SHM scenario) are now informational-historical with inline ⚠ markers. |
 | **Status**     | 🚧 **DESIGN FINAL; IMPLEMENTATION IN FLIGHT** — T1 / T2 / I9 LOCKED 2026-05-28; DP-Q1 (skip-disconnected push) RETRACTED 2026-06-04 along with the snapshot-push-with-ACK design it gated; D1 (`ChannelAccessIndex` in HubState, commit `cacea477`) + D2 (broker CTRL ROUTER ZAP + federation peer pubkey union, commit `d18d2e91` + close-out) shipped 2026-06-03.  §6.5 channel-auth synchronization wire AMENDED 2026-06-04 from snapshot-push-with-ACK to notify-then-pull (`CHANNEL_AUTH_CHANGED_NOTIFY` + `GET_CHANNEL_AUTH_REQ`/`_ACK`); see §6.5 Amendment block.  Remaining auth chain restructured 2026-06-09 from D3-D7 → AUTH-1..7 numbering in `docs/todo/AUTH_TODO.md` (see §1 Status banner) ⏳; sibling tasks #74 / #94 / #101 ✅ / #102 / #103 + Phase 0-11 in §12.  Open items in §13.1 (federation Q1, audit log Q2) are post-MVP. |
 | **Created**     | 2026-05-26                                                                                                  |
-| **Last revised** | 2026-07-11 — **Binding-side generalization of §6.5 allowlist flow + separation of FSM-Authorized from loop-ready + topology-aware `GET_CHANNEL_AUTH_REQ` authorization (§6.6.1) + response semantics split for missing `ChannelAccessEntry` (§6.6.2) + dial-side readiness pull `CHECK_PEER_READY_REQ` (§6.6.3) + `CHANNEL_AUTH_APPLIED_REQ` extended to binding-side consumer callers (HEP-CORE-0042 §5.5.2 amendment cross-ref).**  Under fan-in the dialing producer's `socket.connect()` fires at REG_ACK apply time while the binding-side consumer's ZAP allowlist is populated later via notify-then-pull — libzmq's client-side session treats ZAP DENY as terminal and does not retry, so the producer's initial handshake attempt races the consumer's late apply and loses.  §6.6.3 adds a producer→broker readiness pull; §6.5 step 6 extends the binding-side handler flow with a consumer-side `CHANNEL_AUTH_APPLIED_REQ` that snapshots the confirmed allowlist on the broker so `CHECK_PEER_READY_REQ` can answer authoritatively.  Producer's `apply_master_approval` under fan-in DIALING defers the actual `socket.connect()` out of `start()` by setting `dial_pending=true`; completion is driven by the role host's uniform `api.finalize_channel_connect(channel, timeout_ms, is_cancelled)` call, which forwards to `QueueWriter::finalize_connect(oracle, ...)` — the queue polls the injected `PeerReadinessOracle` at `kBrokerReadinessPollInterval` and completes the deferred `start()` when the oracle returns `Ready`.  §I9.1 keeps this ceremony queue-internal: role code never asks "am I fan-in?".    The broker's `GET_CHANNEL_AUTH_REQ` response no longer conflates "channel doesn't exist" (`CHANNEL_NOT_FOUND`, caller error) with "channel exists but no admitted peers on record" (`status=success, allowlist=[]`, plus loud ERROR log for operator diagnosis).  The two internal lookup outcomes map to two semantically distinct wire responses.  The invariant "channel opens ⟹ `_on_channel_access_opened` fires" is fixed on the broker consumer-side path for `FanIn` (previously only wired on the producer-side path, reflecting the pre-migration assumption that only producers opened channels).  The broker's `GET_CHANNEL_AUTH_REQ` caller check moves from "must be a registered producer of the channel" to "must be the binding-side role of the channel" — producer on `FanOut` / `OneToOne`, consumer on `FanIn` — so fan-in consumers (the new binding-side reader) can pull the allowlist they need to seed their ZAP cache.  The wire error code `PRODUCER_NOT_AUTHORIZED` is preserved for back-compat with existing role-side parsers; the topology-aware rejection is surfaced via the message.  Rationale in §6.6.1: the tight check is retained (not loosened to "any authenticated role") to preserve least-privilege and blast-radius properties; only the definition of "binding side" needs to follow topology.    Under the singular-side topology model, the writer no longer always binds — fan-in channels have the consumer bind and admit producers via CHANNEL_AUTH_CHANGED_NOTIFY.  §4.3.2 Consumer bullet split into dialing-side and binding-side variants (binding-side seeds ZAP from empty producers=[] and grows via §6.5 notify-then-pull).  New §4.3.4 distinguishes the FSM-level `Authorized` transition from a per-cycle loop-ready gate; the loop-ready contract itself is specified in HEP-CORE-0011.  §6.5 "Producer-side handler flow" retitled and rewritten as "Binding-side handler flow"; step 4's `tx_queue.set_peer_allowlist` becomes a channel-to-binding-queue resolution that applies to `rx_queue` on fan-in binding-side and `tx_queue` on fan-out binding-side.  §I11 invariant #3 and §I11.1 diagram + role-process box relabeled from producer-side to binding-side.  §8.3 processor mixed-sides updated with per-side trigger detail and loop-ready gate composition.  Prior revision 2026-06-16 — **SHM auth contract delegated to HEP-CORE-0041 (SHM Channel Auth).**  The body of HEP-0036 still describes a broker-minted `shm_secret` (uint64 token transported in `CONSUMER_REG_ACK`) as the SHM Layer-3 artifact — that design is now SUPERSEDED.  See §1 "Amendment 2026-06-16" block for the rationale and the formal pointer to HEP-0041 §9 (D1-D8 decision table) and §10 (phased rollout).  Net effect: AUTH-4 (broker-issued random `shm_secret` end-to-end) is RETIRED as an HEP-0036 deliverable and replaced by HEP-0041's capability-transport model (FD-passing for memfd; HANDLE duplication for Windows; `SHM_ANON` for macOS).  All other HEP-0036 invariants (I1-I12) remain unchanged; the SHM-specific clauses in §3.5.5 stage S3 SHM-consumer path, §I4 SHM-consumer bullet, §I6 "ONE exception is SHM" paragraph, §5.6, §6.4 CONSUMER_REG_ACK SHM shape, §11 transition table SHM row, §10 phasing references to `shm_secret`, §I6 `ChannelAccessEntry::shm_secret{0}` field, §3.5.5 S3 SHM step, and `apply_master_approval`/`set_shm_secret` API surface are now informational-historical; the active contract lives in HEP-0041.  Prior revision 2026-06-04 — §6.5 wire-frame **AMENDED: snapshot-push-with-ACK → notify-then-pull.**  The retired design (2026-06-02) had the broker push a full-allowlist snapshot and synchronously wait for `CHANNEL_AUTH_UPDATE_ACK` per producer, making the broker for the first time a sync-request initiator on the same ROUTER socket it serves as responder.  The new design splits into a fire-and-forget `CHANNEL_AUTH_CHANGED_NOTIFY` (broker→producer; same shape as existing `CHANNEL_CLOSING_NOTIFY` etc.) plus a standard `GET_CHANNEL_AUTH_REQ`/`GET_CHANNEL_AUTH_ACK` request-reply (producer pulls when it cares).  No new protocol patterns; broker stays a pure responder; producer-offline becomes the same code path as the existing `REG_ACK.initial_allowlist` reconnect re-sync.  Drift window honestly equivalent.  See §6.5 "Amendment 2026-06-04" block for the full rationale.  Prior revision 2026-06-02 (delta→snapshot; now superseded) preserved in git history.  Prior revision 2026-05-28 — T1 RESOLVED: symmetric identity-keypair design (broker mints nothing on data plane; both sides reuse their identity keys; SHM keeps broker-generated `shm_secret`).  Prior revision 2026-05-27 — two-conditions gate explicit; revocation reframed as passive (no force-close); inbox/bands inheritance; channels-are-dynamic non-goal; manual pubkey distribution MVP. |
+| **Last revised** | 2026-08-12 — **§6.7 restated as the five states it actually has.**  The section opened by calling itself a four-state machine while §6.7.1 introduced a fifth, `DialDeferred`, as the resting point of a fan-in producer whose peer has not yet admitted it; the state is now named, diagrammed and carried through the mutator table.  Two table cells were corrected: `start()` is PERMITTED from `Configured` and `DialDeferred` — it is the transition `apply_master_approval` and `finalize_connect` respectively perform, and forbidding it described a design the production path violates — and `stop()` is terminal from every state at or above `Configured`, not only from `Active`, so that a stopped queue can never be re-armed.  §6.7.2 no longer claims the protocol lacks a binding-side republish: HEP-CORE-0021 §16 specifies it, and reads "producer" as "binding side", so the shortfall is in the code and is named there by file and line.  Prior revision 2026-08-11 — **§6.7.1 the queue HOLDS its state; §6.7.2 a bind request and a bound address are different things.**  Two defects motivated both. (a) `is_configured()` answered "have I reached Configured" with `!endpoint.empty()`, and a binding queue takes its endpoint from config at construction — so it reported Configured while still in Standby.  The states of §6.7 were logged and never stored; every state question was re-derived from whether some unrelated field happened to be empty.  §6.7.1 makes the state a held value, folds in the two loose bools that were really states (`running_`, the deferred-dial flag), and keeps the slot-format precondition out as a gate on one edge.  (b) A binding side registers BEFORE it binds, so its REG can only carry a bind request; the binding consumer republished the resolved address and the binding producer never did, so an ephemeral producer port was published as `:0` and nothing corrected it.  §6.7.2 separates the two roles a TCP endpoint plays, requires both binding sides to republish, and prohibits accessors from falling back to the configured request.  `validate_tcp_endpoint` is unchanged and still accepts port 0 — it validates bind requests, which was never the wrong thing to do.  Prior revision 2026-07-11 — **Binding-side generalization of §6.5 allowlist flow + separation of FSM-Authorized from loop-ready + topology-aware `GET_CHANNEL_AUTH_REQ` authorization (§6.6.1) + response semantics split for missing `ChannelAccessEntry` (§6.6.2) + dial-side readiness pull `CHECK_PEER_READY_REQ` (§6.6.3) + `CHANNEL_AUTH_APPLIED_REQ` extended to binding-side consumer callers (HEP-CORE-0042 §5.5.2 amendment cross-ref).**  Under fan-in the dialing producer's `socket.connect()` fires at REG_ACK apply time while the binding-side consumer's ZAP allowlist is populated later via notify-then-pull — libzmq's client-side session treats ZAP DENY as terminal and does not retry, so the producer's initial handshake attempt races the consumer's late apply and loses.  §6.6.3 adds a producer→broker readiness pull; §6.5 step 6 extends the binding-side handler flow with a consumer-side `CHANNEL_AUTH_APPLIED_REQ` that snapshots the confirmed allowlist on the broker so `CHECK_PEER_READY_REQ` can answer authoritatively.  Producer's `apply_master_approval` under fan-in DIALING defers the actual `socket.connect()` out of `start()` by setting `dial_pending=true`; completion is driven by the role host's uniform `api.finalize_channel_connect(channel, timeout_ms, is_cancelled)` call, which forwards to `QueueWriter::finalize_connect(oracle, ...)` — the queue polls the injected `PeerReadinessOracle` at `kBrokerReadinessPollInterval` and completes the deferred `start()` when the oracle returns `Ready`.  §I9.1 keeps this ceremony queue-internal: role code never asks "am I fan-in?".    The broker's `GET_CHANNEL_AUTH_REQ` response no longer conflates "channel doesn't exist" (`CHANNEL_NOT_FOUND`, caller error) with "channel exists but no admitted peers on record" (`status=success, allowlist=[]`, plus loud ERROR log for operator diagnosis).  The two internal lookup outcomes map to two semantically distinct wire responses.  The invariant "channel opens ⟹ `_on_channel_access_opened` fires" is fixed on the broker consumer-side path for `FanIn` (previously only wired on the producer-side path, reflecting the pre-migration assumption that only producers opened channels).  The broker's `GET_CHANNEL_AUTH_REQ` caller check moves from "must be a registered producer of the channel" to "must be the binding-side role of the channel" — producer on `FanOut` / `OneToOne`, consumer on `FanIn` — so fan-in consumers (the new binding-side reader) can pull the allowlist they need to seed their ZAP cache.  The wire error code `PRODUCER_NOT_AUTHORIZED` is preserved for back-compat with existing role-side parsers; the topology-aware rejection is surfaced via the message.  Rationale in §6.6.1: the tight check is retained (not loosened to "any authenticated role") to preserve least-privilege and blast-radius properties; only the definition of "binding side" needs to follow topology.    Under the singular-side topology model, the writer no longer always binds — fan-in channels have the consumer bind and admit producers via CHANNEL_AUTH_CHANGED_NOTIFY.  §4.3.2 Consumer bullet split into dialing-side and binding-side variants (binding-side seeds ZAP from empty producers=[] and grows via §6.5 notify-then-pull).  New §4.3.4 distinguishes the FSM-level `Authorized` transition from a per-cycle loop-ready gate; the loop-ready contract itself is specified in HEP-CORE-0011.  §6.5 "Producer-side handler flow" retitled and rewritten as "Binding-side handler flow"; step 4's `tx_queue.set_peer_allowlist` becomes a channel-to-binding-queue resolution that applies to `rx_queue` on fan-in binding-side and `tx_queue` on fan-out binding-side.  §I11 invariant #3 and §I11.1 diagram + role-process box relabeled from producer-side to binding-side.  §8.3 processor mixed-sides updated with per-side trigger detail and loop-ready gate composition.  Prior revision 2026-06-16 — **SHM auth contract delegated to HEP-CORE-0041 (SHM Channel Auth).**  The body of HEP-0036 still describes a broker-minted `shm_secret` (uint64 token transported in `CONSUMER_REG_ACK`) as the SHM Layer-3 artifact — that design is now SUPERSEDED.  See §1 "Amendment 2026-06-16" block for the rationale and the formal pointer to HEP-0041 §9 (D1-D8 decision table) and §10 (phased rollout).  Net effect: AUTH-4 (broker-issued random `shm_secret` end-to-end) is RETIRED as an HEP-0036 deliverable and replaced by HEP-0041's capability-transport model (FD-passing for memfd; HANDLE duplication for Windows; `SHM_ANON` for macOS).  All other HEP-0036 invariants (I1-I12) remain unchanged; the SHM-specific clauses in §3.5.5 stage S3 SHM-consumer path, §I4 SHM-consumer bullet, §I6 "ONE exception is SHM" paragraph, §5.6, §6.4 CONSUMER_REG_ACK SHM shape, §11 transition table SHM row, §10 phasing references to `shm_secret`, §I6 `ChannelAccessEntry::shm_secret{0}` field, §3.5.5 S3 SHM step, and `apply_master_approval`/`set_shm_secret` API surface are now informational-historical; the active contract lives in HEP-0041.  Prior revision 2026-06-04 — §6.5 wire-frame **AMENDED: snapshot-push-with-ACK → notify-then-pull.**  The retired design (2026-06-02) had the broker push a full-allowlist snapshot and synchronously wait for `CHANNEL_AUTH_UPDATE_ACK` per producer, making the broker for the first time a sync-request initiator on the same ROUTER socket it serves as responder.  The new design splits into a fire-and-forget `CHANNEL_AUTH_CHANGED_NOTIFY` (broker→producer; same shape as existing `CHANNEL_CLOSING_NOTIFY` etc.) plus a standard `GET_CHANNEL_AUTH_REQ`/`GET_CHANNEL_AUTH_ACK` request-reply (producer pulls when it cares).  No new protocol patterns; broker stays a pure responder; producer-offline becomes the same code path as the existing `REG_ACK.initial_allowlist` reconnect re-sync.  Drift window honestly equivalent.  See §6.5 "Amendment 2026-06-04" block for the full rationale.  Prior revision 2026-06-02 (delta→snapshot; now superseded) preserved in git history.  Prior revision 2026-05-28 — T1 RESOLVED: symmetric identity-keypair design (broker mints nothing on data plane; both sides reuse their identity keys; SHM keeps broker-generated `shm_secret`).  Prior revision 2026-05-27 — two-conditions gate explicit; revocation reframed as passive (no force-close); inbox/bands inheritance; channels-are-dynamic non-goal; manual pubkey distribution MVP. |
 | **Area**        | Framework Architecture (broker access control, role-side CURVE wiring, data-plane peer authentication)      |
 | **Depends on**  | HEP-CORE-0021 (ZMQ Endpoint Registry — endpoint discovery via broker), HEP-CORE-0035 (Hub-Role Authentication — broker-side ZAP + pubkey index), HEP-CORE-0023 (Startup Coordination — presence FSM), HEP-CORE-0040 (Locked Key Memory — KeyStore/LockedKey for role identity secrets), HEP-CORE-0041 (SHM Channel Auth — cross-platform capability-transport SHM auth; supersedes HEP-0036's shm_secret model) |
 | **Blocks**      | Production deployment (data plane currently unauthenticated; see §3 gap analysis)                            |
@@ -750,8 +750,8 @@ The system is organized into four tiers, each with a bounded job:
 | Tier | What it owns | API visible to the next tier up |
 |---|---|---|
 | **Broker** (`HubState`) | The authoritative record of who is on each channel — `ChannelEntry::producers[]`, `consumers[]`.  Sends doorbell notifications when channel membership changes (`CHANNEL_AUTH_CHANGED_NOTIFY` to the binding side of the channel; `CHANNEL_PRODUCERS_CHANGED_NOTIFY` to the dialing side; see §6.5 / §6.5.1).  Which role holds the binding side depends on topology per HEP-CORE-0017 (fan-out → producer binds; fan-in → consumer binds; one-to-one → either side per configuration). | REG_REQ / DEREG_REQ + the two doorbell-and-pull wire families |
-| **Role-host framework** | Receives broker doorbells over the BRC (the role's control-plane connection).  Pulls the updated membership list.  Calls the queue's `add_producer_peer` / `remove_producer_peer` (HEP-CORE-0017 §3.3) or `set_peer_allowlist` to apply the change. | Internal C++; not visible to scripts |
-| **Queue** (`ZmqQueue` / `ShmQueue`) | All transport plumbing — sockets, bind vs. connect direction, the ZAP cache, fair-queueing.  Hides the fact that a channel may have multiple producers behind a single `QueueReader` (HEP-CORE-0017 §4.6 fan-in). | `QueueReader::read_acquire` / `release` + the membership mutators (`add_producer_peer`, `remove_producer_peer`, `set_peer_allowlist`, etc.) |
+| **Role-host framework** | Receives broker doorbells over the BRC (the role's control-plane connection).  Pulls the updated membership list.  Installs it whole — `set_peer_allowlist` on the enforcing side, `set_producer_peers` on the read side.  There is no per-peer mutator (HEP-CORE-0017 §3.3). | Internal C++; not visible to scripts |
+| **Queue** (`ZmqQueue` / `ShmQueue`) | All transport plumbing — sockets, bind vs. connect direction, the ZAP cache, fair-queueing.  Hides the fact that a channel may have multiple producers behind a single `QueueReader` (HEP-CORE-0017 §4.6 fan-in). | `QueueReader::read_acquire` / `release` + the whole-set membership mutators (`set_peer_allowlist`, `set_producer_peers`) |
 | **Script** | Application logic — what to do with the data and how to coordinate with other roles. | `api.rx.acquire()` / `commit`, band callbacks, inbox via `api.list_producers(channel)` |
 
 Communication channels OTHER than the bulk-data queue follow the
@@ -845,10 +845,10 @@ layer:
   topology when doing so.
 - `RoleAPIBase` may expose script-facing accessors that mirror
   queue state for observability — `allowed_peers(channel)`,
-  `admitted_peers_count(channel)`, `producers(channel)`,
+  `allowed_peer_count(channel)`, `producers(channel)`,
   `consumers(channel)`.  These are read-only and the same shape on
   every side and every transport.  `allowed_peers` /
-  `admitted_peers_count` may return empty / zero as the "not
+  `allowed_peer_count` may return empty / zero as the "not
   applicable on this side" sentinel (HEP-CORE-0011 §"Cross-Engine
   Surface Parity").  The LIVE-peer surfaces (`producers` /
   `consumers` and their counts) are **objective** and exempt from
@@ -1950,7 +1950,7 @@ sequenceDiagram
 
     Note over C,B: ── Consumer registration (TRANSPORT-AGNOSTIC frame) ──
     C->>B: CONSUMER_REG_REQ {channel, role_uid, pubkey}
-    Note over B: §6.3 identity verify;<br/>_on_consumer_authorized(channel, pubkey)
+    Note over B: §6.3 identity verify;<br/>_on_channel_peer_admitted(channel, pubkey)
     B->>P: CHANNEL_AUTH_CHANGED_NOTIFY {channel,<br/>reason="consumer_joined"}
     Note over P: GET_CHANNEL_AUTH_REQ pull;<br/>allowlist_cache.put(channel, new_set);<br/>fire on_allowlist_changed("consumer_joined")
     B->>C: CONSUMER_REG_ACK<br/>{data_transport, producers: [{role_uid, pubkey_z85, endpoint}]}<br/>(unified per §5b.7 B-4; SHM endpoint=L2 capability URI)
@@ -2098,7 +2098,7 @@ gate decision (I1).  The handlers that read + write it:
   the full current set in `GET_CHANNEL_AUTH_ACK.allowlist`.
   Standard request-reply (no special threading).
 - **Heartbeat / hub-dead handler** (broker): writes — removes a
-  failed peer from the allowlist via `_on_consumer_revoked`; fires
+  failed peer from the allowlist via `_on_channel_peer_revoked`; fires
   `CHANNEL_AUTH_CHANGED_NOTIFY` to all `kLive` producers.
 
 No producer-side or consumer-side code computes admission decisions
@@ -2812,18 +2812,28 @@ sequenceDiagram
     B->>C1: CHANNEL_PRODUCERS_CHANGED_NOTIFY {reason="producer_left"} (§6.5.1)
     B->>C2: CHANNEL_PRODUCERS_CHANGED_NOTIFY {reason="producer_left"} (§6.5.1)
     B->>P1: DEREG_ACK
-    C1->>C1: framework calls rx_queue.remove_producer_peer(P1.uid)<br/>(per I9; HEP-0017 §3.3)
+    C1->>C1: framework pulls the new set and installs it whole<br/>(§6.5 notify-then-pull; per I9)
     C2->>C2: same
     Note over P2,C1: Data flow from P2 → C1,C2 continues uninterrupted
 ```
 
 **Property** (per-producer DEREG): no consumer-side cascade.
 Existing CURVE sessions from departing producer naturally tear
-down via TCP RST; consumer-side frameworks call
-`queue.remove_producer_peer(P1.uid)` in response to the channel-
-event broadcast (HEP-0033 §12).  Script sees no churn — its data
-loop continues reading from the rx queue, which now pulls only
-from P2 internally.
+down via TCP RST; the consumer-side framework pulls
+the channel's current set and installs it whole (§6.5) — there is no
+per-peer removal on the queue.  Script sees no churn: its data loop
+continues reading from the rx queue, which now pulls only from P2
+internally.
+
+> **This subsection is stale beyond the mechanism named above, and the
+> rest of it was NOT rewritten here.**  It depicts one channel with two
+> producers AND two consumers, which no topology in §3.3.0 permits —
+> multiple producers means fan-in, and fan-in is N producers to exactly
+> ONE consumer (`FAN_IN_IS_SINGLE_CONSUMER`).  It also fires
+> `CHANNEL_PRODUCERS_CHANGED_NOTIFY`, a wire message that exists nowhere
+> in `src/` but in comments.  Redrawing the scenario is a design edit,
+> not a reference repair, so it is left for the owner rather than done
+> as a side effect of deleting two methods.
 
 #### 5.7.2 Last-producer DEREG (channel teardown)
 
@@ -3444,7 +3454,7 @@ the allowlist.
 | Field | Type | Description |
 |---|---|---|
 | `shm_secret` ⚠ **SUPERSEDED** | uint64 | (transport=shm only — SUPERSEDED by HEP-CORE-0041; see §1 Amendment 2026-06-16.  Replaced by HEP-0041 §5.2 — broker echoes the producer's `shm_capability_endpoint` instead of minting a secret.)  Pre-HEP-0041 meaning: broker-generated guard secret for the DataBlock.  Unrelated to CURVE (HEP-CORE-0002 mechanism). |
-| `initial_allowlist` | array<{role_uid?, endpoint?, pubkey_z85}> | **REQUIRED, never absent — empty array on a fresh channel.**  Peer-list snapshot for the producer's channel role.  Payload schema unified with `CONSUMER_REG_ACK.producers[]` (§6.4) per rev 2.3 (2026-07-09) topology migration: array of `{role_uid, endpoint, pubkey_z85}` objects.  Topology-role interpretation: **BINDING side** (OneToOne, FanOut producers) — entries are the ZAP allowlist snapshot; `pubkey_z85` required, `endpoint` may be empty (BINDING doesn't dial), `role_uid` optional metadata.  **DIALING side** (FanIn producer) — entry is the consumer's binding endpoint + CURVE identity; `endpoint` and `pubkey_z85` both required.  Broker MUST emit this field on every REG_ACK regardless of transport so the producer's REG_ACK seed (`apply_producer_reg_ack`) can populate the script-observable cache safely on (re)connect — see §I11.1 invariant #5 for the operational rule that makes this safe across reconnect cycles.  An absent or non-array field is a broker contract violation; the producer logs WARN and preserves the prior cache snapshot rather than clobbering with empty.  Pre-rev-2.3 shape was `array<string>` (bare pubkey strings); parsers still exist that reject legacy `string` entries during the migration window. |
+| `initial_allowlist` | array<{role_uid, endpoint?, pubkey_z85}> | **REQUIRED, never absent — empty array on a fresh channel.**  Peer-list snapshot for the producer's channel role.  Payload schema unified with `CONSUMER_REG_ACK.producers[]` (§6.4) per rev 2.3 (2026-07-09) topology migration: array of `{role_uid, endpoint, pubkey_z85}` objects.  **`role_uid` and `pubkey_z85` are BOTH required on every entry, on every topology** — see "Why a peer entry always names its peer" below.  Only `endpoint` varies by topology role: **BINDING side** (OneToOne, FanOut producers) — entries are the ZAP allowlist snapshot and `endpoint` may be empty, because a binding side does not dial.  **DIALING side** (FanIn producer) — the entry is the consumer's binding endpoint + CURVE identity, so `endpoint` is required too.  Broker MUST emit this field on every REG_ACK regardless of transport so the producer's REG_ACK seed (`apply_producer_reg_ack`) can populate the script-observable cache safely on (re)connect — see §I11.1 invariant #5 for the operational rule that makes this safe across reconnect cycles.  An absent or non-array field is a broker contract violation; the producer logs WARN and preserves the prior cache snapshot rather than clobbering with empty.  The shape this replaced was `array<string>` — bare pubkey strings, carrying no name; a bare string is refused rather than accommodated, because accepting one reintroduces the row that names nobody. |
 
 No data-plane CURVE keypair appears in `REG_ACK` — the producer
 uses its identity keypair, already loaded from `<role_uid>.sec`
@@ -3473,7 +3483,7 @@ admission:
 
 The verified pubkey is then added to the channel-scope
 `authorized_consumer_pubkeys` allowlist via
-`_on_consumer_authorized` (§4.1).  The same value flows into the
+`_on_channel_peer_admitted` (§4.1).  The same value flows into the
 `producers[]` array of CONSUMER_REG_ACK (§6.4) for the consumer's
 own retrieval of its peer producers' pubkeys.
 
@@ -3563,11 +3573,12 @@ role-host framework reads `producers[]` from CONSUMER_REG_ACK and
 passes it to `RxQueueOptions::producer_peers` (HEP-CORE-0017 §3.3)
 at queue construction.  ZmqQueue handles all transport plumbing —
 bind/connect direction, per-peer socket operations, ZAP cache,
-fair-queue accounting — internally.  Subsequent producer
-join/leave events on the channel (HEP-CORE-0033 §12 channel-event
-broadcasts) drive `queue.add_producer_peer(...)` /
-`queue.remove_producer_peer(role_uid)` calls from the framework.
-Scripts never see this array.
+fair-queue accounting — internally.  Subsequent producer join/leave events reach the BINDING side only —
+the broker admits or revokes, rings `CHANNEL_AUTH_CHANGED_NOTIFY`, and
+the role pulls and installs the complete new set (§6.5).  A DIALING side
+needs no such event: its one peer is the binding side, delivered on its
+own REG_ACK and fixed for the channel's life.  Scripts never see this
+array.
 
 **Coordination with the DISC_REQ per-producer array migration.**  The DISC_REQ
 response in `broker_service.cpp:1745-1794` today returns the FIRST
@@ -4062,7 +4073,68 @@ extra fields as informational; do not parse them for cache state.
 | `corr_id` | string | Echoes the request. |
 | `status` | string | `"success"` on a valid query; `"error"` otherwise (per HEP-CORE-0007 §12.3 harmonized shape). |
 | `error_code` | string | On error: `"CHANNEL_NOT_FOUND"` (channel does not exist), `"PRODUCER_NOT_AUTHORIZED"` (caller is not a registered producer of the channel), `"INTERNAL_ERROR"`. |
-| `allowlist` | array<string> | On success: full current authorized consumer-pubkey set for the channel after any prior mutations.  Each element is a 40-char Z85 string.  Receiving producer REPLACES its local ZAP cache for the channel with this set — no merge.  Empty array `[]` is the legal "deny everyone" state. |
+| `allowlist` | array<{role_uid, pubkey_z85}> | On success: the full current authorized-peer set for the channel after any prior mutations.  **Same entry shape as `initial_allowlist`** — both name the peer, for the reason below; a refresh that carried less than the seed would blank the names the seed established.  Receiving producer REPLACES its local cache for the channel with this set — no merge.  Empty array `[]` is the legal "deny everyone" state.  Pre-2026-08 shape was `array<string>` (bare 40-char Z85 strings); that form carried no name and is retired. |
+
+#### Why a peer entry always names its peer
+
+Every peer entry on this wire carries `role_uid` **and** `pubkey_z85`.
+Neither is optional, on any topology, on any message that carries peers.
+
+The reason is not symmetry.  A list of bare keys cannot be used by the
+side that receives it: a role that learns only that `BBBB` may connect
+cannot tell its script who that is, cannot keep per-peer state, and
+cannot name anyone in a log.  HEP-CORE-0035 §4.9 states this for the
+roster it replicates, and the same argument applies unchanged here — a
+receiver cannot be asked to name a peer from a list that never told it
+any names.
+
+Naming costs the hub nothing, because the hub cannot avoid knowing the
+pair.  A key reaches a channel's admitted set only by passing the
+registration gate (§6.1, §6.3), and that gate proves the key against the
+handshake and resolves it to its roster owner before admitting it.  A key
+that is admitted therefore always has a name; a key with no name is not
+admitted.  So "the hub has only keys here" is never a true statement
+about an admitted peer — it can only describe a builder that did not ask.
+
+Two consequences worth stating, because both were violated in practice
+before this was written down:
+
+- A message that carries peers must not carry them as bare strings.  The
+  saving is a few bytes and the cost is that the receiver's copy of the
+  list is permanently unusable for anything but an equality check.
+- The seed and the refresh must carry the SAME shape.  If they differ,
+  the receiver's view is correct until the first membership change and
+  wrong afterwards — the worst version, because it tests clean.
+
+##### What counts as a well-formed row
+
+A row is readable when it names a peer and carries a key that is a valid
+Z85-encoded CURVE public key by the one rule that decides that question
+everywhere (HEP-CORE-0040 §8.4.1).  Length alone is not the rule: a
+forty-character string outside the Z85 alphabet is not a key, and a
+reader that admits it is a reader that disagrees with the socket that
+will later refuse it.
+
+`endpoint` is required of a reader that is going to dial the peer and of
+no one else.  This is the only respect in which these lists differ, so
+it is what the reader states when it reads — not a second parser, and
+not a per-field check repeated at each site.
+
+Two dispositions follow, and they are different on purpose:
+
+- A list that REPLACES a set — the seed, the refresh, the queue's
+  allowlist — is accepted whole or not at all.  Keeping the readable
+  rows of a bad message installs a quietly smaller allowlist, which
+  presents as a working system that denies someone.
+- A list that is a BATCH of independent attempts — the consumer's
+  pre-attach walk over `producers[]` — skips the unusable row and
+  continues, because HEP-CORE-0042 §7.1 holds that one peer must not
+  strand the others.  Its membership projection is a filtered subset by
+  construction, so a skipped row was never a peer it would have kept.
+
+An EMPTY list is a valid list.  A fresh channel has no peers, and a
+reader that treats empty as unusable preserves a stale set instead of
+installing the empty one the broker sent.
 
 **Same anti-smuggling constraints as the retired 2026-06-02 design
 applied to `allowlist`**: no `kind` field per pubkey (CURVE-only
@@ -4105,7 +4177,7 @@ The amendment uses HubState's existing mutator + subscriber
 pattern as the architectural seam.  When the broker accepts
 CONSUMER_REG_REQ / CONSUMER_DEREG_REQ, or detects a consumer
 heartbeat timeout, the handler calls the matching HubState mutator
-(`_on_consumer_authorized` / `_on_consumer_revoked`), and a
+(`_on_channel_peer_admitted` / `_on_channel_peer_revoked`), and a
 single auth-notify emitter — registered as a subscriber to those
 mutations — fires `CHANNEL_AUTH_CHANGED_NOTIFY` to each `kLive`
 producer of the affected channel.  Inline call in the handler is
@@ -4566,80 +4638,356 @@ producer ZAP cache convergence.
 
 ### 6.7 Queue state machine — Standby → Configured → Active
 
-The framework's queue abstraction (HEP-CORE-0017) has, historically,
-treated construction-with-arguments + `start()` as a single
-authorization-ready transition: build with the auth artifacts, then
-start.  That shape forced the role host to learn the artifacts
-BEFORE constructing the queue, which (per the consumer-side ordering
-gap discovered during AUTH-1 (a)) is incompatible with the wire flow:
-the master's "yes" arrives in `CONSUMER_REG_ACK`, AFTER the natural
-build-queue point.
+**In plain terms.**  Building a queue and arming it are two separate
+acts, and only the broker's answer may perform the second one.  Building
+allocates local resources — a socket object, a ring buffer, a name.
+Arming opens that socket to a peer.  Between the two sits a decision that
+is not the role's to make: in this system every data socket is
+CURVE-authenticated, and who a queue may talk to is the broker's answer,
+delivered in a registration acknowledgement.  The states in this section
+are the positions a queue occupies while it waits for that answer and
+then acts on it.
 
-This section formalizes a three-state machine on the queue that
-makes the build / authorize / start steps independent transitions,
-each owned by the framework and each gated by the I12 master-approval
-discipline.
+The shape matters because the obvious alternative does not work.  Passing
+the authority artifacts to the constructor would force the role host to
+know them before it builds the queue, and it cannot: the broker's "yes"
+arrives in `CONSUMER_REG_ACK`, which is later than the natural
+build-the-queue point.  So the queue is built empty, and a separate
+mutator applies the answer when it arrives.
 
-**The state machine** (normative for both `ZmqQueue` and
-`ShmQueue`):
+**The states.**  Five, normative for both `ZmqQueue` and `ShmQueue`:
 
+| State | Means |
+|---|---|
+| `Uninitialized` | Never armed, or stopped.  A stopped queue lands here and stays. |
+| `Standby` | Built.  Resources allocated, nothing bound, nothing connected, no peer known. |
+| `Configured` | The broker's answer has been applied.  Authority artifacts are in place; the socket is not yet open. |
+| `DialDeferred` | Configured, and the connect is deliberately being withheld until the peer confirms it is ready.  One topology reaches this state; see below. |
+| `Active` | Bound or connected, worker running, data may flow. |
+
+`Configured`, `DialDeferred` and `Active` all mean "the answer has been
+applied", which is what callers asking "is this queue configured?" want to
+know.  Implementations SHOULD order the state values so that a single
+comparison expresses that, rather than enumerating three cases at each
+call site.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Standby: factory constructor<br/>(no authority artifacts needed)
+
+    Standby --> Configured: apply_master_approval(ACK)<br/>requires: slot format installed
+    Configured --> Active: start()<br/>bind or connect, spawn worker
+    Configured --> DialDeferred: fan-in producer only<br/>peer's allowlist not yet written
+    DialDeferred --> Active: finalize_connect(oracle)<br/>peer confirmed ready
+
+    Configured --> Uninitialized: stop()
+    DialDeferred --> Uninitialized: stop()
+    Active --> Uninitialized: stop()
+
+    note right of Uninitialized
+        Terminal.  A stopped queue is
+        never re-armed — the hub-dead
+        path destroys it and builds a
+        fresh one (§I3, §I12).
+    end note
 ```
-                       Uninitialized
-                            │
-                            │  factory ctor (no artifacts required)
-                            ▼
-       ┌──────────────  Standby  ──────────────┐
-       │              (socket / segment           │
-       │               resources allocated,        │
-       │               no authority artifacts)     │
-       │                                           │
-       │  set_*  (apply master's "yes")            │
-       │                                           │
-       ▼                                           │
-  Configured                                       │
-       │   (authority artifacts in place,          │
-       │    not yet connected / attached)          │  destructor /
-       │                                           │  explicit stop()
-       │  start()  (open the door using artifacts) │  always safe
-       │                                           │  from ANY state
-       ▼                                           │
-    Active                                         │
-       │   (connected / attached, data loop        │
-       │    can run; HEP §I3 outer guard           │
-       │    can let producer/consumer cycle        │
-       │    enter the loop body)                   │
-       │                                           │
-       └───────────────────────────────────────────┘
+
+**Why `DialDeferred` exists.**  Every other queue may open its socket the
+moment the broker's answer lands.  The fan-in producer may not.  It is the
+only queue that dials a peer whose admission list is still being written:
+under fan-in the consumer binds, and it installs this producer's key
+shortly *after* the producer has been told to connect.  Connecting starts
+the CURVE handshake immediately, the consumer's gate denies a key it has
+not yet installed, and libzmq treats that denial as terminal with no
+retry.  So the connect waits for the peer to confirm.  The mechanism is
+§6.6.3; `DialDeferred` is the resting point while it waits.
+
+The role host calls `finalize_connect` on every queue uniformly, rather
+than branching on topology: it is a no-op success for the four
+combinations that are already `Active`.
+
+| Role | Topology | Socket | State after approval |
+|---|---|---|---|
+| Consumer | fan-in | PULL, binds | `Active` |
+| Consumer | fan-out, one-to-one | dials | `Active` |
+| Producer | fan-out, one-to-one | binds | `Active` |
+| Producer | **fan-in** | PUSH, dials | **`DialDeferred`** |
+
+**Mutators by state** (normative; §3.5.4 INV3 alignment).  One rule
+governs the table: **`apply_master_approval` is the single mutator that
+drives `Standby → Configured`.**  Bare `set_*` calls arriving in Standby
+only stash their arguments — they never transition the queue.  That is
+what makes the registration acknowledgement the authoritative trigger and
+removes the race "did a notify-driven mutator arm the queue before the
+role's own acknowledgement arrived?".
+
+| Mutator | Uninitialized | Standby | Configured | DialDeferred | Active |
+|---|---|---|---|---|---|
+| `set_peer_allowlist(list)` (push side) | refuse | buffer (stash args; queue stays Standby — applied at Standby → Configured) | apply (snapshot replace) | apply (snapshot replace; no socket is open yet) | apply atomically (live ZAP cache update) |
+| `set_producer_peers(list)` (pull side) | refuse | buffer (stash args; queue stays Standby) | apply (snapshot replace) | not reachable (only a fan-in PUSH side defers) | apply (snapshot replace; the live socket is NOT touched — a peer swap needs teardown+rebuild per "`stop()` is terminal" below + §I12.  Costs nothing: a DIALING read side has one peer, fixed for the channel's life, and a BINDING read side does not dial from this set — it feeds the ZAP allowlist, reinstalled on the next lines of `apply_master_approval`) |
+| `set_shm_secret(uint64)` (SHM rx) ⚠ **SUPERSEDED** | refuse | buffer | apply (replaces previous) | not reachable | refuse (`shm_secret` is per-channel-lifetime; restart needed; hub-dead recovery rebuilds via §6.8.8).  ⚠ Whole row is SUPERSEDED by HEP-CORE-0041 — the mutator and the field are retired; SHM attach now flows through the capability-transport handshake described in HEP-0041 §5.5 + §9 D4.  No queue-side mutator equivalent exists. |
+| `apply_master_approval(json)` (polymorphic on `QueueReader`/`QueueWriter`) | **refuse** — a stopped queue is never re-armed (see "`stop()` is terminal") | **apply — drives `Standby → Configured` and onward** (dispatches per transport: PUSH side seeds allowlist + binds + arms ZAP + spawns push worker; PULL side seeds producer set + connects + spawns pull worker; SHM side attaches segment + starts reader/writer) | apply (completes the arc this call initiated) | apply artifacts only — MUST NOT connect; the connect belongs to `finalize_connect` | apply (runtime mutation, atomic) |
+| `start()` | refuse | refuse (no artifacts applied) | **apply — this is the `Configured → Active` transition**, performed by `apply_master_approval` | **apply — the deferred connect**, performed by `finalize_connect` | no-op (idempotent: returns true) |
+| `stop()` | no-op | no-op | **terminal → Uninitialized** | **terminal → Uninitialized** | **terminal → Uninitialized** (teardown, sockets reset) |
+| destructor | no-op | safe | safe | safe | safe (calls `stop()` internally) |
+
+**`start()` is not a public entry point.**  The role host calls
+`apply_master_approval(ack)` and then `finalize_connect(oracle)`; those
+two perform every `start()` the system needs.  `start()` remains on the
+queue interface because the abstract reader/writer interfaces are public,
+but calling it directly either fails — it refuses anything below
+`Configured` — or, on a queue that happens to be configured, arms a socket
+the caller was not the one authorized to arm.  Code that builds a queue
+and calls `start()` is bypassing the approval step, not taking a shortcut
+through it.
+
+**Why `start()` is permitted from `Configured` and `DialDeferred`, and
+refused below.**  These two cells are the whole point of the gate.
+`Configured` means the broker's answer has been applied, so opening the
+socket is exactly the sanctioned next act — and it is the act
+`apply_master_approval` performs internally.  `Standby` and
+`Uninitialized` mean no answer has been applied, so there is nothing to
+act on; a `start()` there would open a socket on configured placeholders.
+A gate that refused `Configured` would forbid the production path.
+
+#### 6.7.1 The queue HOLDS its state (amendment 2026-08-11)
+
+> **Implementation status.**  The state itself is in place: `QueueState`
+> in `src/include/utils/hub_queue.hpp`, with the stored value, its
+> transitions and the `start()` gate in
+> `src/utils/hub/hub_zmq_queue.cpp`.  Two cells of the mutator table
+> above are NOT yet enforced by that code, and both let a stopped queue
+> come back to life:
+>
+> - `apply_master_approval` (`hub_zmq_queue.cpp:1396`) tests only for
+>   "already Active" and "slot format pending".  It does not refuse an
+>   `Uninitialized` queue, so a stopped queue can be re-approved and
+>   re-armed — which `hub_zmq_queue.cpp:1818` separately records as
+>   unsafe, because teardown does not reset the ring indices and the
+>   revived queue would re-deliver stale slots.
+> - `stop()` (`hub_zmq_queue.cpp:2334`) moves only `Active` to
+>   `Uninitialized`; from `Configured` or `DialDeferred` it returns
+>   early and leaves the state alone.  A `stop()` that lands while a
+>   fan-in producer is waiting in `DialDeferred` therefore does not
+>   stop it: the in-flight `finalize_connect` still calls `start()`
+>   when its oracle answers, and the queue goes `Active` after being
+>   stopped.
+>
+> §6.7.2 below is a separate matter and carries its own status note.
+
+Everything above describes a machine whose states are named.  The
+implementation used to **store none of them**: the transitions were logged
+(`event=QueueStateTransition`) and every state question was re-derived,
+at the moment it was asked, by testing whether some unrelated data
+member happened to be empty.
+
+This amendment forbids that, and the reason is not tidiness: the shape
+produced a predicate that returned the wrong answer.
+
+**The governing rule.**
+
+> Every question has one owner and a typed answer.  Callers ask the
+> owner.  A caller MUST NOT re-derive an answer from the shape of
+> returned data — not from a string being empty, not from a container
+> having elements, not from a pointer being non-null.
+
+**Normative:** a queue SHALL hold its state as a single value, and the
+queue's lifecycle predicates — `is_running()`, `is_configured()`, and
+any successor — SHALL be reads of it rather than inspections of payload.
+
+The state SHALL be readable **without acquiring a lock.**  This is not a
+micro-optimisation: `ZmqQueue::is_running()` is called from outside the
+queue by `RoleAPIBase::is_tx_active()` / `is_rx_active()`, which sit
+beside `write_acquire` / `read_acquire` on the data path.  Today the
+answer costs one relaxed atomic load.  Putting the lifecycle state
+behind the queue's mutex would make every such caller contend with
+`apply_master_approval` and `start()` to read one word.
+
+**What is a state and what is not.**  Two facts that were stored as
+loose bools ARE states and fold in; a third is not and stays out.
+
+| Fact | Status | Reason |
+|---|---|---|
+| "the socket is up and the worker runs" | **the Active state** | it is a position on the line, nothing more |
+| "Configured, but the connect is deliberately deferred" (fan-in dialing PUSH awaiting §6.6.3 readiness) | **the `DialDeferred` state**, between Configured and Active | entered *instead of* calling `start()`; left by the deferred `start()` that `finalize_connect` performs |
+| "the runtime-resolved slot format is not installed yet" | **NOT a state — a precondition** | it answers a question about the DATA FORMAT, a different axis from the socket lifecycle.  It gates exactly one edge: `Standby → Configured` is refused while it holds (HEP-CORE-0034 §10.3a) |
+
+The test that separates them is reachability.  The two states are
+mutually exclusive positions on one line — a queue can never be both
+"deferring its dial" and "running".  The precondition coexists with the
+Standby end of that line and is excluded only from the far end, which is
+what a gate looks like and not what a state looks like.  Folding the
+format fact into the connection state would put two independent axes in
+one variable, which is the same error this amendment exists to correct,
+one level up.
+
+**The script-facing end of this contract already exists and is correct.**
+"Script-side state query" below requires `api.is_channel_ready(channel)`
+to return true iff the queue is Active, across Lua, Python and Native.
+That accessor resolves through `is_tx_active()` / `is_rx_active()` to the
+queue's `is_running()` — a real flag, not an inference — so it is one of
+the few things on this surface that already answers from state.
+
+Two consequences.  It is the shape the rest should match: a question with
+one owner and a typed answer.  And it is a constraint on the work — the
+state introduced here MUST keep `is_channel_ready` answering the same
+question with the same meaning, in all three engines.  It is a normative
+three-engine MUST with live script consumers; folding `running_` into a
+state enum must not disturb it.
+
+**Why the old shape was wrong, recorded so it is not reintroduced.**
+`is_configured()` answered "have I reached Configured" with
+`!endpoint.empty()` on the binding side.  A binding queue receives its
+endpoint from configuration at construction, so it reported Configured
+while still in Standby, before `apply_master_approval` had run.  The
+predicate was not answering its own question; it was answering "do I
+have a string to bind to", and the two coincide on the dialing side by
+accident.  No test caught it: of five assertions on that predicate, four
+exercised the dialing side and the fifth was short-circuited by the
+schema precondition before reaching the branch it appeared to test.
+
+#### 6.7.2 A bind request and a bound address are different things
+
+> **Implementation status.**  The type distinction is in place:
+> `BoundAddress` in `src/include/utils/net_address.hpp` has no default
+> constructor and no mutators, so the only way to hold one is to parse a
+> resolved endpoint, and parsing rejects port 0.  `bound_address()` on
+> the queue types answers `std::nullopt` rather than falling back, and
+> `BrokerRequestComm::send_endpoint_update` takes a `BoundAddress`, so
+> the publish site cannot be handed a bind request.
+>
+> One obligation below is NOT met: the binding **producer** never
+> publishes.  `send_endpoint_update` has exactly one caller and it is on
+> the consumer path (`src/utils/service/role_api_base.cpp:2119`), so a
+> fan-out or one-to-one producer configured with an ephemeral port
+> leaves the broker holding its unresolved request.  The protocol for
+> that publish is HEP-CORE-0021 §16.6 and is already adopted; the gap is
+> in the code, and §16.6 carries its own note naming it.
+
+**In plain terms.**  A TCP endpoint is a string, and the same string can
+mean two different things.  Before a socket binds, `tcp://host:0` means
+"put me anywhere free" — a request.  After it binds, `tcp://host:51234`
+means "this is where I am" — an address.  Only the second can be given to
+a peer, because nothing can connect to port zero.  The system used to
+carry both meanings in one `std::string`, and the confusion is not
+theoretical: a role would publish its request as though it were its
+address, the broker would store it, and the peers that dialled it would
+never arrive.
+
+The two roles, side by side:
+
+| | Bind request | Bound address |
+|---|---|---|
+| Meaning | "bind me here" | "peers reach me here" |
+| Port `0` | **legal** — asks the OS for any free port | **impossible** — nothing can connect to port 0 |
+| Known at | configuration time | only after `zmq_bind()` resolves it |
+| May travel on the wire to a peer | **NO** | yes — this is the only publishable form |
+
+**Normative:** WHERE PRESENT, an endpoint published to another role —
+`REG_REQ`'s `zmq_node_endpoint`, `CONSUMER_REG_ACK.producers[].endpoint`,
+`initial_allowlist[].endpoint`, `inbox_endpoint`, and any
+`ENDPOINT_UPDATE` payload — SHALL be a bound address.  A bind request
+SHALL NOT be published.
+
+"Where present" is load-bearing: an `IdentityOnly` peer row carries no
+`endpoint` field at all (§6.2), and that absence is correct — a binding
+side does not dial, so it is owed no address.  This rule governs the
+value when a field is emitted, not whether it must be.
+
+This is a TYPE distinction, not a validation rule, and the difference
+matters.  A validator is a check somebody has to remember to call, and
+the record shows that does not hold: the one site that publishes a
+consumer's bound endpoint channel-wide guards it with a test that cannot
+fail (`if (!ep.empty())`, against an accessor that falls back to a
+non-empty configured string).  When the two roles are distinct types, a
+publishing function cannot be handed an unresolved endpoint, and no
+caller has to remember anything.
+
+`validate_tcp_endpoint` keeps its existing job unchanged — it validates
+**bind requests**, and it MUST keep accepting port 0, because a
+configured `:0` is legitimate and the inbox default relies on it.  What
+was missing was never a stricter validator; it was the second role
+having no representation of its own.
+
+**Consequence — the binding side must republish, and the protocol for
+that already exists.**  A binding side registers BEFORE it binds: the
+acknowledgement handler, and therefore `start()`, and therefore the bind,
+all run on the REG_**ACK**.  Its registration can only carry a bind
+request.  The bound address becomes knowable one step later, and it is
+published then.
+
+The wire and the sequence for that republish are **HEP-CORE-0021 §16**'s,
+not this section's.  §16.6 specifies the bind → resolve → publish
+sequence, §16.5 the `ENDPOINT_UPDATE_REQ` wire, §16.8 the rules for
+changing an address mid-life, and §16.7 the readiness gate that holds a
+dialing peer back until the address is resolved.  §16 is written in terms
+of "the producer" for historical reasons and carries an amendment
+instructing that every such reference be read as **the binding side of
+the channel's topology** — so it already governs the binding consumer and
+the binding producer alike.  This section adds one thing to it: the
+*type* rule above, which is what makes the obligation impossible to
+forget rather than merely written down.
+
+The gap is in the code, not in the design.  `send_endpoint_update` has a
+single caller, on the consumer path (`role_api_base.cpp:2119`), so a
+one-to-one or fan-out producer configured with an ephemeral port
+publishes a request, the broker stores it, consumers receive it as a dial
+target, and nothing corrects it.  The obligation belongs to whichever
+role binds, not to the role that happens to be a consumer.
+
+**Accessor contract.**  An accessor returning a bound address SHALL be
+able to say "not yet".  Returning the configured bind request as a
+fallback is prohibited: it hands the caller a plausible-looking string
+that is not an address and cannot be distinguished from one.
+`AdminService::bound_endpoint()`, which is empty until bound, is the
+existing correct example; the queue accessors that fall back are the
+ones this contract changes.
+
+**Worked example — the same channel, configured two ways.**  Both roles
+below declare `tcp://127.0.0.1:0`.  What differs is which of them binds,
+and therefore which one owes the channel an address.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Consumer
+    participant B as Broker
+    participant P as Producer
+
+    rect rgb(238, 245, 255)
+    Note over C,P: fan-in — the CONSUMER binds
+    C->>B: CONSUMER_REG_REQ (bind request "tcp://127.0.0.1:0")
+    B-->>C: CONSUMER_REG_ACK
+    C->>C: bind → OS assigns 51234
+    C->>B: ENDPOINT_UPDATE_REQ (bound address ":51234")
+    B-->>C: ACK
+    P->>B: REG_REQ (no endpoint — a dialing side owes none)
+    B-->>P: REG_ACK (dial target ":51234")
+    P->>C: connect, once the peer confirms readiness (§6.6.3)
+    end
+
+    rect rgb(255, 245, 238)
+    Note over C,P: one-to-one — the PRODUCER binds
+    P->>B: REG_REQ (bind request "tcp://127.0.0.1:0")
+    B-->>P: REG_ACK
+    P->>P: bind → OS assigns 51235
+    P->>B: ENDPOINT_UPDATE_REQ (bound address ":51235")
+    B-->>P: ACK
+    C->>B: CONSUMER_REG_REQ
+    B-->>C: CONSUMER_REG_ACK (dial target ":51235")
+    C->>P: connect
+    end
 ```
 
-**Mutators by state** (normative — Option B contract, §3.5.4 INV3
-alignment; updated 2026-06-12).  `apply_master_approval` is the
-SINGLE mutator that drives `Standby → Configured`.  Bare `set_*`
-calls in Standby only stash arguments — they never transition the
-queue.  This makes `apply_*_reg_ack` the authoritative S3 trigger
-and eliminates the race "did a notify-driven mutator transition the
-queue before the role's own REG_ACK arrived?".
+Step 4 of the first block is the one the code performs today.  Step 4 of
+the second block is the one it omits — and the omission is silent,
+because the value the broker stored in step 1 looks like an address.  A
+consumer then dials port 0 and never arrives.
 
-| Mutator | Uninitialized | Standby | Configured | Active |
-|---|---|---|---|---|
-| `set_peer_allowlist(list)` (push side) | refuse | buffer (stash args; queue stays Standby — applied at Standby → Configured) | apply (snapshot replace) | apply atomically (live ZAP cache update) |
-| `set_producer_peers(list)` (pull side) | refuse | buffer (stash args; queue stays Standby) | apply (snapshot replace) | apply (atomic diff: connect new, disconnect removed) |
-| `set_shm_secret(uint64)` (SHM rx) ⚠ **SUPERSEDED** | refuse | buffer (stash args; queue stays Standby) | apply (replaces previous) | refuse (`shm_secret` is per-channel-lifetime; restart needed; hub-dead recovery rebuilds via §6.8.8).  ⚠ Whole row is SUPERSEDED by HEP-CORE-0041 — the mutator + the field are retired (substep 1g #254 + 1h #255); SHM attach now flows through the capability-transport handshake described in HEP-0041 §5.5 + §9 D4.  No queue-side mutator equivalent exists. |
-| `apply_master_approval(json)` (polymorphic on `QueueReader`/`QueueWriter`) | refuse | **apply — drives `Standby → Configured` AND `Configured → Active`** (dispatches per transport: PUSH side seeds allowlist + binds + arms ZAP + spawns push worker; PULL side seeds producer set + connects + spawns pull worker; SHM side attaches segment + starts reader/writer) | apply (completes the Standby → Configured → Active arc that this call initiated; or no-op if the queue is already Active — production callers see only Active after `apply_master_approval` returns) | apply (runtime mutation, atomic) |
-| `add_producer_peer(p)` (pull side) | refuse | buffer (merge into buffered set) | apply (append) | apply (append + connect) |
-| `remove_producer_peer(uid)` | refuse | buffer (remove from buffered set; no-op if absent) | apply | apply (disconnect + remove) |
-| `start()` | refuse | refuse (no `apply_master_approval` yet — Standby has no artifacts applied) | refuse (artifacts applied but `apply_master_approval` not invoked — defensive; production code never reaches this) | no-op (idempotent: returns true) |
-| `stop()` | no-op | no-op | no-op (running_ never went true; nothing to undo) | apply (Active → Uninitialized via teardown — terminal, sockets reset) |
-| destructor | no-op | safe | safe | safe (calls stop() internally) |
-
-**`start()` is no longer a public entry point.**  Under Option B
-the role host calls `apply_master_approval(reg_ack_body)` only;
-that polymorphic mutator drives the full `Standby → Active`
-arc internally.  Direct `start()` is preserved as a private
-implementation detail of `apply_master_approval` (and as a no-op
-on Active queues for idempotency).  Tests that constructed
-queues directly and called `start()` must migrate to
-`apply_master_approval(stub_ack)`.
+The type rule closes this by construction: in the second block the value
+sent at step 1 and the value sent at step 4 stop being the same type, so
+the field that carries a dial target to a peer cannot be fed the
+configured string at all.
 
 **The `Standby → Configured` transition is where §I12 is enforced
 — and `apply_master_approval` is the only mutator that drives
@@ -4684,7 +5032,7 @@ without the SHM segment attached: the factory allocates the queue
 handle (with schema metadata + name + role identity stored
 internally), but defers the actual SHM discovery (`shm_open` +
 DataBlock attach) until `apply_master_approval(ACK)` runs at S3.
-Under Option B (chosen 2026-06-12) the role host drives the
+The role host drives the
 Standby → Active arc via the single polymorphic mutator: the SHM
 specialization extracts `ACK.shm_secret`, attaches the segment
 with the HEP-CORE-0002 guard-secret check, spawns the
@@ -4692,7 +5040,7 @@ reader/writer thread, and transitions the queue.  This is
 structurally symmetric with the ZMQ PULL side (which extracts
 `ACK.producers[]`) and ZMQ PUSH side (which extracts
 `ACK.initial_allowlist` and binds).  Bare `set_shm_secret(secret)`
-calls on a Standby queue BUFFER the secret (Option B; §3.5.4 INV3)
+calls on a Standby queue BUFFER the secret (§3.5.4 INV3)
 — they never transition the queue.
 
 `ShmQueue::create_reader(name, ack_or_secret_struct, schema, ...)`
@@ -4740,7 +5088,7 @@ host has both at S1 from config, but defers binding to S3).  This
 removes the pre-REG bind that §3.5.1 prohibits.
 
 **Mutator arrival during Standby — buffer semantics** (normative
-— §3.5.4 INV3; Option B contract chosen 2026-06-12).  Between S2
+— §3.5.4 INV3).  Between S2
 (REG_REQ accept) and S3 (`apply_master_approval` invoked with the
 REG_ACK body), the role's BRC ctrl thread can receive
 `CHANNEL_AUTH_CHANGED_NOTIFY` updates fired by the broker in
@@ -4751,8 +5099,7 @@ Standby.
 
 The Standby queue stashes the args; the queue stays Standby; the
 PUSH socket stays unbound; no thread spawns.  No socket activity
-happens until `apply_master_approval` runs.  This is Option B
-(chosen 2026-06-12): `apply_master_approval` is the SINGLE driver
+happens until `apply_master_approval` runs: it is the SINGLE driver
 of `Standby → Configured → Active`.
 
 When `apply_master_approval(reg_ack_body)` is invoked at S3 it
@@ -4889,8 +5236,8 @@ state — no separate data-plane state machine applies (§9.4).
 **Role-host integration pattern — uniform across transports + sides**
 (normative).  The role host MUST follow the same sequence regardless
 of `data_transport` AND regardless of producer/consumer side (§3.5.1
-symmetry).  Under Option B `apply_master_approval` is the single
-mutator that drives `Standby → Active`:
+symmetry).  `apply_master_approval` is the single mutator that drives
+`Standby → Active`:
 
 ```
 # Consumer (rx) side:
@@ -4909,18 +5256,23 @@ queue->apply_master_approval(ack)                 // polymorphic → Configured 
 The polymorphic `apply_master_approval(ack)` dispatches:
 - `ZmqQueue` (PULL side): extracts `ack["producers"]` → seeds peers + connects + spawns PULL worker.
 - `ZmqQueue` (PUSH side): extracts `ack["initial_allowlist"]` → seeds allowlist + binds PUSH + arms ZAP + spawns PUSH worker.
-- `ShmQueue` (rx): extracts `ack["shm_secret"]` → attaches segment + spawns reader.
-- `ShmQueue` (tx): extracts `ack["shm_secret"]` (broker-generated; future AUTH-4).
+- `ShmQueue` (either side): **no-op.**  ⚠ The two `shm_secret` bullets
+  that stood here are SUPERSEDED — consistent now with the `set_shm_secret`
+  row of the mutator table above, which this block contradicted.  SHM
+  peers arrive through the capability-fd handshake (HEP-CORE-0041 §5.5),
+  not through this surface.
 
 The role host does NOT branch on transport — it sees a single
 `QueueReader*` (or `QueueWriter*`) and invokes the three-step
 sequence (build → register → apply_master_approval).  Transport- and
 side-specific knowledge stays inside the concrete queue
-implementations.  Runtime updates (CHANNEL_AUTH_CHANGED_NOTIFY or
-§6.5.1 CHANNEL_PRODUCERS_CHANGED_NOTIFY) reuse the queue's bare
-mutator entry points (`set_peer_allowlist` / `set_producer_peers`)
-on the Active queue, which apply atomically per the §6.7 mutator
-table "Active" column.
+implementations.
+
+Runtime membership updates reach the BINDING side via
+`CHANNEL_AUTH_CHANGED_NOTIFY` → `GET_CHANNEL_AUTH_REQ` → whole-set
+install (§6.5), applying per the mutator table's "Active" column.
+(This paragraph also named `CHANNEL_PRODUCERS_CHANGED_NOTIFY`, a wire
+message that exists nowhere in the tree; removed 2026-08-11.)
 
 ### 6.8 Scenarios catalog (normative)
 
@@ -5474,9 +5826,9 @@ wire shape — single uniform code path.
 Per I9 (three-tier separation), the script never sees individual
 PULL sockets or per-producer endpoints — only `api.rx.acquire()`
 returning slots fair-queued across all producers in the queue's
-current peer set.  Dynamic membership: framework calls
-`queue.add_producer_peer(p)` / `queue.remove_producer_peer(uid)`
-in response to channel-event broadcasts (HEP-CORE-0033 §12).
+current peer set.  Membership changes reach the binding side as a
+complete replacement set via the §6.5 notify-then-pull cycle; there is
+no per-peer mutator on the queue.
 
 **Existing code status**: `ChannelEntry::add_producer`
 (hub_state.hpp:459) already accepts 1..N producers for ZMQ; only
@@ -6119,7 +6471,11 @@ Updated in lock-step with HEP-0036 across two commits:
   `zmq_node_endpoint` for ZMQ transport), and
   `ZmqQueue::add_producer_peer` / `remove_producer_peer` public
   methods.  Pattern-neutral on bind/connect direction (queue-
-  internal choice).  Cross-references HEP-0036 §6.4 (`producers[]`
+  internal choice).  **Both the two methods and the pattern-neutrality
+  are since superseded** — the singular-side migration fixed the
+  bind/connect direction per topology (HEP-0017 §3.3.0) and the methods
+  were deleted 2026-08-11 as unreachable under it.  This entry records
+  what that commit did, not what is true now.  Cross-references HEP-0036 §6.4 (`producers[]`
   array) and §3 I9 (three-tier separation).
 - **§4.6.1 Dynamic membership under HEP-CORE-0036** (commit
   `0ade2394`) — new subsection documenting the broker → framework
@@ -6127,6 +6483,8 @@ Updated in lock-step with HEP-0036 across two commits:
   (HEP-CORE-0033 §12, no new wire messages); framework calls
   `queue.add_producer_peer` / `remove_producer_peer`; ZmqQueue
   handles transport ops; script sees only the queue read API.
+  **Superseded** — see the note on the §3.3 entry above; the flow is
+  now notify → pull → whole-set install.
 - **§3.2 ZMQ-specific note (consumer)** (commit `2b20e7fb`,
   2026-05-28 — sibling-sync) — clarified endpoint discovery is via
   `CONSUMER_REG_ACK.producers[]` (HEP-0036 §6.4), NOT `DISC_ACK`

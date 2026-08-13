@@ -637,18 +637,23 @@ struct RxQueueOptions
 class ZmqQueue : public QueueReader, public QueueWriter
 {
 public:
-    // Add a producer peer to the PULL side.  ZmqQueue internally
-    // performs the corresponding socket operation (current
-    // implementation: socket.connect(peer.endpoint); see §4.6 for the
-    // bind/connect direction discussion — choice is internal).
-    void add_producer_peer(const ProducerPeer& peer);
-
-    // Remove a producer peer.  Does NOT close any data already
-    // received; only affects future connections (consistent with
-    // HEP-CORE-0036 I5: revocation is forward-looking).
-    void remove_producer_peer(const std::string& role_uid);
+    // Replace the READ side's peer set.  Whole-set replacement is the
+    // only shape offered, because it is the only shape the broker sends.
+    // What the set MEANS depends on which side of the channel this queue
+    // is: on a BINDING read side (fan-in consumer) it is the admitted
+    // producer set and the source of this queue's ZAP allowlist; on a
+    // DIALING read side it is the single dial target.
+    bool set_producer_peers(std::vector<ProducerPeer> list);
 };
 ```
+
+**There is no per-peer add or remove.**  Methods for that existed until
+2026-08-11 and were never called.  Under the singular-side topology model
+(§3.3.0) no dialing side has more than one peer — a fan-in consumer BINDS,
+and one-to-one and fan-out are single-producer by cardinality — so the only
+membership that changes over a channel's life is the binding side's, and it
+changes by replacement.  An incremental edit would be a second route to a
+state the replacement already reaches, and the two could disagree.
 
 **Framework integration** (staged per HEP-CORE-0036 §3.5 +
 §6.7 "Role-host integration pattern").  Both directions follow the
@@ -675,13 +680,16 @@ same shape — build in Standby, ask the broker, activate inside
   and transitions the queue Standby → Configured → Active.  The
   queue does **NOT** call `connect()` or spawn any worker until
   `apply_master_approval` runs.
-- **Runtime add/remove (post-S3, queue Active)**: on a "producer
-  joined channel X" broadcast (HEP-CORE-0033 §12 channel event),
-  the role-host framework looks up the queue for X and calls
-  `queue.add_producer_peer(new_producer)`.  On a "producer left
-  channel X" broadcast, the framework calls
-  `queue.remove_producer_peer(role_uid)`.  These operations apply
-  to an already-Active queue; see §4.6.1 for the full runtime flow.
+- **Runtime membership change (post-S3, queue Active)**: this reaches
+  the BINDING side, which is the only side whose peer set changes.
+  The broker admits or revokes, bumps the channel's admission version,
+  and rings `CHANNEL_AUTH_CHANGED_NOTIFY`; the role pulls the new set
+  with `GET_CHANNEL_AUTH_REQ` and installs it whole via
+  `set_peer_allowlist`, then reports back with
+  `CHANNEL_AUTH_APPLIED_REQ` so the broker knows which version this
+  role is enforcing (HEP-CORE-0036 §6.5).
+  A DIALING side needs nothing here: its one peer is the binding side,
+  fixed for the channel's lifetime and delivered on its REG_ACK.
 
 #### Producer side (PUSH / tx queue) — symmetric
 
@@ -732,17 +740,17 @@ that hides the auth machinery.  Two asymmetries are worth calling
 out so readers don't try to apply one side's runtime API to the
 other:
 
-- **PULL side has per-peer add/remove**:
-  `queue.add_producer_peer(...)` and `queue.remove_producer_peer(...)`
-  let the role-host framework register a new producer or evict a
-  departed one without resetting the rest of the peer set.  Used by
-  the runtime CHANNEL_NOTIFY broadcast path (§4.6.1).
-- **PUSH side is allowlist-only, snapshot-replace**: no per-peer
-  add/remove on the PUSH side.  Allowlist refreshes are always full
-  snapshot replacements via `set_peer_allowlist`.  Rationale: the
-  producer-side ZAP handler enforces a flat pubkey set, not
-  per-connection state — there's nothing to "add" beyond writing a
-  new snapshot.  See HEP-CORE-0036 §6.5 design rationale.
+- **Both sides are snapshot-replace.**  This used to be an asymmetry —
+  the PULL side offered per-peer `add_producer_peer` /
+  `remove_producer_peer` while the PUSH side was replace-only.  The
+  singular-side migration removed the reason for it and the methods
+  went with it (2026-08-11): every membership update the broker sends
+  is a complete set, so both sides apply it the same way, via
+  `set_producer_peers` on the read side and `set_peer_allowlist` on the
+  enforcing side.  Rationale for replace-only, which now covers both:
+  the ZAP handler enforces a flat pubkey set rather than per-connection
+  state, so there is nothing to "add" beyond writing a new snapshot.
+  See HEP-CORE-0036 §6.5.
 - **Two caches, one per script-observable + one per ZAP**: the
   PUSH-side `set_peer_allowlist` write feeds the local ZAP cache
   (transport-specific enforcement); the SAME wire event also writes
@@ -765,18 +773,21 @@ connected PULL consumers on the PUSH side.
 
 **Pattern-neutrality**: HEP-CORE-0017 does NOT specify whether
 ZmqQueue uses Pattern A (PULL binds, peers' PUSH connect to it) or
-Pattern B (PULL connects to each peer's bound PUSH endpoint).  Both
-are valid implementations of the multi-producer surface; the
-choice is internal to ZmqQueue.  The current code uses Pattern B
-(consumer's PULL connects per producer endpoint); future
-implementations may switch to Pattern A for simpler dynamic-membership
-semantics without changing this interface.
+Pattern B (PULL connects to each peer's bound PUSH endpoint).
+
+**This neutrality no longer holds, and §3.3.0 is why.**  The binding
+matrix fixes the direction per topology, so the choice is not internal
+to ZmqQueue and not free: fan-in is Pattern A (consumer PULL binds,
+producers PUSH connect), while one-to-one and fan-out have the producer
+bind and the consumer dial.  A reader arriving here should take §3.3.0
+as authoritative and treat this paragraph as the question it settled.
 
 **ShmQueue parallel**: for SHM transport `producer_peers.size() ≤ 1`
 (SHM is physically single-producer per HEP-CORE-0007 §12.4a
-`MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`).  `add_producer_peer` /
-`remove_producer_peer` on a ShmQueue are no-ops post-attach;
-ShmQueue lifecycle is bound to the single DataBlock attach.
+`MULTI_PRODUCER_NOT_SUPPORTED_FOR_SHM`).  ShmQueue's
+`apply_master_approval` is a no-op — SHM peers arrive through the
+capability-fd handshake (HEP-CORE-0041 §5.5), not this surface — and
+its lifecycle is bound to the single DataBlock attach.
 
 > **SHM auth attaches via a different mechanism — not via this surface.**
 > Both transports share the same control-plane registration + NOTIFY

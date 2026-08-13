@@ -221,4 +221,26 @@ std::set<RosterEntry> PeerAuthority::local_role_roster() const
     return out;
 }
 
+std::string PeerAuthority::local_uid_for_key(std::string_view pubkey_z85) const
+{
+    // Same map, same kind test as `attribute_sender`, without the
+    // attestation: the caller here is not asking who is on the other end of
+    // a connection, it is naming a key the hub itself already admitted.
+    // Reusing the kind test matters — a federation peer key must not be
+    // written down as if it were a local role.
+    // `try_validate` rather than `validate`: a key that is not well-formed
+    // Z85 simply is not in the table, and that is an answer, not an error
+    // worth an exception.  There is deliberately no string-taking
+    // constructor to reach past this check with.
+    const auto key = Z85PublicKey::try_validate(pubkey_z85);
+    if (!key.has_value())
+        return {};
+    const auto it = by_pubkey_.find(*key);
+    if (it == by_pubkey_.end())
+        return {};
+    if (it->second.kind != PubkeyOrigin::Kind::LocalRole)
+        return {};
+    return it->second.subject_uid;
+}
+
 } // namespace pylabhub::utils::security

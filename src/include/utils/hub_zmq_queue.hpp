@@ -306,7 +306,7 @@ class PYLABHUB_UTILS_EXPORT ZmqQueue final : public QueueReader,
     /// topology):
     /// - Fan-in consumer (BINDING): `endpoint` is a bind hint (may be
     ///   `tcp://host:0` for ephemeral port; queue publishes resolved
-    ///   port via `actual_endpoint()` for ENDPOINT_UPDATE_REQ).
+    ///   port via `bound_address()` for ENDPOINT_UPDATE_REQ).
     /// - Fan-out / one-to-one consumer (DIALING): `endpoint` is the
     ///   binding-side's resolved endpoint (carried on
     ///   `CONSUMER_REG_ACK.data_endpoint`).
@@ -416,63 +416,65 @@ class PYLABHUB_UTILS_EXPORT ZmqQueue final : public QueueReader,
     [[nodiscard]] bool
     is_peer_allowed(const pylabhub::utils::security::PeerIdentity &peer) const override;
 
-    // ── Dynamic producer-peer membership (HEP-CORE-0017 §3.3, #103 A2) ──────────
+    // ── Producer peer set (HEP-CORE-0017 §3.3 + HEP-CORE-0036 §6.4) ─────────────
     //
-    // PULL/connect side: tracks the set of producers the consumer is
-    // currently authorized to receive from.  Driven by the role-host
-    // framework in response to HEP-CORE-0033 §12 channel-event
-    // broadcasts (producer joined / left) and by the post-§6.5 notify-
-    // then-pull cycle.  Single-producer connect endpoint flows through
-    // either `pull_from()`'s `endpoint` parameter (legacy: peer known
-    // at construction) or via `set_producer_peers()` (Standby state;
-    // peer arrives via CONSUMER_REG_ACK or §6.5.1 pull).  Multi-producer
-    // fan-in (Pattern A vs Pattern B socket layout) is HEP-CORE-0017
-    // §3.3 future work.
+    // READ side: the peers named on `CONSUMER_REG_ACK.producers[]`.
+    // What the queue DOES with them follows from which side of the
+    // channel it is, and the two uses are genuinely different:
     //
-    // PUSH/bind side: inert.  The producer doesn't "add peers"; consumer
-    // admission is handled via the broker-pushed allowlist
-    // (`set_peer_allowlist`) + the producer's ZAP handler installed at
-    // bind time.  Calling these on a PUSH-side queue returns false +
-    // logs once at INFO.
+    //   BINDING read side (fan-in consumer, PULL bind) — the set of
+    //     admitted producers, and the SOURCE of this queue's ZAP
+    //     allowlist.  It legitimately holds N entries and grows and
+    //     shrinks as the broker admits and revokes.  This side never
+    //     dials anyone; the producers dial in.
+    //
+    //   DIALING read side (one-to-one / fan-out consumer) — the dial
+    //     target, and there is exactly ONE for the channel's lifetime:
+    //     the binding side.  Both topologies are single-producer by
+    //     cardinality, and fan-out SUB is additionally refused N>1.
+    //
+    // WRITE side: inert.  A producer does not track peers — consumer
+    // admission is the broker-pushed allowlist (`set_peer_allowlist`)
+    // plus the ZAP handler installed at bind time.  A fan-in producer
+    // DIALS, but its one target arrives as transport artifacts
+    // (`server_pubkey_z85_` + `endpoint`) promoted from the REG_ACK
+    // row, not as a peer set.
+    //
+    // There is deliberately no incremental add-one / remove-one here.
+    // The broker sends whole sets and every update replaces the
+    // previous one, so a per-peer edit would be a second way to reach
+    // a state the replacement already reaches — and the two could
+    // disagree.  Methods for that existed until 2026-08-11; nothing
+    // ever called them, because under the singular-side topology the
+    // only membership that changes is the binding side's, and it
+    // changes by replacement.
 
-    /// Snapshot-replace this queue's producer peer set.
+    /// Replace this queue's producer peer set.
     ///
-    /// On Standby this call BUFFERS args only: it records the peer
-    /// list (and on PULL side populates `server_pubkey_z85_` /
-    /// connect endpoint from `list[0]` as a single-peer Stage 1A
-    /// staging step).  It does NOT drive the Standby → Configured
-    /// transition on its own — per HEP-CORE-0036 §6.7 Option B the
+    /// Whole-set replacement, which is the only shape the broker sends.
+    /// On Standby this BUFFERS: it records the list and returns without
+    /// promoting anything into the transport-artifact fields, so
+    /// `is_configured()` stays false and `start()` stays refused.  The
     /// single Standby → Configured → Active driver is
-    /// `apply_master_approval(CONSUMER_REG_ACK)`, which merges any
-    /// buffered set_* args with the REG_ACK fields.  Multi-producer
-    /// fan-in is deferred to HEP-CORE-0017 §3.3.  Behavior fix
-    /// (refusing to transition on bare set_*) lands under task #103.
+    /// `apply_master_approval(CONSUMER_REG_ACK)` (HEP-CORE-0036 §6.7
+    /// Option B), which is also this method's only production caller.
     ///
-    /// On PULL/connect side, if the queue is Active (`start()` returned
-    /// true), the call updates the tracked peer set but does NOT touch
-    /// the live socket — peer swap on a running socket requires
-    /// teardown + rebuild per HEP-CORE-0036 §6.7 ("stop() is terminal"
-    /// + I12).  Returns true (the metadata snapshot is replaced).
+    /// On an Active queue the call replaces the recorded set but does
+    /// NOT touch the live socket — a peer swap on a running socket
+    /// requires teardown + rebuild per §6.7 ("stop() is terminal") and
+    /// §I12.  On the DIALING read side this is not a limitation: that
+    /// side's single peer cannot change while the channel lives.
     ///
-    /// On PUSH/bind side: inert — returns false + logs once at INFO.
-    ///
-    /// Returns true on successful snapshot replace; false on PUSH side
-    /// or null impl.
+    /// Inert on the WRITE side — returns false + logs at INFO.
     bool set_producer_peers(std::vector<ProducerPeer> list);
 
-    /// Append a producer to this queue's peer set.  Idempotent on
-    /// `role_uid` collision (existing entry overwritten in place).
-    /// Returns true on success; false on PUSH side or null impl.
-    bool add_producer_peer(const ProducerPeer &peer);
-
-    /// Remove a producer from this queue's peer set by `role_uid`.
-    /// Returns true if a peer was removed; false otherwise (not found
-    /// or PUSH side).  Per HEP-CORE-0036 I5 "revocation is forward-
-    /// looking": frames already received are not discarded.
-    bool remove_producer_peer(const std::string &role_uid);
-
-    /// Number of producer peers currently tracked.  Returns 0 on PUSH
-    /// side or null impl.  Diagnostic + test observability.
+    /// How many producer peers this queue currently records.  0 on the
+    /// WRITE side or a null impl.
+    ///
+    /// Observation only, and the queue's own answer rather than a
+    /// second copy for callers to keep in sync — the project's
+    /// no-mocks rule (README_testing §1.3) is why a read-only accessor
+    /// exists here for tests to assert against.
     [[nodiscard]] std::size_t producer_peer_count() const noexcept;
 
     /// HEP-CORE-0036 §6.7 polymorphic Standby → Configured mutator
@@ -481,12 +483,18 @@ class PYLABHUB_UTILS_EXPORT ZmqQueue final : public QueueReader,
     ///   - PULL side: reads `artifacts["producers"]` array of
     ///     `{role_uid, endpoint, pubkey_z85}` objects and calls
     ///     `set_producer_peers(...)`.
-    ///   - PUSH side: reads `artifacts["allowlist"]` per HEP-0036 §I11
-    ///     and calls `set_peer_allowlist(...)`.
+    ///   - PUSH side: reads `artifacts["initial_allowlist"]` — REG_ACK's
+    ///     field name per HEP-0036 §6.2, NOT `allowlist`, which is the
+    ///     runtime-refresh field on GET_CHANNEL_AUTH_ACK (§6.5) — and
+    ///     calls `set_peer_allowlist(...)`.
+    /// Rows go through `wire::parse_peer_list`, the one reader of a peer
+    /// list; this side supplies `PeerDetail::WithEndpoint` when it is
+    /// going to dial and `IdentityOnly` when it binds.
     /// Missing field is treated as "broker did not deliver new
-    /// artifacts" — queue state unchanged, returns true.  Malformed
-    /// JSON (array entry missing a required field) returns false
-    /// with a logged reason; queue state is unchanged.
+    /// artifacts" — queue state unchanged, returns true.  A malformed
+    /// field returns false with a logged reason and leaves queue state
+    /// unchanged: the list REPLACES what the queue enforces, so the
+    /// readable part of a bad message is not installed.
     ///
     /// Schema-pending refusal (HEP-CORE-0034 §10.3a): on a reader
     /// built with an empty schema, refuses the Standby → Configured
@@ -625,15 +633,19 @@ class PYLABHUB_UTILS_EXPORT ZmqQueue final : public QueueReader,
     std::string name() const override;
 
     /**
-     * @brief Returns the actual bound endpoint after start().
+     * @brief Where peers can actually reach this queue, once it binds.
      *
-     * When the configured endpoint uses port 0 (OS-assigned), returns the
-     * resolved endpoint (e.g. "tcp://127.0.0.1:54321") after start().
-     * For connect-mode sockets, returns the configured endpoint.
-     * Before start(), returns the configured endpoint string.
-     * Useful for tests and callers that bind to port 0 and need the peer address.
+     * Returns the OS-resolved endpoint (e.g. `tcp://127.0.0.1:54321`)
+     * after a successful bind — the value a dialing peer needs.
+     *
+     * Returns `std::nullopt` when there is no such address to give:
+     * this queue dials rather than binds, or it has not bound yet.
+     * It deliberately does NOT fall back to the configured endpoint;
+     * see the base declaration in `hub_queue.hpp` and
+     * HEP-CORE-0036 §6.7.2 for why that fallback was a defect rather
+     * than a convenience.
      */
-    [[nodiscard]] std::string actual_endpoint() const override;
+    [[nodiscard]] std::optional<::pylabhub::BoundAddress> bound_address() const override;
 
     /// HEP-CORE-0017 §3.3.0 — true iff this queue was constructed
     /// for a binding-side (topology, transport) cell (PULL bind for

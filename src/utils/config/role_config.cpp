@@ -130,8 +130,6 @@ static const std::unordered_set<std::string> kAllowedKeys = {
     "out_transport",
     "in_zmq_endpoint",
     "out_zmq_endpoint",
-    "in_zmq_bind",
-    "out_zmq_bind",
     "in_zmq_buffer_depth",
     "out_zmq_buffer_depth",
     "in_zmq_overflow_policy",
@@ -208,6 +206,26 @@ static void reject_retired_keys(const nlohmann::json &j, const char *tag)
          "remove the field; a full inbox always drops, and the loss is "
          "reported to the receiving handler as `msg.gap`.  Use "
          "'inbox_buffer_depth' to size the bound"},
+        // HEP-CORE-0017 §3.3.0 — `*_zmq_bind` retired.  Under the
+        // singular-side topology model, which side binds is a
+        // consequence of the channel topology, not an independent
+        // operator choice: fan-in binds the consumer, fan-out and
+        // one-to-one bind the producer.  The field could not be
+        // honoured even in principle — a config asking a fan-in
+        // producer to bind describes a channel with two binders and
+        // no dialer.  It was already inert: parsed and carried into
+        // the queue options, then read by nothing, because
+        // `build_tx_queue` takes the direction from
+        // `writer_is_binding_side(topology)`.  An operator who set it
+        // got silence, which is the worst of the three outcomes.
+        {"in_zmq_bind", "HEP-CORE-0017 §3.3.0 (singular-side topology model)",
+         "remove the field; the reader's bind/dial direction follows "
+         "'in_channel_topology' (fan-in → consumer binds; fan-out and "
+         "one-to-one → consumer dials)"},
+        {"out_zmq_bind", "HEP-CORE-0017 §3.3.0 (singular-side topology model)",
+         "remove the field; the writer's bind/dial direction follows "
+         "'out_channel_topology' (fan-out and one-to-one → producer "
+         "binds; fan-in → producer dials)"},
     };
 
     for (const auto &rk : kRetiredKeys)

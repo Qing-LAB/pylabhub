@@ -263,7 +263,23 @@ class LuaEngine : public ScriptEngine
 
     // ── API closure statics ──────────────────────────────────────────────
 
+    /// Push one closure onto the api table with `this` as upvalue(1).
+    /// Single definition of the mechanism every helper below uses.
+    void push_api_closure_(lua_State *L, const char *name, lua_CFunction fn);
+
+    /// Role-side api members, one helper per category from HEP-CORE-0011
+    /// § "Cross-Engine Binding Discipline".  `push_common_api_closures_`
+    /// holds GENERAL members only; anything whose meaning is set by a wire
+    /// protocol belongs in the sibling named for its subject, and anything
+    /// the data loop owns belongs in the loop sibling.  Which category a
+    /// member is in, and why the distinction is load-bearing, is spelled
+    /// out where these are defined in `lua_engine.cpp`.
     void push_common_api_closures_(lua_State *L);
+    void push_inbox_api_closures_(lua_State *L);
+    void push_band_api_closures_(lua_State *L);
+    void push_broker_query_api_closures_(lua_State *L);
+    void push_loop_telemetry_api_closures_(lua_State *L);
+
     void register_inbox_metatable_();
 
     static int lua_api_log(lua_State *L);
@@ -317,6 +333,8 @@ class LuaEngine : public ScriptEngine
     static int lua_api_metrics(lua_State *L);
     static int lua_api_queue_mechanism(lua_State *L);
     static int lua_api_allowed_peers(lua_State *L);
+    static int lua_api_allowed_peer_count(lua_State *L);
+    static int lua_api_allowed_peer_contains(lua_State *L);
     static int lua_api_producers(lua_State *L);
     static int lua_api_consumers(lua_State *L);
     static int lua_api_consumer_count(lua_State *L);
@@ -351,6 +369,8 @@ class LuaEngine : public ScriptEngine
     static int lua_api_band_broadcast(lua_State *L);
     static int lua_api_channel_broadcast(lua_State *L);
     static int lua_api_band_members(lua_State *L);
+    static int lua_api_band_member_count(lua_State *L);
+    static int lua_api_band_member_contains(lua_State *L);
     // Broker schema/metrics queries (HEP-CORE-0034 §10.3) —
     // full broker reply as a table; nil only on transport failure.
     static int lua_api_get_schema(lua_State *L);

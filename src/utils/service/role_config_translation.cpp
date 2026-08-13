@@ -57,7 +57,6 @@ hub::TxQueueOptions make_tx_opts(const config::RoleConfig &config,
         opts.has_shm = false;
         opts.data_transport = "zmq";
         opts.zmq_node_endpoint = tr.zmq_endpoint;
-        opts.zmq_bind = tr.zmq_bind;
         opts.zmq_buffer_depth = tr.zmq_buffer_depth;
         opts.zmq_overflow_policy = (tr.zmq_overflow_policy == "block") ? hub::OverflowPolicy::Block
                                                                        : hub::OverflowPolicy::Drop;

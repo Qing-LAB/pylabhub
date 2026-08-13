@@ -216,3 +216,58 @@ TEST(NetAddressTest, IPv4_Port0_IsDefault)
     EXPECT_EQ(r.port, 0);
     EXPECT_FALSE(r.is_network_exposed());
 }
+
+// ============================================================================
+// BoundAddress — the second role a TCP endpoint plays
+// ============================================================================
+//
+// `validate_tcp_endpoint` above answers "is this a well-formed bind
+// request", and correctly accepts port 0.  `BoundAddress` is the other
+// role: an address a peer can actually dial.  Its whole contract is that
+// it cannot be constructed from anything unusable, so these tests pin the
+// refusals as hard as the acceptances (HEP-CORE-0036 §6.7.2).
+
+TEST(BoundAddressTest, ResolvedIPv4_Parses)
+{
+    auto b = pylabhub::BoundAddress::try_validate("tcp://127.0.0.1:51234");
+    ASSERT_TRUE(b.has_value());
+    EXPECT_EQ(b->str(), "tcp://127.0.0.1:51234");
+}
+
+TEST(BoundAddressTest, ResolvedIPv6_Parses)
+{
+    auto b = pylabhub::BoundAddress::try_validate("tcp://[::1]:51234");
+    ASSERT_TRUE(b.has_value());
+    EXPECT_EQ(b->str(), "tcp://[::1]:51234");
+}
+
+TEST(BoundAddressTest, ResolvedHostname_Parses)
+{
+    auto b = pylabhub::BoundAddress::try_validate("tcp://sensor-hub.lab.example.com:9090");
+    ASSERT_TRUE(b.has_value());
+}
+
+TEST(BoundAddressTest, PortZero_IsRefused)
+{
+    // THE contract.  Port 0 is a legal bind REQUEST — the assertion just
+    // above (`IPv4_Port0_IsDefault`) pins that, and it is the inbox
+    // default — but nothing can connect to it, so it is not an address.
+    // If this ever passes, the type has stopped being worth having.
+    EXPECT_FALSE(pylabhub::BoundAddress::try_validate("tcp://127.0.0.1:0").has_value());
+    EXPECT_FALSE(pylabhub::BoundAddress::try_validate("tcp://0.0.0.0:0").has_value());
+    EXPECT_FALSE(pylabhub::BoundAddress::try_validate("tcp://[::]:0").has_value());
+    EXPECT_FALSE(pylabhub::BoundAddress::try_validate("tcp://my-host:0").has_value());
+}
+
+TEST(BoundAddressTest, Malformed_IsRefused)
+{
+    // The six broker call sites this type replaced tested
+    // `ok() && port == 0`, which ACCEPTED anything that failed to parse.
+    // Parsing must refuse both kinds of unusable input, not just port 0.
+    EXPECT_FALSE(pylabhub::BoundAddress::try_validate("").has_value());
+    EXPECT_FALSE(pylabhub::BoundAddress::try_validate("127.0.0.1:5570").has_value());
+    EXPECT_FALSE(pylabhub::BoundAddress::try_validate("udp://127.0.0.1:5570").has_value());
+    EXPECT_FALSE(pylabhub::BoundAddress::try_validate("tcp://127.0.0.1").has_value());
+    EXPECT_FALSE(pylabhub::BoundAddress::try_validate("tcp://127.0.0.1:70000").has_value());
+    EXPECT_FALSE(pylabhub::BoundAddress::try_validate("tcp://bad host:5570").has_value());
+}

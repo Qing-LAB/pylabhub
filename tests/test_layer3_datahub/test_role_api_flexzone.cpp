@@ -37,19 +37,19 @@ TEST_F(RoleApiFlexzoneTest, ShmRoundTrip)
     ExpectWorkerOk(w);
 }
 
-TEST_F(RoleApiFlexzoneTest, ZmqTxNull)
+TEST_F(RoleApiFlexzoneTest, ZmqTx_NoFlexzone_ArmsCurve)
 {
-    auto w = SpawnWorker("role_api_flexzone.zmq_tx_null", {});
+    auto w = SpawnWorker("role_api_flexzone.zmq_tx_has_no_flexzone_and_arms_curve", {});
     ExpectWorkerOk(w);
 }
 
-TEST_F(RoleApiFlexzoneTest, ZmqRxNull)
+TEST_F(RoleApiFlexzoneTest, ZmqRx_NoFlexzone_StaysUnarmedUntilApproval)
 {
-    auto w = SpawnWorker("role_api_flexzone.zmq_rx_null", {});
+    auto w = SpawnWorker("role_api_flexzone.zmq_rx_has_no_flexzone_and_stays_unarmed", {});
     ExpectWorkerOk(w);
 }
 
-TEST_F(RoleApiFlexzoneTest, FromChannel_Si7Gates)
+TEST_F(RoleApiFlexzoneTest, FromChannel_StartupGates_RefuseIllegalConfigs)
 {
     // HEP-0034 §10.3a / SI-7 (slice 3c): the five queue-builder gates
     // around the "from-channel" sentinel — writer refusal, no silent
@@ -57,7 +57,7 @@ TEST_F(RoleApiFlexzoneTest, FromChannel_Si7Gates)
     // refusal, and the deliberate dialing-reader pending build.  The
     // four rejection gates each log exactly one ERROR — declared here
     // so the exhaustive ERROR accounting pins them by content.
-    auto w = SpawnWorker("role_api_flexzone.from_channel_si7_gates", {});
+    auto w = SpawnWorker("role_api_flexzone.from_channel_startup_gates_refuse_illegal_configs", {});
     ExpectWorkerOk(w, {},
                    {"\"from-channel\" on a WRITER side", "has no in_slot_schema",
                     "\"from-channel\" on a BINDING (fan-in owner) consumer",

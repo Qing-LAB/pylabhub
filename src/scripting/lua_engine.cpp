@@ -354,19 +354,19 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     // Create the api table.
     lua_newtable(L);
 
-    // Common closures.
+    // Members every role gets, in HEP-CORE-0011 category order: general
+    // first, then one helper per protocol subject, then the loop's own.
     push_common_api_closures_(L);
+    push_inbox_api_closures_(L);
+    push_band_api_closures_(L);
+    push_broker_query_api_closures_(L);
+    push_loop_telemetry_api_closures_(L);
 
     // Register metatables for userdata types.
     register_spinlock_metatable_();
 
     // Helper: push a C closure with `this` as upvalue(1).
-    auto push_closure = [&](const char *name, lua_CFunction fn)
-    {
-        lua_pushlightuserdata(L, this);
-        lua_pushcclosure(L, fn, 1);
-        lua_setfield(L, -2, name);
-    };
+    auto push_closure = [&](const char *name, lua_CFunction fn) { push_api_closure_(L, name, fn); };
 
     // ── ChannelSide constants (all roles) ────────────────────────────────
     lua_pushinteger(L, static_cast<lua_Integer>(ChannelSide::Tx));
@@ -374,7 +374,12 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     lua_pushinteger(L, static_cast<lua_Integer>(ChannelSide::Rx));
     lua_setfield(L, -2, "Rx");
 
-    // ── Common closures (all roles) ────────────────────────────────────
+    // ── All-roles closures still pushed inline — MIXED CATEGORIES ────────
+    //    Unlike the helpers called above, this block interleaves general
+    //    members (`uid`, `name`) with protocol-facing ones (`allowed_peers`
+    //    is HEP-CORE-0036 §6.5; the roster getters answer broker state) and
+    //    loop-owned counters (`out_slots_written` and friends).  Sorting it
+    //    into the same homes is tracked in `docs/todo/API_TODO.md`.
     push_closure("uid", lua_api_uid);
     push_closure("name", lua_api_name);
     push_closure("channel", lua_api_channel);
@@ -384,6 +389,8 @@ bool LuaEngine::build_api_(RoleAPIBase &api)
     push_closure("metrics", lua_api_metrics);
     push_closure("queue_mechanism", lua_api_queue_mechanism);
     push_closure("allowed_peers", lua_api_allowed_peers);
+    push_closure("allowed_peer_count", lua_api_allowed_peer_count);
+    push_closure("allowed_peer_contains", lua_api_allowed_peer_contains);
     push_closure("producers", lua_api_producers);
     push_closure("consumers", lua_api_consumers);
     push_closure("consumer_count", lua_api_consumer_count);
@@ -499,12 +506,7 @@ bool LuaEngine::build_api_(::pylabhub::hub_host::HubAPI &api)
     // dereference `self->hub_api_` — guaranteed non-null because this
     // method is only entered when `build_api(HubAPI&)` set it (the
     // base class wrapper sets `hub_api_ = &api` BEFORE calling this).
-    auto push_closure = [&](const char *name, lua_CFunction fn)
-    {
-        lua_pushlightuserdata(L, this);
-        lua_pushcclosure(L, fn, 1);
-        lua_setfield(L, -2, name);
-    };
+    auto push_closure = [&](const char *name, lua_CFunction fn) { push_api_closure_(L, name, fn); };
 
     // Lifecycle.
     push_closure("log", lua_api_hub_log);
@@ -1826,17 +1828,43 @@ void LuaEngine::push_messages_table_bare_(std::vector<IncomingMessage> &msgs)
 }
 
 // ============================================================================
-// push_common_api_closures_ — log, stop, critical_error, stop_reason, etc.
+// Where a member goes — HEP-CORE-0011 § "Cross-Engine Binding Discipline"
 // ============================================================================
+//
+// Every all-roles member of the `api` table is in exactly one category, and
+// each category has its own visible home:
+//
+//   GENERAL           push_common_api_closures_          needs only a public
+//                                                        accessor plus
+//                                                        primitive packaging
+//   PROTOCOL-FACING   push_inbox_api_closures_           HEP-CORE-0027
+//                     push_band_api_closures_            HEP-CORE-0030
+//                     push_broker_query_api_closures_    HEP-CORE-0034 §10.3
+//   LOOP-OWNED        push_loop_telemetry_api_closures_
+//
+// A member whose meaning is set by a wire protocol is NOT general, however
+// simple its signature looks.  Adding one to the general helper compiles and
+// works; it still breaks the contract, because the three categories carry
+// very different change costs and mixing them hides which cost applies.
+//
+// Lua tables are unordered, so these helpers may be called in any order —
+// but call them in category order so the code reads the way the contract
+// does.
+
+void LuaEngine::push_api_closure_(lua_State *L, const char *name, lua_CFunction fn)
+{
+    lua_pushlightuserdata(L, this);
+    lua_pushcclosure(L, fn, 1);
+    lua_setfield(L, -2, name);
+}
+
+// ----------------------------------------------------------------------------
+// GENERAL — logging, stop/error state, shared data, custom metrics, paths
+// ----------------------------------------------------------------------------
 
 void LuaEngine::push_common_api_closures_(lua_State *L)
 {
-    auto push_closure = [&](const char *name, lua_CFunction fn)
-    {
-        lua_pushlightuserdata(L, this);
-        lua_pushcclosure(L, fn, 1);
-        lua_setfield(L, -2, name);
-    };
+    auto push_closure = [&](const char *name, lua_CFunction fn) { push_api_closure_(L, name, fn); };
 
     push_closure("log", lua_api_log);
     push_closure("stop", lua_api_stop);
@@ -1845,37 +1873,17 @@ void LuaEngine::push_common_api_closures_(lua_State *L)
     push_closure("stop_reason", lua_api_stop_reason);
     push_closure("script_error_count", lua_api_script_error_count);
     push_closure("version_info", lua_api_version_info);
-    push_closure("wait_for_role", lua_api_wait_for_role);
-    push_closure("open_inbox", lua_api_open_inbox);
-    push_closure("clear_inbox_cache", lua_api_clear_inbox_cache);
     push_closure("get_shared_data", lua_api_get_shared_data);
     push_closure("set_shared_data", lua_api_set_shared_data);
 
-    // Diagnostics — common to all roles.
-    push_closure("loop_overrun_count", lua_api_loop_overrun_count);
-    push_closure("last_cycle_work_us", lua_api_last_cycle_work_us);
-
-    // Custom metrics (HEP-CORE-0019).
+    // Custom metrics (HEP-CORE-0019).  General: the script names a metric
+    // and hands over a number.  Nothing about a wire frame is involved.
     push_closure("report_metric", lua_api_report_metric);
     push_closure("report_metrics", lua_api_report_metrics);
     push_closure("clear_custom_metrics", lua_api_clear_custom_metrics);
 
-    // Band pub/sub (HEP-CORE-0030).
-    push_closure("band_join", lua_api_band_join);
-    push_closure("band_leave", lua_api_band_leave);
-    push_closure("band_broadcast", lua_api_band_broadcast);
-    push_closure("channel_broadcast", lua_api_channel_broadcast);
-    push_closure("band_members", lua_api_band_members);
-    push_closure("is_in_band", lua_api_is_in_band);
-
-    // Broker schema/metrics queries (HEP-CORE-0034 §10.3).
-    // Each returns the FULL broker reply as a table — status/error_code
-    // are data the script branches on; nil ONLY on transport failure.
-    push_closure("get_schema", lua_api_get_schema);
-    push_closure("get_channel_schema", lua_api_get_channel_schema);
-    push_closure("get_channel_metrics", lua_api_get_channel_metrics);
-
-    // String fields as direct table entries.
+    // String fields as direct table entries — values, not closures, so a
+    // grep for `push_closure` will not find them.
     lua_pushstring(L, api_->log_level().c_str());
     lua_setfield(L, -2, "log_level");
 
@@ -1885,14 +1893,80 @@ void LuaEngine::push_common_api_closures_(lua_State *L)
     lua_pushstring(L, api_->role_dir().c_str());
     lua_setfield(L, -2, "role_dir");
 
-    // Derived directory paths.
-    std::string logs = api_->role_dir().empty() ? "" : api_->role_dir() + "/logs";
-    lua_pushstring(L, logs.c_str());
+    // Derived paths come from the base, not from re-joining role_dir here —
+    // three engines re-deriving the same suffix is three chances to disagree.
+    lua_pushstring(L, api_->logs_dir().c_str());
     lua_setfield(L, -2, "logs_dir");
 
-    std::string run = api_->role_dir().empty() ? "" : api_->role_dir() + "/run";
-    lua_pushstring(L, run.c_str());
+    lua_pushstring(L, api_->run_dir().c_str());
     lua_setfield(L, -2, "run_dir");
+}
+
+// ----------------------------------------------------------------------------
+// PROTOCOL-FACING — inbox (HEP-CORE-0027)
+// ----------------------------------------------------------------------------
+
+void LuaEngine::push_inbox_api_closures_(lua_State *L)
+{
+    auto push_closure = [&](const char *name, lua_CFunction fn) { push_api_closure_(L, name, fn); };
+
+    push_closure("open_inbox", lua_api_open_inbox);
+    push_closure("clear_inbox_cache", lua_api_clear_inbox_cache);
+}
+
+// ----------------------------------------------------------------------------
+// PROTOCOL-FACING — band pub/sub (HEP-CORE-0030)
+// ----------------------------------------------------------------------------
+
+void LuaEngine::push_band_api_closures_(lua_State *L)
+{
+    auto push_closure = [&](const char *name, lua_CFunction fn) { push_api_closure_(L, name, fn); };
+
+    push_closure("band_join", lua_api_band_join);
+    push_closure("band_leave", lua_api_band_leave);
+    push_closure("band_broadcast", lua_api_band_broadcast);
+    push_closure("channel_broadcast", lua_api_channel_broadcast);
+    push_closure("band_members", lua_api_band_members);
+    push_closure("band_member_count", lua_api_band_member_count);
+    push_closure("band_member_contains", lua_api_band_member_contains);
+    push_closure("is_in_band", lua_api_is_in_band);
+}
+
+// ----------------------------------------------------------------------------
+// PROTOCOL-FACING — broker queries (HEP-CORE-0034 §10.3)
+// ----------------------------------------------------------------------------
+//
+// `wait_for_role` sits here, not with the general members, even though its
+// binding is a string in and a boolean out: it exists because the broker
+// answers a presence query, and the timeout it accepts is a property of
+// that exchange.
+//
+// The three getters return the FULL broker reply as a table — status and
+// error_code are data the script branches on; nil ONLY on transport failure.
+
+void LuaEngine::push_broker_query_api_closures_(lua_State *L)
+{
+    auto push_closure = [&](const char *name, lua_CFunction fn) { push_api_closure_(L, name, fn); };
+
+    push_closure("wait_for_role", lua_api_wait_for_role);
+    push_closure("get_schema", lua_api_get_schema);
+    push_closure("get_channel_schema", lua_api_get_channel_schema);
+    push_closure("get_channel_metrics", lua_api_get_channel_metrics);
+}
+
+// ----------------------------------------------------------------------------
+// LOOP-OWNED — cycle telemetry
+// ----------------------------------------------------------------------------
+//
+// Read-only counters the data loop maintains.  Cheap to call, but they
+// report on the loop, so they move when the loop's contract moves.
+
+void LuaEngine::push_loop_telemetry_api_closures_(lua_State *L)
+{
+    auto push_closure = [&](const char *name, lua_CFunction fn) { push_api_closure_(L, name, fn); };
+
+    push_closure("loop_overrun_count", lua_api_loop_overrun_count);
+    push_closure("last_cycle_work_us", lua_api_last_cycle_work_us);
 }
 
 // ============================================================================
@@ -2703,6 +2777,44 @@ int LuaEngine::lua_api_band_members(lua_State *L)
     return 1;
 }
 
+// Band membership reduced to the two common questions.  These are broker
+// round-trips like `band_members`, and they follow its convention: nil
+// means the round-trip failed.  A reachable broker with an empty band
+// answers 0 / false, so `nil` and `0` are different answers and a script
+// that treats them alike will mistake a dead broker for an empty band.
+//
+// Python raises instead of returning nil — same fact, each language's own
+// way of saying it (HEP-CORE-0011 § "Same reach, different shape").
+
+int LuaEngine::lua_api_band_member_count(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *channel = luaL_checkstring(L, 1);
+    const auto count = self->api_->band_member_count(channel);
+    if (!count.has_value())
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushinteger(L, static_cast<lua_Integer>(*count));
+    return 1;
+}
+
+int LuaEngine::lua_api_band_member_contains(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *channel = luaL_checkstring(L, 1);
+    const char *role_uid = luaL_checkstring(L, 2);
+    const auto found = self->api_->band_member_contains(channel, role_uid);
+    if (!found.has_value())
+    {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushboolean(L, *found ? 1 : 0);
+    return 1;
+}
+
 // ============================================================================
 // Broker schema/metrics queries (HEP-CORE-0034 §10.3)
 // ============================================================================
@@ -2856,6 +2968,39 @@ int LuaEngine::lua_api_allowed_peers(lua_State *L)
     if (channel.empty())
         return luaL_error(L, "api.allowed_peers: channel argument must be a non-empty string");
     push_peer_table_(L, self->api_->allowed_peers(channel));
+    return 1;
+}
+
+// The two questions scripts ask of the allowlist without wanting the whole
+// snapshot.  Both read the local cache — no broker round-trip, so no
+// failure mode beyond a bad argument, and no nil return.
+
+int LuaEngine::lua_api_allowed_peer_count(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *arg = luaL_checkstring(L, 1);
+    const std::string channel = arg ? arg : "";
+    if (channel.empty())
+        return luaL_error(L, "api.allowed_peer_count: channel argument must be a non-empty string");
+    lua_pushinteger(L, static_cast<lua_Integer>(self->api_->allowed_peer_count(channel)));
+    return 1;
+}
+
+int LuaEngine::lua_api_allowed_peer_contains(lua_State *L)
+{
+    auto *self = static_cast<LuaEngine *>(lua_touserdata(L, lua_upvalueindex(1)));
+    const char *ch_arg = luaL_checkstring(L, 1);
+    const char *uid_arg = luaL_checkstring(L, 2);
+    const std::string channel = ch_arg ? ch_arg : "";
+    const std::string role_uid = uid_arg ? uid_arg : "";
+    if (channel.empty())
+        return luaL_error(L,
+                          "api.allowed_peer_contains: channel argument must be a non-empty string");
+    // An empty role_uid is NOT an error — it simply matches nothing, which
+    // is what Python answers.  Raising here instead would make the same
+    // lookup fail in one language and return false in the other, and that
+    // is a difference in meaning rather than in idiom.
+    lua_pushboolean(L, self->api_->allowed_peer_contains(channel, role_uid) ? 1 : 0);
     return 1;
 }
 

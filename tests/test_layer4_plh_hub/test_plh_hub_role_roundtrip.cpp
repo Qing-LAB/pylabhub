@@ -139,7 +139,6 @@ void write_producer_config(const fs::path &cfg_path, const fs::path &hub_dir,
     // sysv key handling complicates L4 cross-subprocess teardown).
     j["out_transport"] = "zmq";
     j["out_zmq_endpoint"] = "tcp://127.0.0.1:0";
-    j["out_zmq_bind"] = true;
     j["out_zmq_buffer_depth"] = 8;
     // Note: "out_zmq_packing" removed 2026-04-20 — packing now lives
     // in the schema (out_slot_schema.packing).

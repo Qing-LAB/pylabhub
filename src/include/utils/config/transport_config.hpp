@@ -29,7 +29,6 @@ struct TransportConfig
 {
     Transport transport{Transport::Shm};
     std::string zmq_endpoint;                             ///< Required when transport==Zmq.
-    bool zmq_bind{true};                                  ///< Bind (true) or connect (false).
     size_t zmq_buffer_depth{hub::kZmqDefaultBufferDepth}; ///< Internal ring depth.
     std::string zmq_overflow_policy{"drop"};              ///< "drop" or "block".
     // NOTE: packing is NOT a transport-level knob.  It comes from the
@@ -86,7 +85,6 @@ inline TransportConfig parse_transport_config(const nlohmann::json &j, const cha
                                     transport_str + "\"");
 
     tc.zmq_endpoint = j.value(pfx + "zmq_endpoint", std::string{});
-    tc.zmq_bind = j.value(pfx + "zmq_bind", true);
     tc.zmq_buffer_depth =
         j.value(pfx + "zmq_buffer_depth", static_cast<size_t>(hub::kZmqDefaultBufferDepth));
     tc.zmq_overflow_policy = j.value(pfx + "zmq_overflow_policy", std::string{"drop"});

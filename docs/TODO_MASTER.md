@@ -377,8 +377,32 @@ should be re-scoped against code before anyone starts them.
 
 ## Open work by area (detail in subtopic TODOs)
 
-- **API / ABI / concurrency / lifecycle (`API_TODO.md`)** — #232 engine
+- **API / ABI / concurrency / lifecycle (`API_TODO.md`)** — **#148 queue
+  state: M1 ✅ SHIPPED 2026-08-12** — the queue HOLDS its lifecycle state
+  (`QueueState`) instead of re-deriving it from whether some data member
+  is empty; `is_configured()` no longer reports Configured on a binding
+  queue still in Standby; `start()` gates on the state; the
+  `RxQueueOptions::producer_peers` shortcut (production surface with zero
+  production writers, serving one test) deleted.  Contract HEP-CORE-0036
+  §6.7.1 (now marked implemented).  **M2 ✅ SHIPPED 2026-08-12** — a bind
+  request and a bound address are now different TYPES (`BoundAddress`,
+  `net_address.hpp`): obtainable only by parsing a resolved endpoint,
+  port 0 impossible by construction, so a function that publishes an
+  address to a peer cannot be handed a config string.  `bound_address()`
+  replaces `actual_endpoint()` and answers `nullopt` instead of falling
+  back; six broker port-0 checks collapse to one predicate and got
+  stricter.  Two L2 tests that had been ASSERTING the old fallback were
+  rewritten to assert the design.  **M1b** closed two mutator-table cells
+  M1 left unenforced (a stopped queue could be re-approved and re-armed;
+  `stop()` during a deferred dial did nothing, so the queue came up
+  afterwards).  **M3** (binding producer never republishes its resolved
+  endpoint — an implementation gap against HEP-CORE-0021 §16.6, which
+  already adopted the design) stays open; #232 engine
   parity-test contract (incl. #235 band-accessor L3 regression tests);
+  #142 script-member placement contract — Lua's shared closure helpers now
+  split by category (general / protocol-facing / loop-owned) per
+  HEP-CORE-0011; its inline `build_api_` block and both other engines
+  still to do, and Lua hand-builds the metrics tree the other two derive;
   demo-harness follow-ups #78-#87; Wave-MD1 ThreadManager shutdown-
   contract sweep; #66 `ZmqQueue`+`InboxQueue` → `apply_socket_policy`;
   Connection/Inbox/Band review D2+D3 follow-ups (C2,C4,C5,I1,I3,X1-X6); HEP-0032
@@ -414,7 +438,10 @@ should be re-scoped against code before anyone starts them.
   band contract covered in `test_pattern4_channel_group`/`_broker_protocol`; rungs
   2/3 shipped; rung 13 deferred on back-channel-pipe infra); Pattern-4 sweep #52
   (Round 7 = #56 `datahub_broker_workers`); **#58** audit — confirm every L3/L4
-  test-worker file is actually in a real ctest run; #296 hub-death L4; N8/N9 bench
+  test-worker file is actually in a real ctest run; **#146** fan-out has no L4
+  e2e at all — the only topology whose peer list carries more than one row, so a
+  row defect needing two peers has nowhere to surface; **#144** peer/band inquiry
+  family across all three engines; #296 hub-death L4; N8/N9 bench
   variants; N11 `on_band_message` parity; B8 numpy pin.
 - **Windows / MSVC / cross-platform (`PLATFORM_TODO.md`)** — CI is Linux-only vs
   README support claims; MSVC `/W4 /WX` gate + `/Zc:preprocessor` audit;

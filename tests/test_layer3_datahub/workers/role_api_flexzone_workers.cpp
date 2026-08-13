@@ -429,10 +429,10 @@ int shm_roundtrip()
 }
 
 // ============================================================================
-// zmq_tx_null — ZMQ-only Tx has no flexzone
+// zmq_tx_has_no_flexzone_and_arms_curve — ZMQ-only Tx has no flexzone
 // ============================================================================
 
-int zmq_tx_null()
+int zmq_tx_has_no_flexzone_and_arms_curve()
 {
     return run_gtest_worker(
         [&]()
@@ -462,71 +462,91 @@ int zmq_tx_null()
             opts.has_shm = false;
             opts.data_transport = "zmq";
             opts.zmq_node_endpoint = "tcp://127.0.0.1:0";
-            opts.zmq_bind = true;
+            // Topology stated explicitly, because this test depends on
+            // it and would otherwise depend on it invisibly.  Under
+            // one-to-one the PRODUCER binds, and a binding writer is
+            // the one side that reaches Active from the ACK alone — no
+            // broker, no attach round trip, no deferred dial.  That is
+            // what lets the Mechanism::Curve assertion below hold in an
+            // isolation worker.  Switch this to FanIn and the producer
+            // becomes the dialing side: apply parks it in DialDeferred,
+            // start() never runs, and that assertion fails.
+            //
+            // There is no separate bind knob to set here, and there
+            // never should have been: `build_tx_queue` takes the
+            // direction from `writer_is_binding_side(topology)`.  The
+            // `*_zmq_bind` config key that used to shadow this is now
+            // retired and rejected at config load.
+            opts.topology = pylabhub::hub::ChannelTopology::OneToOne;
             opts.slot_spec = pylabhub::tests::simple_schema();
 
             ASSERT_TRUE(api->build_tx_queue(opts));
-            // HEP-CORE-0036 §5b B-5 (#290): `channel_name` is now
-            // mandatory in REG_ACK.  `initial_allowlist` is omitted —
-            // ZmqQueue::apply_master_approval tolerates absence (keeps
-            // prior allowlist state) and still drives Standby → Active
-            // on the PUSH/bind side, which is what `queue_mechanism`
-            // below requires to observe Mechanism::Curve.
-            ASSERT_TRUE(api->apply_producer_reg_ack(
-                nlohmann::json{{"channel_name", "test.fz.zmq.tx"},
-                               // HEP-CORE-0042 §5.5.3 — apply_producer_reg_ack
-                               // hard-errors on absent/zero `instance_id`.  Broker
-                               // assigns starting at 1 (§5.2 monotonic).
-                               {"instance_id", 1u}}));
 
+            // This worker deliberately stops at BUILD.  It used to drive
+            // `apply_producer_reg_ack` with a stub acknowledgement and no
+            // broker, to reach Active and observe `Mechanism::Curve`.
+            // That shape no longer exists: a binding producer's
+            // registration now publishes its bound address to the broker
+            // and fails when it cannot (HEP-CORE-0021 §16.6), so
+            // "reaches Active from the ACK alone, no broker" — which this
+            // worker's own comment used to claim — is not a state the
+            // system has.  Faking it here would have meant either a
+            // broker in an isolation worker or a test-only bypass in
+            // production; both are worse than moving the assertion.
+            //
+            // What moved, and where:
+            //   - `Mechanism::Curve` on a started queue, and the reset on
+            //     stop, are pinned at L2 against the queue itself
+            //     (`test_hub_zmq_queue.cpp` — CurveMechanism assertions).
+            //     They never needed a role.
+            //   - The ROLE-level `queue_mechanism` forwarder, which is
+            //     the only part L2 cannot show, is pinned at L4 by
+            //     `ZmqE2E_BindingProducer_EphemeralPort_ResolvesAndPublishes`,
+            //     where a real script calls `api.queue_mechanism` on a
+            //     real registered producer.
+            //
+            // What stays here is what a built-but-unarmed queue can
+            // honestly answer: a ZMQ tx side has no flexzone, and the
+            // unwired rx side reports nothing.
             EXPECT_EQ(api->flexzone(ChannelSide::Tx), nullptr);
             EXPECT_EQ(api->flexzone_size(ChannelSide::Tx), 0u);
             EXPECT_FALSE(api->tx_has_shm());
 
-            // C5 follow-up (#186) — script-visible CURVE mechanism
-            // accessor pins the HEP-CORE-0035 §2 invariant at the
-            // RoleAPIBase tier: any started ZmqQueue reports Curve.
-            EXPECT_EQ(api->queue_mechanism(ChannelSide::Tx), pylabhub::hub::Mechanism::Curve);
-            // Rx side is not wired in this scenario — accessor must
-            // return Uninitialized (not throw, not return Plaintext).
+            // Rx was never wired in this scenario — the accessor must say
+            // Uninitialized rather than throwing or guessing Plaintext.
             EXPECT_EQ(api->queue_mechanism(ChannelSide::Rx),
                       pylabhub::hub::Mechanism::Uninitialized);
 
             api->close_queues();
-
-            // After close_queues(), the Tx queue is destroyed; the
-            // accessor returns Uninitialized.  Pins the
-            // "stop ⇒ reset" half of the invariant.
-            EXPECT_EQ(api->queue_mechanism(ChannelSide::Tx),
-                      pylabhub::hub::Mechanism::Uninitialized);
         },
-        "role_api_flexzone::zmq_tx_null", logger_module(),
+        "role_api_flexzone::zmq_tx_has_no_flexzone_and_arms_curve", logger_module(),
         ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(),
         hub_module());
 }
 
 // ============================================================================
-// zmq_rx_null — ZMQ-only Rx has no flexzone
+// zmq_rx_has_no_flexzone_and_stays_unarmed — ZMQ-only Rx has no flexzone
 // ============================================================================
 
-int zmq_rx_null()
+int zmq_rx_has_no_flexzone_and_stays_unarmed()
 {
     return run_gtest_worker(
         [&]()
         {
             // Rx-side flexzone contract is a property of the Rx queue
-            // itself.  Rx-build succeeds even against an unreachable
-            // endpoint because the ZMQ connect is non-blocking.
+            // itself — established at BUILD time from the declared
+            // schemas, before any peer is known.  So this test needs
+            // nothing but a built queue.
             //
             // HEP-CORE-0035 §2 + #160 (C4): CURVE is unconditional on
-            // every role↔hub data path, so `build_rx_queue` requires
-            // the canonical KeyStore identity to be seeded AND
-            // `producer_peers[0]` to carry the producer's CURVE pubkey.
-            // We provide a synthetic peer (unreachable endpoint + a
-            // freshly minted Z85 pubkey) so the test exercises the
-            // flexzone contract without actually completing a CURVE
-            // handshake.
-            auto curve = pylabhub::tests::make_curve_setup({"prod.zmq-fz.rx"});
+            // every role↔hub data path, so `build_rx_queue` still
+            // requires the canonical KeyStore identity to be seeded.
+            // That is the whole prerequisite.  The queue is built in
+            // Standby with no peer — which is what production does too,
+            // since a dialing consumer learns its peer from
+            // CONSUMER_REG_ACK (HEP-CORE-0036 §6.7).
+            // No role uids declared: there is no producer in this test.
+            auto curve = pylabhub::tests::make_curve_setup({});
             pylabhub::tests::seed_curve_identities(curve);
             pylabhub::utils::security::secure().keys().add_identity_from_z85(
                 pylabhub::utils::security::kRoleIdentityName, curve.hub.public_z85,
@@ -539,43 +559,52 @@ int zmq_rx_null()
             hub::RxQueueOptions rx_opts;
             rx_opts.data_transport = "zmq";
             rx_opts.slot_spec = pylabhub::tests::simple_schema();
-            // Stage 1D (task #193, 2026-06-15): the consumer's connect
-            // target now lives ONLY in producer_peers (HEP-CORE-0036
-            // §6.4 + §6.7).  Test pre-populates here to enter Configured
-            // at construction (legacy fast-path); production never does
-            // — broker is the master via CONSUMER_REG_ACK.
-            rx_opts.producer_peers.push_back(pylabhub::hub::ProducerPeer{
-                /*role_uid=*/"prod.zmq-fz.rx",
-                /*endpoint=*/"tcp://127.0.0.1:45599",
-                /*pubkey_z85=*/curve.role("prod.zmq-fz.rx").public_z85});
-
             ASSERT_TRUE(api->build_rx_queue(rx_opts));
-            // HEP-CORE-0042 Phase 3b.2 (2026-07-02) —
-            // `apply_consumer_reg_ack` now issues §7.1
-            // `CONSUMER_ATTACH_REQ_ZMQ` per declared producer
-            // BEFORE queue Standby → Active.  That requires a live
-            // BRC + a real broker to service the pre-attach REQs.
-            // This isolation worker has neither (no `set_handler`,
-            // no broker subprocess), so the call would fail on the
-            // BRC lookup and return false.  The flexzone assertions
-            // below depend on `build_rx_queue` output only — no
-            // apply_consumer_reg_ack needed to exercise them.
-            // Pre-3b.2 the call was a defensive no-op; now the test
-            // is scoped precisely to the flexzone check.
+            // The queue stays in Standby for the rest of this test, and
+            // that is correct — arming it is not part of the flexzone
+            // contract.  Arming would also need a broker: per HEP-0042
+            // Phase 3b.2, `apply_consumer_reg_ack` issues a §7.1
+            // `CONSUMER_ATTACH_REQ_ZMQ` per declared producer before the
+            // Standby → Active transition, which needs a live BRC to
+            // service it.  This isolation worker has no `set_handler`
+            // and no broker subprocess, so the call would fail at the
+            // BRC lookup.  Nothing below depends on it.
 
+            // The load-bearing assertion, and the reason this test still
+            // exists after #148: a built-but-unapproved ZMQ rx queue
+            // reports NO mechanism.  `mechanism_` is set by `start()`
+            // and cleared by its unwind guard, so this is false exactly
+            // when something armed the queue outside approval — which is
+            // what the deleted `producer_peers` shortcut used to do.
+            // Symmetric with `zmq_tx_has_no_flexzone_and_arms_curve`, which applies its producer
+            // ACK and therefore asserts `Curve` here.
+            EXPECT_EQ(api->queue_mechanism(ChannelSide::Rx),
+                      pylabhub::hub::Mechanism::Uninitialized)
+                << "build_rx_queue must leave the queue in Standby; only "
+                   "apply_master_approval may arm it (HEP-CORE-0036 §6.7)";
+
+            // Flexzone accessors.  Be honest about what these are worth:
+            // `QueueReader::flexzone()`, `flexzone_size()` and
+            // `is_shm_backed()` are non-overridden base virtuals
+            // returning nullptr / 0 / false, and `ZmqQueue` overrides
+            // none of them — the flexzone is a region of an SHM segment
+            // and ZMQ has no segment.  So these three cannot fail today.
+            // They are kept as a "stays null" guard: if someone ever
+            // gives ZmqQueue a flexzone override, this is where it
+            // surfaces.  They are NOT this test's coverage.
             EXPECT_EQ(api->flexzone(ChannelSide::Rx), nullptr);
             EXPECT_EQ(api->flexzone_size(ChannelSide::Rx), 0u);
             EXPECT_FALSE(api->rx_has_shm());
 
             api->close_queues();
         },
-        "role_api_flexzone::zmq_rx_null", logger_module(),
+        "role_api_flexzone::zmq_rx_has_no_flexzone_and_stays_unarmed", logger_module(),
         ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(),
         hub_module());
 }
 
 // ============================================================================
-// from_channel_si7_gates — HEP-0034 §10.3a / SI-7 queue-builder gates
+// from_channel_startup_gates_refuse_illegal_configs — HEP-0034 §10.3a / SI-7 queue-builder gates
 // ============================================================================
 //
 // The five startup gates around the `from-channel` runtime-resolved
@@ -589,7 +618,7 @@ int zmq_rx_null()
 //   5. DIALING ZMQ reader + from-channel → builds schema-pending
 //      (deliberate sentinel = the ONLY way into the pending state).
 
-int from_channel_si7_gates()
+int from_channel_startup_gates_refuse_illegal_configs()
 {
     return run_gtest_worker(
         [&]()
@@ -613,7 +642,6 @@ int from_channel_si7_gates()
                 tx.has_shm = false;
                 tx.data_transport = "zmq";
                 tx.zmq_node_endpoint = "tcp://127.0.0.1:0";
-                tx.zmq_bind = true;
                 tx.slot_spec = runtime;
                 EXPECT_FALSE(api->build_tx_queue(tx))
                     << "a writer must never accept \"from-channel\" (SI-7)";
@@ -672,7 +700,7 @@ int from_channel_si7_gates()
                 api->close_queues();
             }
         },
-        "role_api_flexzone::from_channel_si7_gates", logger_module(),
+        "role_api_flexzone::from_channel_startup_gates_refuse_illegal_configs", logger_module(),
         ::pylabhub::utils::security::SecureSubsystem::GetLifecycleModule(), zmq_module(),
         hub_module());
 }
@@ -1403,12 +1431,12 @@ struct RoleApiFlexzoneWorkerRegistrar
 
                 if (sc == "shm_roundtrip")
                     return shm_roundtrip();
-                if (sc == "zmq_tx_null")
-                    return zmq_tx_null();
-                if (sc == "zmq_rx_null")
-                    return zmq_rx_null();
-                if (sc == "from_channel_si7_gates")
-                    return from_channel_si7_gates();
+                if (sc == "zmq_tx_has_no_flexzone_and_arms_curve")
+                    return zmq_tx_has_no_flexzone_and_arms_curve();
+                if (sc == "zmq_rx_has_no_flexzone_and_stays_unarmed")
+                    return zmq_rx_has_no_flexzone_and_stays_unarmed();
+                if (sc == "from_channel_startup_gates_refuse_illegal_configs")
+                    return from_channel_startup_gates_refuse_illegal_configs();
                 if (sc == "shm_checksum_roundtrip")
                     return shm_checksum_roundtrip();
                 if (sc == "shm_roundtrip_padding_sensitive")

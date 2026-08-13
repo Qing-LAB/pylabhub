@@ -27,6 +27,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -700,7 +701,15 @@ public:
 }
 [[nodiscard]] const nlohmann::json &allowlist() const
 {
-    return body_.at("allowlist"); // array of Z85 strings
+    // Array of `{role_uid, pubkey_z85}` rows — the same shape
+    // `RegAckBody::initial_allowlist` carries (HEP-CORE-0036 §6.5).  Was
+    // an array of bare Z85 strings until 2026-08-10; that form named
+    // nobody, so a receiver could enforce on the key and still not tell
+    // its script which peer it belonged to.
+    //
+    // Returned as raw JSON: the ROW is not typed yet, which is the gap
+    // HEP-CORE-0046 § "Adding a field that is a LIST of things" names.
+    return body_.at("allowlist");
 }
 [[nodiscard]] std::uint64_t channel_version() const
 {
@@ -1243,5 +1252,107 @@ public:
 ;
 
 #undef PLH_WIRE_BODY_CLASS
+
+// ============================================================================
+// Peer lists — one channel from a source of truth to the wire
+// ============================================================================
+//
+// Several REG-family messages carry "the peers on this channel":
+// `REG_ACK.initial_allowlist`, `CONSUMER_REG_ACK.producers[]`,
+// `GET_CHANNEL_AUTH_ACK.allowlist`.  They differ only in WHICH peers and
+// whether the reader will dial them — never in what a peer looks like.
+//
+// They used to be built by a hand-written loop each, and the loops
+// disagreed: some named the peer, some emitted a bare key, one emitted a
+// bare string.  A role could then see a peer it could not name, and
+// `allowed_peer_contains(channel, uid)` answered false for an admitted
+// peer (HEP-CORE-0036 §6.2, "Why a peer entry always names its peer").
+//
+// So the list is not assembled at the call sites any more.  A caller
+// declares the source and the detail; this channel owns everything else —
+// resolving names, the row shape, ordering, and the diagnostic when a key
+// cannot be named.  There is no way to reach the wire around it.
+
+/// How much of a peer a message needs.
+///
+/// A dial target needs somewhere to dial.  An allow-entry does not, and
+/// putting one there would place a transport detail on a list that is
+/// purely about identity.  This is the ONLY axis on which these lists
+/// legitimately differ, so it is an argument rather than a second loop.
+enum class PeerDetail
+{
+    IdentityOnly, ///< `{role_uid, pubkey_z85}` — binding-side allow entries.
+    WithEndpoint, ///< adds `endpoint` — the reader is going to dial this peer.
+};
+
+/// One peer as every REG-family message carries it: the name AND the key.
+///
+/// A receiver that gets only keys cannot name a sender to its script,
+/// cannot keep per-peer state, and cannot log who anything came from —
+/// which is why both the replicated roster and the wire carry pairs
+/// (HEP-CORE-0035 §4.9).
+///
+/// **Where that is enforced, precisely.**  The name is a required
+/// positional parameter of `from_pair`, so no caller can silently omit
+/// it — but an EMPTY name is still representable, and that is deliberate.
+/// `PeerListBuilder::add_key` emits exactly such a row when a key in a
+/// channel's admission ledger cannot be named, together with an
+/// `AdmittedKeyHasNoName` ERROR: dropping the row would silently
+/// un-admit a peer the ledger holds, so the row goes out and `parse`
+/// below refuses the whole message, leaving the receiver on its previous
+/// set.  Fail loud, not fail quiet.
+///
+/// So the guarantee is on the READ side: `parse` is where a nameless row
+/// is rejected.  `from_pair` deliberately does not validate — the one
+/// caller that produces an invalid row is doing so on purpose.
+/// (An earlier version of this comment claimed a nameless row was
+/// "unconstructible".  It is not, and the one site that constructs one
+/// is the reason the claim could not have been true.)
+class PYLABHUB_UTILS_EXPORT PeerRow
+{
+  public:
+    [[nodiscard]] static PeerRow from_pair(std::string role_uid, std::string pubkey_z85,
+                                           std::string endpoint = {});
+
+    /// Read one row.  `detail` is what the READER needs — the same axis
+    /// `to_json` uses on the writing side, so the two ends are held to
+    /// one description of the shape instead of two.
+    ///
+    /// `nullopt` when the row is not an object, does not name its peer,
+    /// does not carry a well-formed key, or omits the endpoint a reader
+    /// that is going to dial has no way to proceed without.  Callers
+    /// reject the whole message on that rather than skipping the row:
+    /// these lists REPLACE the reader's previous set, so a dropped row
+    /// is a peer silently denied.
+    [[nodiscard]] static std::optional<PeerRow> parse(const nlohmann::json &entry,
+                                                      PeerDetail detail);
+
+    [[nodiscard]] nlohmann::json to_json(PeerDetail detail) const;
+
+    [[nodiscard]] const std::string &role_uid() const noexcept { return role_uid_; }
+    [[nodiscard]] const std::string &pubkey_z85() const noexcept { return pubkey_z85_; }
+    [[nodiscard]] const std::string &endpoint() const noexcept { return endpoint_; }
+
+  private:
+    PeerRow() = default;
+    std::string role_uid_;
+    std::string pubkey_z85_;
+    std::string endpoint_;
+};
+
+/// Read a whole peer list, all-or-nothing.
+///
+/// `nullopt` means the list is unusable and the caller must keep whatever
+/// it already had.  Partial acceptance is not offered on purpose: every
+/// one of these lists replaces the reader's set, so "most of the peers"
+/// is a quietly reduced allowlist, which reads as a working system that
+/// denies someone.
+///
+/// `detail` is required rather than defaulted so that every reader says
+/// out loud whether it is about to dial these peers.  A reader that will
+/// dial and forgot to say so would accept a row it cannot use, and would
+/// discover that only when the connect had nowhere to go.
+[[nodiscard]] PYLABHUB_UTILS_EXPORT std::optional<std::vector<PeerRow>>
+parse_peer_list(const nlohmann::json &arr, PeerDetail detail);
 
 } // namespace pylabhub::wire

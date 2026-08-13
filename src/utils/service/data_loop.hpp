@@ -160,7 +160,7 @@ void run_data_loop(RoleAPIBase &api, RoleHostCore &core, const LoopConfig &cfg, 
     // (band-join, waiting on another role, incremental setup, etc.)
     // during the pre-Ready phase.  The framework does not
     // short-circuit; the user script's on_init is expected to be
-    // lightweight, check state via `api.admitted_peers_count(...)`,
+    // lightweight, check state via `api.allowed_peer_count(...)`,
     // and return NotReady quickly when its own conditions aren't met.
     //
     // Once `init_done` flips true, this block is NEVER re-entered —

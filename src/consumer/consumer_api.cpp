@@ -122,43 +122,39 @@ bool ConsumerAPI::is_in_band(const std::string &channel) const
 
 bool ConsumerAPI::band_member_contains(const std::string &channel, const std::string &role_uid)
 {
-    // Bug fix 2026-06-16 (#235): previously checked `result->is_array()`
-    // on the raw broker reply, which is `{"members": [...]}` — an
-    // object, not an array — so this function silently returned false
-    // for all roles regardless of actual membership.  Helper unwraps
-    // the members array correctly (mirrors Native engine pattern).
-    const auto members = scripting::detail::fetch_band_members_or_throw(base_, channel);
-    for (const auto &m : members)
-        if (m.value("role_uid", std::string{}) == role_uid)
-            return true;
-    return false;
+    // Broker round-trip — drop the GIL so other Python threads run.
+    std::optional<bool> found;
+    {
+        py::gil_scoped_release release;
+        found = base_->band_member_contains(channel, role_uid);
+    }
+    if (!found.has_value())
+        throw py::value_error("band_members transport failure for channel '" + channel + "'");
+    return *found;
 }
 
 int ConsumerAPI::band_member_count(const std::string &channel)
 {
-    // Bug fix 2026-06-16 (#235): same `result->is_array()` nesting bug
-    // as band_member_contains; silently returned 0 for all roles.
-    // Helper unwraps the members array correctly.
-    const auto members = scripting::detail::fetch_band_members_or_throw(base_, channel);
-    int count = 0;
-    for (const auto &m : members)
-        if (!m.value("role_uid", std::string{}).empty())
-            ++count;
-    return count;
+    // Broker round-trip — drop the GIL so other Python threads run.
+    std::optional<std::size_t> count;
+    {
+        py::gil_scoped_release release;
+        count = base_->band_member_count(channel);
+    }
+    if (!count.has_value())
+        throw py::value_error("band_members transport failure for channel '" + channel + "'");
+    return static_cast<int>(*count);
 }
 
 bool ConsumerAPI::allowed_peer_contains(const std::string &channel,
                                         const std::string &role_uid) const
 {
-    for (const auto &p : base_->allowed_peers(channel))
-        if (p.role_uid == role_uid)
-            return true;
-    return false;
+    return base_->allowed_peer_contains(channel, role_uid);
 }
 
 int ConsumerAPI::allowed_peer_count(const std::string &channel) const
 {
-    return static_cast<int>(base_->allowed_peers(channel).size());
+    return static_cast<int>(base_->allowed_peer_count(channel));
 }
 
 py::dict ConsumerAPI::metrics() const

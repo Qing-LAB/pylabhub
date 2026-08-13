@@ -54,7 +54,7 @@ misattribution.
 | **Band pub/sub** | HEP-CORE-0030 | The `BAND_*` family; §9.1 channel-bound vs band-bound broadcast coexistence | The channel-bound broadcast (that is -0007; -0030 §9.1 only asserts coexistence) |
 | **Federation** | HEP-CORE-0022 | `HUB_PEER_HELLO`/`_ACK`/`_BYE`, `HUB_RELAY_MSG`, `HUB_TARGETED_MSG`, cross-hub relay | Intra-hub broadcast (that is -0007/-0030) |
 | **Inbox** | HEP-CORE-0027 | Point-to-point role→role inbox delivery | Channel/band broadcast |
-| **Auth overlay** | HEP-CORE-0035, -0036 | Hub-role CURVE identity, ZAP admission, authenticated connection establishment | The application-layer SHM attach handshake (that is -0044/-0041) |
+| **Auth overlay** | HEP-CORE-0035, -0036 | Hub-role CURVE identity, ZAP admission, authenticated connection establishment.  **The cross-plane map — which of the five communication paths authenticates how, and why they differ — is HEP-CORE-0035 §4.10.** | The application-layer SHM attach handshake (that is -0044/-0041) |
 | **SHM attach** | HEP-CORE-0041, -0044, -0045 | The SHM AttachProtocol binary frames + SCM_RIGHTS capability + broker SHM observer | JSON control-plane messages (all the rows in §3) |
 | **Query / directory / metrics** | HEP-CORE-0024, -0039, -0019, -0016/-0034 | Role directory, hub-state query layer, metrics plane, schema registry | See the attribution caveat in §3 |
 | **Channel identity** | HEP-CORE-0013 | Channel naming, provenance, role_uid grammar | Message dispatch |

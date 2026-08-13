@@ -309,6 +309,53 @@ The primitive **C API** (Slot RW, Recovery) is the stable base; the **C++ abstra
 - **C++ wrapper:** May **throw** where that is the appropriate, idiomatic way to signal failure (e.g. config validation at creation, schema mismatch on attach). Use exceptions for exceptional or contract-violation cases; do not overuse (e.g. hot path can use return/optional). The C++ layer may translate C error codes into exceptions when it improves usability.
 - **Summary:** C → error codes; C++ → throw where appropriate. Each layer follows its language conventions.
 
+### Validated value types — make invalid states unrepresentable
+
+Some values are only meaningful once they have been checked: a CURVE
+public key is 40 chars from a specific alphabet, a dialable endpoint has
+a non-zero port. When a value like that is carried as a bare
+`std::string`, every consumer has to remember to validate it, and the
+record shows they do not — a guard gets written that cannot fail, or the
+check is simply forgotten at one site out of six.
+
+**Rule:** give such a value its own type, and make the type incapable of
+holding an invalid value. Concretely:
+
+- **No public constructor from the raw form.** The only way in is a
+  static factory that validates.
+- **No default constructor**, unless the domain genuinely has an "unset"
+  state worth naming — and if it does, make that state a documented
+  sentinel rather than an accidental empty.
+- **No accessor that falls back.** If the value is not known yet, the
+  holder returns `std::optional<T>` and says so. Returning a
+  configured-but-unresolved stand-in hands the caller something that
+  looks usable and is not.
+- **Take the type, not the string, at the boundary that matters.** A
+  function that publishes an address to a peer takes the address type;
+  a config string then will not compile there, and no call site has to
+  remember anything.
+
+**Naming — three verbs, three meanings.** Follow them; a new spelling
+for an existing idea is how one convention becomes two.
+
+| Verb | Means | Returns | Example |
+|---|---|---|---|
+| `validate` | check a **scalar value**, for OPERATOR-controlled input (config, CLI, vault) where a bad value is a fatal startup error deserving a precise message | the type, **throws** on bad input | `Z85PublicKey::validate` |
+| `try_validate` | same check, for PEER-controlled input where "no" is a routine answer and an attacker could otherwise force exception construction per message | `std::optional<T>` | `Z85PublicKey::try_validate`, `BoundAddress::try_validate` |
+| `parse` | turn a **wire structure** (JSON object, multipart message) into a typed body | `std::optional<T>` | `PeerRow::parse`, `WireEnvelope::parse_router_recv` |
+
+**The worked example is `Z85PublicKey`** (`utils/security/curve_keypair.hpp`).
+Read it before adding another of these: it documents why it has both
+factories, why its one accessor is `view()` and not `str()`, and why its
+default-constructed sentinel is 40 null bytes rather than an empty
+string. `BoundAddress` (`utils/net_address.hpp`) is the second instance
+and follows it.
+
+Note what is NOT one of these: `validate_tcp_endpoint` returns a
+*validation result* about a bind request, and correctly accepts port 0.
+Validating a value and wrapping a value are different jobs, and one
+function can keep doing the first without becoming the second.
+
 ### Explicit noexcept where the public API does not throw
 
 Mark as **`noexcept`** any public API that is **not supposed to throw** and whose implementation does not throw. This makes the contract explicit and allows optimizations (e.g. move on exception paths). Do **not** mark functions that can throw (e.g. config validation, acquisition failure that throws, or calls into code that may throw).
@@ -2550,6 +2597,15 @@ future CTest guardrail codifies that checklist.
 classes), §14.5 (admission gates), **§14.7 (handler conformance —
 examples + anti-patterns + enforcement checklist)**, §12 (Phase A–F
 sequencing).
+
+---
+
+## Script Binding Organisation
+
+**Moved to HEP-CORE-0011 § "Cross-Engine Binding Discipline".**  Where a
+script member belongs — general, protocol-facing, or loop-owned — is a
+contract every engine must satisfy, so it is design and lives with the
+ScriptEngine abstraction rather than here.
 
 ---
 

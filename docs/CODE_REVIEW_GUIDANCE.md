@@ -73,6 +73,34 @@ in **`docs/IMPLEMENTATION_GUIDANCE.md`** § "Common Pitfalls and Solutions".
 | **`std::atomic<T>` in POD struct** | GCC passes, MSVC fails — not portable | HEP-CORE-0007 §9 (full analysis) |
 | **pImpl destructor not in `.cpp`** | `unique_ptr<Impl>` requires complete type | IMPL_GUIDANCE §pImpl |
 | **Shallow schema validation** | Arbitrary strings pass typed-field validation | MESSAGEHUB_TODO.md (actor schema) |
+| **Classifying a call site by the field it reads** | Two chains share a row shape; sites get sorted by source instead of destination | § 3.1 below |
+
+### 3.1 Classify a call site by its DESTINATION, not by the field it reads
+
+When two different mechanisms happen to carry the same data shape, an
+inventory sorted by *which field a site reads* will be wrong, and it will
+be wrong in a way that survives several passes of looking harder.
+
+The instance that produced this rule: a peer-row inventory was counted
+four times — **3 → 6 → 1 → 4** — and every wrong answer came from
+classifying by source field.
+
+| Count | What caused it |
+|---|---|
+| 3 | incomplete grep |
+| 6 | attach-chain sites counted as membership readers, because they read a field with the same row shape |
+| 1 | over-correction: excluded all attach sites, including one that was **both** |
+| **4** | the missed site reads the attach message and projects it into the membership cache — attach **source**, membership **destination** |
+
+Two consequences worth internalising:
+
+- **Ask where the value ENDS UP.** A site that reads an attach message
+  and writes a membership cache belongs to the membership chain, whatever
+  it read to get there.
+- **The site that is hardest to classify is the one most likely to carry
+  the bug.** That fourth site still had the original defect live: it
+  validated the key but not the name, so a nameless row reached the
+  script-visible cache on the branch that did no downstream filtering.
 
 ---
 

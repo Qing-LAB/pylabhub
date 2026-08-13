@@ -95,22 +95,29 @@ TEST_F(ZmqQueueAuthTest, Swap_BlocksOldPeer_PinsData)
     ExpectWorkerOk(w);
 }
 
-// S-8 (review 2026-07-31): a start() that fails because its identity key
-// is absent from the KeyStore must leave the queue in Standby — and the
+// S-8 (review 2026-07-31): an arm that fails because its identity key is
+// absent from the KeyStore must not leave the queue Active — and the
 // RETRY must still fail.  The retry is the assertion that matters: before
-// the fix `running_` was left set, so start()'s idempotence check reported
-// success for a queue that had never bound.
-TEST_F(ZmqQueueAuthTest, FailedStart_LeavesQueueStandby_AndRetryStillFails)
+// the fix the Active state was left set, so start()'s idempotence check
+// reported success for a queue that had never bound.
+//
+// The queue's resting state after the failure is Configured, not Standby:
+// the master's approval WAS applied and only the arm failed, so a retry
+// is legal.  `is_running()` false is the invariant (HEP-CORE-0036 §6.7).
+TEST_F(ZmqQueueAuthTest, FailedArm_LeavesQueueNotRunning_AndRetryStillFails)
 {
     auto w = SpawnWorker("zmq_queue_auth.auth_failed_start_does_not_leave_queue_active",
                          {unique_dir("auth_failed_start_does_not_leave_queue_active")});
 
     // TWO entries, deliberately.  `expect_worker_ok` pairs expected error
     // substrings against ERROR lines as a multiset — each entry consumes
-    // exactly one line — so declaring two asserts that BOTH start() calls
-    // ran the arm and failed.  That is a second pin on the regression: if
-    // the retry ever short-circuits on a stale `running_` again, only one
+    // exactly one line — so declaring two asserts that BOTH approvals ran
+    // the arm and failed.  That is a second pin on the regression: if the
+    // retry ever short-circuits on a stale Active state again, only one
     // ERROR line appears and the unmatched entry fails the test.
+    //
+    // The worker's leading `start()`-on-Standby refusal logs at DEBUG and
+    // contributes no ERROR line, so the count stays at two.
     const std::string kAbsentKeyErr =
         "KeyStore::pubkey: name not present: 's8-key-removed-after-build'";
     ExpectWorkerOk(w, /*required_substrings=*/{}, {kAbsentKeyErr, kAbsentKeyErr});

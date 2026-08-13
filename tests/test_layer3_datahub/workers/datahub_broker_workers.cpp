@@ -61,6 +61,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include "queue_activation.h" // bound_endpoint_or_fail
 
 using namespace pylabhub::tests::helper;
 using namespace pylabhub::broker;
@@ -1899,7 +1900,7 @@ int broker_sch_inbox_discovery_roundtrip()
                     [iauth](const std::optional<sec::AttestedKey> &attested)
                     { return iauth->attribute_sender(attested); }});
             }
-            const std::string inbox_ep = q->actual_endpoint();
+            const std::string inbox_ep = ::pylabhub::tests::bound_endpoint_or_fail(*q);
             ASSERT_FALSE(inbox_ep.empty());
 
             auto [broker] = setup_broker_test({recv_uid, send_uid},

@@ -138,10 +138,21 @@ inline nlohmann::json serialize_inbox_spec_json(const hub::SchemaSpec &spec)
 struct InboxSetupResult
 {
     std::unique_ptr<hub::InboxQueue> queue;
-    std::string actual_endpoint; ///< OS-resolved endpoint (for broker registration).
-    std::string schema_json;     ///< Serialized spec (for ROLE_INFO_REQ discovery).
-    std::string packing;         ///< From inbox schema (sole source of truth).
-    std::string checksum;        ///< Checksum policy string.
+    std::string schema_json; ///< Serialized spec (for ROLE_INFO_REQ discovery).
+    std::string packing;     ///< From inbox schema (sole source of truth).
+    std::string checksum;    ///< Checksum policy string.
+
+    // There is no endpoint field.  There was one — `actual_endpoint`, a
+    // string — and nothing ever read it: the value that reaches the wire
+    // is read from the queue at registration time by
+    // `RoleAPIBase::append_inbox_to_reg`.  It was removed rather than
+    // converted to a `BoundAddress` when the endpoint types were
+    // separated, because giving a dead field a stronger type only makes
+    // it a better-dressed dead field.
+    //
+    // `schema_json`, `packing` and `checksum` are also written here and
+    // read by nobody today; they are left in place because, unlike the
+    // endpoint, nothing about them was wrong.
 };
 
 /**
@@ -192,8 +203,22 @@ inline std::optional<InboxSetupResult> setup_inbox_facility(const hub::SchemaSpe
 
     queue->set_checksum_policy(checksum_policy);
 
+    // The bind succeeded, so the OS has resolved the port and the inbox
+    // has an address peers can dial.  Fail setup if it does not: the
+    // address is published as `inbox_endpoint` at registration, and a
+    // role advertising an inbox nobody can reach is worse than a role
+    // with no inbox at all (HEP-CORE-0036 §6.7.2).  Checking here rather
+    // than at registration means the failure names the inbox, at the
+    // moment the inbox is built.
+    if (!queue->bound_address().has_value())
+    {
+        LOGGER_ERROR("[{}] InboxQueue started at '{}' but reports no bound address — "
+                     "refusing to register an inbox that peers cannot reach",
+                     tag, inbox_cfg.endpoint);
+        return std::nullopt;
+    }
+
     InboxSetupResult result;
-    result.actual_endpoint = queue->actual_endpoint();
     result.schema_json = serialize_inbox_spec_json(inbox_spec).dump();
     result.packing = inbox_spec.packing;
     result.checksum = config::checksum_policy_to_string(checksum_policy);

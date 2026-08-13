@@ -14,6 +14,134 @@ removals from D2 / D3 drift batches).
 
 ## Current Focus
 
+### #148 — queue state + endpoint types: M1, M1b, M2, M3 all shipped
+
+**M1 ✅ 2026-08-12.** The queue holds its lifecycle state instead of
+re-deriving it. `QueueState` (`src/include/utils/hub_queue.hpp`) folds in
+the former `running_` and `dial_pending`; `hub_zmq_queue.cpp` stores it,
+CASes it in `start()`/`stop()`, sets it in `apply_master_approval`, and
+gates `start()` on it. `is_configured()` is now a lock-free read of the
+state, not `!endpoint.empty()` — which used to report Configured on a
+binding queue still in Standby. Contract: HEP-CORE-0036 §6.7.1
+(implemented) + `@ref queue_activation` in `hub_queue.hpp` for the
+developer-facing version. Full sweep 2794/2794.
+
+Deleted with it: `RxQueueOptions::producer_peers` — a production field
+with **zero production writers**, whose only consumer was a
+`build_rx_queue` branch calling `start()` itself and bypassing approval.
+Production surface that existed so one test could skip the broker.
+
+**M1b ✅ 2026-08-12.** Two cells of the §6.7 mutator table that M1 wrote
+down but did not enforce, both letting a stopped queue come back to life.
+`apply_master_approval` now refuses an `Uninitialized` queue (it checked
+only "already Active" and "schema pending", so a stopped queue would take
+a second approval and re-arm — re-delivering ring slots its previous life
+had handed out). `stop()` is now terminal from `>= Configured`, not from
+`Active` alone: a stop landing while a fan-in producer waits in
+`DialDeferred` used to do nothing at all, and the pending
+`finalize_connect` would then bring the stopped queue up. Both pinned by
+new L2 tests, both verified by falsification — reverting `stop()` to the
+Active-only CAS makes `is_running()` read **true** after the stop.
+
+**M2 ✅ 2026-08-12.** `BoundAddress` (`src/include/utils/net_address.hpp`)
+— no default constructor, no mutators, obtainable only via `parse`, which
+rejects port 0 and malformed input. `actual_endpoint()` is gone;
+`bound_address()` returns `std::optional<BoundAddress>` on `ZmqQueue` and
+`InboxQueue` and never falls back to the configured string.
+`send_endpoint_update` takes a `BoundAddress`, so the publish site cannot
+be handed a bind request. The six broker port-0 checks collapse to one
+predicate and got stricter: four had the shape `ok() && port == 0`, which
+accepted anything that failed to parse. `validate_tcp_endpoint` is
+unchanged and still accepts `:0` — it validates bind requests, which was
+never wrong. Full sweep 2798/2798.
+
+Two tests were **pinning the defect** and are rewritten to assert the
+design instead: `WhenNotYetBound_QueueReportsNoBoundAddress` and
+`WhenConfiguredWithPortZero_AddressAppearsOnlyAfterBind`. Also deleted:
+`InboxSetupResult::actual_endpoint`, written at setup and read by nobody.
+
+**Publish-failure semantics ✅ 2026-08-12.** The binding side's endpoint
+publish is now fatal on every non-success outcome, per HEP-CORE-0021
+§16.6. Before: the failure logged and `apply_consumer_reg_ack` still
+returned `true`, so the role went Authorized, installed its heartbeat,
+and reported `is_channel_ready() == true` — while every producer on the
+channel eventually died on a `finalize_connect` timeout. The role that
+failed stayed up and a different role took the failure.
+
+Three exits now return `false`, and one of them was previously **silent**
+(no log at all): a missing or disconnected control link. The others are
+"no bound address" and "broker refused / no reply". The fix is only the
+return value — `consumer_role_host` already tears down, skips
+`install_heartbeat`, and exits non-zero, which is exactly §16.6's
+four-step handling.
+
+Deliberately NOT added: a retry, or a script-facing hook to drive one.
+The refusals are deterministic (`NOT_CHANNEL_OWNER`, `CHANNEL_NOT_FOUND`),
+and a transport failure means the control link is gone, which §3.5.1
+already makes fatal. §16.8's mid-life refusal stays non-fatal — the role
+is still reachable at its existing address, which is the distinction.
+
+Found by falsification, not by review: forcing the refusal showed the
+caller's diagnostic read *"Rx queue did not reach Active state"*, which
+is wrong for this path — the queue reached Active and the publish is what
+failed. Corrected in `consumer_role_host.cpp` and both processor sites.
+
+**M3 ✅ 2026-08-12.** The binding producer publishes its resolved
+address, mirroring the consumer path, with the same fatal semantics
+(`role_api_base.cpp`, `apply_producer_reg_ack`). No broker change was
+needed: the handler already routed a producer sender to
+`ProducerEntry.zmq_node_endpoint`, which is exactly what a dialing
+consumer receives in `CONSUMER_REG_ACK.producers[]`, so the chain
+already closed — only the caller was missing.
+
+The map that established that, worth keeping because the two fields
+look redundant and are not:
+
+| Field | Written by | Read by |
+|---|---|---|
+| `ChannelEntry.data_endpoint` | fan-in **consumer** publish | fan-in **producer**'s dial row |
+| `ProducerEntry.zmq_node_endpoint` | REG_REQ body; **producer** publish | dialing **consumer**'s `producers[]`, R6 gates |
+
+They serve the two topology directions. Collapsing them to one
+`data_endpoint` is HEP-CORE-0021 §16.3's target and belongs to the
+topology migration, NOT here.
+
+`QueueWriter` had no `bound_address()` at all — the base exposed it only
+on `QueueReader`, because the fan-in consumer was the only side that
+ever published. That interface asymmetry is why the producer's missing
+publish went unnoticed: there was no method to notice the absence of.
+
+Test: `ZmqE2E_BindingProducer_EphemeralPort_ResolvesAndPublishes` (L4).
+One scenario, four aspects of one auth sequence — publish marker,
+resolved port ≠ the configured `:0`, consumer receives all slots
+(proving the address was dialable), and `api.queue_mechanism` read by a
+real script. **The ephemeral port is what makes it falsifiable**: every
+other L4 producer uses a fixed port, so the publish is idempotent there
+and none of those assertions could fail against a build with no publish
+at all. Verified by reverting the publish — the test fails on the
+marker.
+
+**Still open:**
+
+- **Broker-side observability.** HEP-CORE-0021 §16.10 specifies six log
+  markers. The two role-side ones now exist and are asserted; the
+  broker emits NONE of its four (`EndpointUpdateReqAccepted` for the
+  three transitions + `EndpointUpdateReqRejected`). Until they exist,
+  no test can distinguish "broker accepted the update" from "broker
+  ignored it" — the role only sees `status=success`.
+
+- **§16.11's remaining test surface.** Two of the three named tests
+  still do not exist: `EndpointUpdate_RejectedWhenConsumerAttached`
+  (§16.8 mid-life change rejection — the NON-fatal branch, with no
+  coverage at all) and `EndpointUpdate_Idempotent_FixedPortProducer`.
+  The third, `ZmqE2E_EphemeralPort_Resolves`, is now covered by
+  `ZmqE2E_BindingProducer_EphemeralPort_ResolvesAndPublishes`.
+
+- **Fan-out has no L4 scenario** (#146). It shares the producer-owned
+  publish path this work added, but adds PUB/SUB slow-joiner
+  coordination, so it needs a real readiness gate rather than a copy of
+  the one-to-one test.
+
 > **Extracted 2026-07-18 (all ✅ SHIPPED, verified against code):** Queue-owned
 > topology + layer cleanup P1-P5 (2026-07-11; HEP-0036 §I9.1); Loop-ready gate +
 > fan-in binding-side reader arc (2026-07-11; HEP-0011 §"Loop-ready gate");
@@ -23,6 +151,76 @@ removals from D2 / D3 drift batches).
 > mirrored producer/processor).  Verbatim narrative at commit `633d51c0`; index
 > `docs/archive/transient-2026-07-18/todo-completions/`.  #235 residual: L3 parity
 > regression tests → fold into **#232**.
+
+### Lua `build_api_` still pushes 16 members inline, mixing all three categories
+
+HEP-CORE-0011 § "Cross-Engine Binding Discipline" says every script member
+has a category and each category has a visible home.  The shared helpers in
+`src/scripting/lua_engine.cpp` now satisfy that: `push_common_api_closures_`
+holds general members only, with `push_inbox_api_closures_`,
+`push_band_api_closures_`, `push_broker_query_api_closures_` and
+`push_loop_telemetry_api_closures_` alongside it.
+
+What is left is the block inside `build_api_(RoleAPIBase&)` that pushes 16
+all-roles members inline, and it mixes all three categories.  Fourteen of
+the implementations were read on 2026-08-10, so this is a verified
+classification and not a guess from the signatures; the last two —
+`allowed_peer_count` and `allowed_peer_contains` — were added on the same
+day next to `allowed_peers`, whose category they share:
+
+| Category | Members | What the binding reaches for |
+|---|---|---|
+| General | `uid`, `name`, `channel` | a string accessor, nothing else |
+| Protocol-facing | `allowed_peers`, `allowed_peer_count`, `allowed_peer_contains`, `producers`, `consumers`, `producer_count`, `consumer_count`, `is_channel_ready`, `queue_mechanism` | broker-maintained roster and channel state |
+| Loop-owned | `out_slots_written`, `in_slots_received`, `out_drop_count` | `core()` slot counters |
+| **Spans all three** | `metrics` | see below |
+
+Two of these are worth stating, because a signature-only reading gets both
+wrong:
+
+- `producer_count` / `consumer_count` take a string and return an integer,
+  which looks as general as `uid`.  They are not: the number is the size of
+  a roster the broker maintains, so they carry a protocol's meaning.  Same
+  reasoning that puts `wait_for_role` with the broker queries.
+- `queue_mechanism` returns a string, but by way of `hub::mechanism_name()`
+  over a mechanism the channel negotiated.  Protocol-facing.
+
+**`metrics` stays whole — settled 2026-08-10.**  One call assembles queue
+counters (loop-owned), inbox counters (protocol-facing, HEP-CORE-0027),
+custom metrics and role/script error counts (general).  It is a reporting
+aggregate and it is not going to be split or given a fourth category.  Its
+shape is each engine's own — a Lua table, a Python dict, a native snapshot
+plus dotted-path lookup — and only *reachability* has to match across the
+three.  The rule is in HEP-CORE-0011 § "Same reach, different shape".
+
+Two things that follow from that rule, both found 2026-08-10:
+
+- **Lua hand-builds the metrics tree; Python and Native derive theirs.**
+  `RoleAPIBase::snapshot_metrics_json()` is the one place the tree is
+  assembled.  `ProducerAPI::metrics()` converts it to a dict, and
+  `native_engine.cpp` flattens it to a dotted-key map.  `lua_api_metrics`
+  re-assembles the same tree by hand.  The top-level keys agree today
+  (`queue` / `in_queue` + `out_queue`, `loop`, `role`, `inbox`, `custom`),
+  so nothing is broken — but the moment the canonical tree grows a field,
+  Lua silently lacks it.  Deriving Lua's table from the same source is the
+  fix; this is the drift risk the HEP rule names.
+- **`set_metrics_hook` has zero callers** anywhere in `src/`, `tests/` or
+  `share/`.  `snapshot_metrics_json()` applies it, so Python and Native
+  would carry whatever a hook adds and Lua would not.  Dead today, and an
+  accessibility split the day someone uses it.  Same family as the other
+  defined-but-undriven surfaces already tracked.
+
+The role-shape-conditional members in the `prod` / `cons` / `proc` branches
+stay in `build_api_`: which ones exist depends on the role's shape, so they
+cannot move to an unconditional helper.  They are almost all loop-owned
+(slot, flexzone, spinlock) and should say so.
+
+Python and Native have the same contract and have not been checked against
+it at all.  Native's context struct is already sectioned and is the model;
+Python's `.def` chain is one undivided run.
+
+Not urgent — nothing is broken, and the general home is the one that
+mattered, because that is where a protocol member gets added by accident.
 
 ### Carried out of the Connection/Inbox/Band review (verified open 2026-08-07)
 
@@ -277,15 +475,17 @@ formed (`#101 + #102 → #74 → #94 + #103 → #104 → #106 → done`) is spen
 - **Legacy `#103` — dynamic peer membership — ⚠ HALF SHIPPED (corrected
   2026-08-07, see #133).** An earlier note here called it shipped outright
   because the methods exist and L4 fan-in passes. Two halves, only one live:
-  - **The multi-peer PULL data path IS live** — `start()`'s PULL branch
-    iterates `producer_peers_` and issues per-peer `connect()` with per-peer
-    `curve_serverkey`; proven at L4 by `ZmqE2E_MultiProducer_TwoAuthorized`.
-  - **The dynamic membership API is not driven by anything.**
-    `set_producer_peers` / `add_producer_peer` / `remove_producer_peer`
-    (`hub_zmq_queue.hpp:461`, `:466`, `:472`) have **zero production
-    callers** — every invocation is in `test_hub_zmq_queue.cpp`. The item
+  - **CORRECTED 2026-08-11** — both bullets below were wrong; see #133.
+  - The per-peer `connect()` loop in `start()` serves the DIALING consumer,
+    where the peer count is one. It is NOT the fan-in path:
+    `ZmqE2E_MultiProducer_TwoAuthorized` drives a fan-in consumer, which
+    PULL-**binds** per the §3.3.0 matrix and never runs that loop.
+  - `set_producer_peers` HAS a production caller (`apply_master_approval`,
+    `hub_zmq_queue.cpp:1499`) and is live. Only `add_producer_peer` /
+    `remove_producer_peer` were callerless, and they were deleted
+    2026-08-11 — not as an unadopted feature but as residue: the item
     specified "framework drives these in response to HEP-0033 §12
-    channel-event broadcasts (producer joined/left)"; no framework code
+    channel-event broadcasts (producer joined/left)", and no framework code
     calls them. Peers arrive via `RxQueueOptions::producer_peers` at
     construction plus `apply_master_approval`'s peer[0] promotion — and
     `role_api_base.cpp:1414` labels even that route "Test-legacy path".

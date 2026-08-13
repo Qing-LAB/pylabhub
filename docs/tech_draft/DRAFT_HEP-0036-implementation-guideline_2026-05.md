@@ -119,9 +119,12 @@ broker's decisions.  Federation deferred to task #105.
 - **I7** Endpoint disclosure follows authorization.
 - **I8** Compromised-broker defence is out of scope.
 - **I9** Three-tier separation — broker emits channel-event
-  broadcasts; framework calls `queue.add_producer_peer` /
-  `remove_producer_peer`; queue conceals transport; script sees only
-  `api.rx.acquire()`.
+  broadcasts; framework installs the new membership set whole
+  (`set_peer_allowlist` / `set_producer_peers`); queue conceals
+  transport; script sees only `api.rx.acquire()`.
+  (This bullet named `queue.add_producer_peer` / `remove_producer_peer`
+  until 2026-08-11; both were deleted as residue of the pre-singular-side
+  model — see task #133.)
 
 **Non-goals (locked in HEP-CORE-0036 §2.1):** channel pre-declaration
 in hub config; force-closing CURVE sessions; per-consumer ACL inside

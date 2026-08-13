@@ -20,6 +20,7 @@ add_library(pylabhub-test-framework STATIC
   curve_test_setup.h
   pattern4_helpers.cpp
   pattern4_helpers.h
+  queue_activation.h
   role_api_base_test_access.cpp
   role_api_base_test_access.h
   shared_test_helpers.cpp

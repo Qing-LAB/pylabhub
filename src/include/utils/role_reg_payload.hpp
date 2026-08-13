@@ -120,7 +120,7 @@ struct ConsumerRegInputs
     /// Consumer's CURVE pubkey (Z85, exactly 40 chars).  REQUIRED per
     /// HEP-CORE-0036 §6.5: the broker uses it to populate the channel's
     /// authorized-consumer allowlist via
-    /// `HubState::_on_consumer_authorized`.  HEP-CORE-0040 §172 —
+    /// `HubState::_on_channel_peer_admitted`.  HEP-CORE-0040 §172 —
     /// callers in the role-host pass `secure().keys().pubkey("role_identity")`;
     /// broker rejects CONSUMER_REG_REQ with empty or wrong-length
     /// `zmq_pubkey`.

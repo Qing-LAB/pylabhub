@@ -309,7 +309,7 @@ void ConsumerRoleHost::worker_main_()
         // Build CONSUMER_REG_REQ payload.  `zmq_pubkey` carries the
         // consumer's CURVE pubkey (HEP-CORE-0036 §6.5) so the broker
         // can populate the channel-scope auth allowlist via
-        // `_on_consumer_authorized`.
+        // `_on_channel_peer_admitted`.
         const auto &ch = config_.in_channel();
         hub::ConsumerRegInputs cons_reg_in;
         cons_reg_in.channel = ch;
@@ -389,8 +389,18 @@ void ConsumerRoleHost::worker_main_()
         // host must treat this as a startup failure and request stop.
         if (!api_ref.apply_consumer_reg_ack(*reg_result))
         {
-            LOGGER_ERROR("[cons] apply_consumer_reg_ack failed — "
-                         "Rx queue did not reach Active state");
+            // Do not name a cause here.  This used to read "Rx queue did
+            // not reach Active state", which is only one of the ways
+            // apply can refuse — it also refuses a malformed
+            // acknowledgement, a failed pre-attach round-trip, and a
+            // bound address that could not be published
+            // (HEP-CORE-0021 §16.6).  In those cases the queue reached
+            // Active perfectly well and the message sent the reader
+            // looking in the wrong place.  The specific reason is
+            // already logged by whichever check refused.
+            LOGGER_ERROR("[cons] apply_consumer_reg_ack refused the broker's "
+                         "acknowledgement — see the preceding error for the "
+                         "reason; startup aborts");
             teardown_infrastructure_(); // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;

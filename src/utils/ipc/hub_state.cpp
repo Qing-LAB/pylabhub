@@ -2189,8 +2189,8 @@ void HubState::_on_channel_access_closed(const std::string &channel_name)
     pImpl->channel_access_index.erase(channel_name);
 }
 
-void HubState::_on_consumer_authorized(const std::string &channel_name,
-                                       const std::string &pubkey_z85)
+void HubState::_on_channel_peer_admitted(const std::string &channel_name,
+                                         const std::string &pubkey_z85)
 {
     if (!is_valid_identifier(channel_name, IdentifierKind::Channel) || pubkey_z85.empty())
     {
@@ -2210,7 +2210,8 @@ void HubState::_on_consumer_authorized(const std::string &channel_name,
     it->second.ledger.admit(pubkey_z85);
 }
 
-void HubState::_on_consumer_revoked(const std::string &channel_name, const std::string &pubkey_z85)
+void HubState::_on_channel_peer_revoked(const std::string &channel_name,
+                                        const std::string &pubkey_z85)
 {
     if (!is_valid_identifier(channel_name, IdentifierKind::Channel) || pubkey_z85.empty())
     {
@@ -2223,8 +2224,12 @@ void HubState::_on_consumer_revoked(const std::string &channel_name, const std::
     {
         return; // no-op per contract
     }
-    // Ledger's `revoke` always bumps current_version (revocation is a
-    // state-change signal for role confirmations to catch up to).
+    // Ledger's `revoke` bumps current_version IFF the key was actually
+    // admitted — a revoke of a never-admitted key is a full no-op,
+    // symmetric with `admit`'s idempotent-no-bump contract (see
+    // `VersionedAdmissionLedger::revoke`).  This comment claimed
+    // "always bumps" until 2026-08-11, which contradicted the ledger's
+    // own documented behaviour two files away.
     // Removes `pubkey_z85` from the admission map entirely — subsequent
     // `is_visible_to` returns false regardless of confirmed_version,
     // closing the revocation race by construction (no stale

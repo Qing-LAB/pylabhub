@@ -63,6 +63,7 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+#include "queue_activation.h" // bound_endpoint_or_fail
 
 using pylabhub::hub::ChecksumPolicy;
 using pylabhub::hub::InboxClient;
@@ -209,7 +210,7 @@ int bind_and_connect_basic()
             ASSERT_TRUE(q->start());
             pylabhub::utils::security::ZapPumpThread inbox_pump;
 
-            const std::string ep = q->actual_endpoint();
+            const std::string ep = ::pylabhub::tests::bound_endpoint_or_fail(*q);
             EXPECT_FALSE(ep.empty());
             EXPECT_NE(ep.find("tcp://"), std::string::npos);
 
@@ -299,8 +300,8 @@ int multiple_messages()
             ASSERT_TRUE(q->start());
             pylabhub::utils::security::ZapPumpThread inbox_pump;
 
-            auto c = InboxClient::connect_to(q->actual_endpoint(), "prod.multi.uid00000001",
-                                             uint32_schema());
+            auto c = InboxClient::connect_to(::pylabhub::tests::bound_endpoint_or_fail(*q),
+                                             "prod.multi.uid00000001", uint32_schema());
             ASSERT_NE(c, nullptr);
             admit_and_arm_client(*q, *c, inbox_keys, "prod.multi.uid00000001");
             ASSERT_TRUE(c->start());
@@ -397,7 +398,8 @@ int sender_uid_is_preserved()
             ASSERT_TRUE(q->start());
             pylabhub::utils::security::ZapPumpThread inbox_pump;
 
-            auto c = InboxClient::connect_to(q->actual_endpoint(), kSenderId, uint32_schema());
+            auto c = InboxClient::connect_to(::pylabhub::tests::bound_endpoint_or_fail(*q),
+                                             kSenderId, uint32_schema());
             ASSERT_NE(c, nullptr);
             admit_and_arm_client(*q, *c, inbox_keys, kSenderId);
             ASSERT_TRUE(c->start());
@@ -474,7 +476,8 @@ int sender_name_comes_from_the_key()
 
             // The routing id is the CLAIMED uid — InboxClient sets ZMQ_IDENTITY
             // from this argument, so a caller picks it freely.
-            auto c = InboxClient::connect_to(q->actual_endpoint(), kClaimedUid, uint32_schema());
+            auto c = InboxClient::connect_to(::pylabhub::tests::bound_endpoint_or_fail(*q),
+                                             kClaimedUid, uint32_schema());
             ASSERT_NE(c, nullptr);
             // The roster names this key as kTrueUid.  The receiver's only
             // route to a name.
@@ -567,7 +570,7 @@ int wrong_frame_count_drops()
             int linger = 0;
             zmq_setsockopt(sock, ZMQ_LINGER, &linger, sizeof(linger));
 
-            const std::string ep = q->actual_endpoint();
+            const std::string ep = ::pylabhub::tests::bound_endpoint_or_fail(*q);
             ASSERT_EQ(zmq_connect(sock, ep.c_str()), 0);
 
             std::this_thread::sleep_for(ms{50}); // let connect establish
@@ -639,8 +642,8 @@ int gap_count_tracks_dropped_sends()
             ASSERT_TRUE(q->start());
             pylabhub::utils::security::ZapPumpThread inbox_pump;
 
-            auto c = InboxClient::connect_to(q->actual_endpoint(), "prod.gap.uid000000001",
-                                             uint32_schema());
+            auto c = InboxClient::connect_to(::pylabhub::tests::bound_endpoint_or_fail(*q),
+                                             "prod.gap.uid000000001", uint32_schema());
             ASSERT_NE(c, nullptr);
             admit_and_arm_client(*q, *c, inbox_keys, "prod.gap.uid000000001");
             ASSERT_TRUE(c->start());
@@ -793,7 +796,7 @@ int replay_and_skew_dropped()
             zmq_setsockopt(sock, ZMQ_CURVE_SERVERKEY, inbox_keys.recv_pub.c_str(), 40);
             int linger = 0;
             zmq_setsockopt(sock, ZMQ_LINGER, &linger, sizeof(linger));
-            ASSERT_EQ(zmq_connect(sock, q->actual_endpoint().c_str()), 0);
+            ASSERT_EQ(zmq_connect(sock, ::pylabhub::tests::bound_endpoint_or_fail(*q).c_str()), 0);
             std::this_thread::sleep_for(ms{50});
 
             const uint64_t now =
@@ -860,8 +863,8 @@ int ack_code_3_handler_error()
             ASSERT_TRUE(q->start());
             pylabhub::utils::security::ZapPumpThread inbox_pump;
 
-            auto c = InboxClient::connect_to(q->actual_endpoint(), "prod.ackerr.uid00000001",
-                                             uint32_schema());
+            auto c = InboxClient::connect_to(::pylabhub::tests::bound_endpoint_or_fail(*q),
+                                             "prod.ackerr.uid00000001", uint32_schema());
             ASSERT_NE(c, nullptr);
             admit_and_arm_client(*q, *c, inbox_keys, "prod.ackerr.uid00000001");
             ASSERT_TRUE(c->start());
@@ -1004,7 +1007,8 @@ int schema_mismatch_different_type_drops_frame()
             pylabhub::utils::security::ZapPumpThread inbox_pump;
 
             std::vector<ZmqSchemaField> float64_schema = {{"float64", 1, 0}};
-            auto c = InboxClient::connect_to(q->actual_endpoint(), "MISMATCH-01", float64_schema);
+            auto c = InboxClient::connect_to(::pylabhub::tests::bound_endpoint_or_fail(*q),
+                                             "MISMATCH-01", float64_schema);
             ASSERT_NE(c, nullptr);
             admit_and_arm_client(*q, *c, inbox_keys, "MISMATCH-01");
             ASSERT_TRUE(c->start());
@@ -1062,7 +1066,8 @@ int schema_mismatch_different_size_drops_frame()
             pylabhub::utils::security::ZapPumpThread inbox_pump;
 
             std::vector<ZmqSchemaField> uint64_schema = {{"uint64", 1, 0}};
-            auto c = InboxClient::connect_to(q->actual_endpoint(), "MISMATCH-02", uint64_schema);
+            auto c = InboxClient::connect_to(::pylabhub::tests::bound_endpoint_or_fail(*q),
+                                             "MISMATCH-02", uint64_schema);
             ASSERT_NE(c, nullptr);
             admit_and_arm_client(*q, *c, inbox_keys, "MISMATCH-02");
             ASSERT_TRUE(c->start());
@@ -1115,7 +1120,8 @@ int checksum_enforced_roundtrip()
             ASSERT_TRUE(q->start());
             pylabhub::utils::security::ZapPumpThread inbox_pump;
 
-            auto c = InboxClient::connect_to(q->actual_endpoint(), "CKSUM-ENF", uint32_schema());
+            auto c = InboxClient::connect_to(::pylabhub::tests::bound_endpoint_or_fail(*q),
+                                             "CKSUM-ENF", uint32_schema());
             ASSERT_NE(c, nullptr);
             c->set_checksum_policy(ChecksumPolicy::Enforced);
             admit_and_arm_client(*q, *c, inbox_keys, "CKSUM-ENF");
@@ -1174,7 +1180,8 @@ int checksum_manual_no_stamp_receiver_rejects()
             ASSERT_TRUE(q->start());
             pylabhub::utils::security::ZapPumpThread inbox_pump;
 
-            auto c = InboxClient::connect_to(q->actual_endpoint(), "CKSUM-MAN", uint32_schema());
+            auto c = InboxClient::connect_to(::pylabhub::tests::bound_endpoint_or_fail(*q),
+                                             "CKSUM-MAN", uint32_schema());
             ASSERT_NE(c, nullptr);
             c->set_checksum_policy(ChecksumPolicy::Manual); // no auto-stamp
             admit_and_arm_client(*q, *c, inbox_keys, "CKSUM-MAN");
@@ -1228,7 +1235,8 @@ int checksum_none_roundtrip()
             ASSERT_TRUE(q->start());
             pylabhub::utils::security::ZapPumpThread inbox_pump;
 
-            auto c = InboxClient::connect_to(q->actual_endpoint(), "CKSUM-NONE", uint32_schema());
+            auto c = InboxClient::connect_to(::pylabhub::tests::bound_endpoint_or_fail(*q),
+                                             "CKSUM-NONE", uint32_schema());
             ASSERT_NE(c, nullptr);
             c->set_checksum_policy(ChecksumPolicy::None);
             admit_and_arm_client(*q, *c, inbox_keys, "CKSUM-NONE");
@@ -1297,8 +1305,8 @@ int inbox_curve_authorized_delivers()
 
             sec::ZapPumpThread pump; // authorizes CURVE handshakes via ZapRouter
 
-            auto c =
-                InboxClient::connect_to(q->actual_endpoint(), "alice.uid00000001", uint32_schema());
+            auto c = InboxClient::connect_to(::pylabhub::tests::bound_endpoint_or_fail(*q),
+                                             "alice.uid00000001", uint32_schema());
             ASSERT_NE(c, nullptr);
             c->set_curve_client_identity("alice_id", recv_pub);
             ASSERT_TRUE(c->start());
@@ -1365,8 +1373,8 @@ int inbox_curve_no_authority_denies()
 
             sec::ZapPumpThread pump;
 
-            auto c =
-                InboxClient::connect_to(q->actual_endpoint(), "peer.uid00000001", uint32_schema());
+            auto c = InboxClient::connect_to(::pylabhub::tests::bound_endpoint_or_fail(*q),
+                                             "peer.uid00000001", uint32_schema());
             ASSERT_NE(c, nullptr);
             c->set_curve_client_identity("peer_id", recv_pub);
             ASSERT_TRUE(c->start()); // socket-level connect succeeds; ZAP denies
@@ -1423,8 +1431,8 @@ int inbox_curve_unknown_denied()
 
             sec::ZapPumpThread pump;
 
-            auto c =
-                InboxClient::connect_to(q->actual_endpoint(), "bob.uid00000001", uint32_schema());
+            auto c = InboxClient::connect_to(::pylabhub::tests::bound_endpoint_or_fail(*q),
+                                             "bob.uid00000001", uint32_schema());
             ASSERT_NE(c, nullptr);
             c->set_curve_client_identity("bob_id", recv_pub);
             ASSERT_TRUE(c->start()); // socket-level connect succeeds; ZAP denies handshake
@@ -1514,8 +1522,8 @@ int inbox_backpressure_bounded_and_edge_logged()
             ASSERT_TRUE(q->start());
             pylabhub::utils::security::ZapPumpThread inbox_pump;
 
-            auto c = InboxClient::connect_to(q->actual_endpoint(), "flooder.uid00000001",
-                                             uint32_schema());
+            auto c = InboxClient::connect_to(::pylabhub::tests::bound_endpoint_or_fail(*q),
+                                             "flooder.uid00000001", uint32_schema());
             ASSERT_NE(c, nullptr);
             admit_and_arm_client(*q, *c, inbox_keys, "flooder.uid00000001");
             ASSERT_TRUE(c->start());
@@ -1618,8 +1626,8 @@ int inbox_stale_ack_not_attributed_to_next_send()
             ASSERT_TRUE(q->start());
             pylabhub::utils::security::ZapPumpThread inbox_pump;
 
-            auto c = InboxClient::connect_to(q->actual_endpoint(), "slowpoke.uid00000001",
-                                             uint32_schema());
+            auto c = InboxClient::connect_to(::pylabhub::tests::bound_endpoint_or_fail(*q),
+                                             "slowpoke.uid00000001", uint32_schema());
             ASSERT_NE(c, nullptr);
             admit_and_arm_client(*q, *c, inbox_keys, "slowpoke.uid00000001");
             ASSERT_TRUE(c->start());

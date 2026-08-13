@@ -301,13 +301,20 @@ unwind.
 typedef struct PlhNativeContext
 {
     /* ── Identity (read-only, valid until native_finalize) ──────────── */
-    const char *role_tag;      /* "prod", "cons", or "proc" */
+    const char *short_tag;     /* "prod", "cons", "proc", or "hub" */
     const char *uid;           /* Role UID */
     const char *name;          /* Role name */
     const char *channel;       /* Primary channel (in_channel for processor) */
     const char *out_channel;   /* Output channel (processor only; NULL otherwise) */
     const char *log_level;     /* Configured log level string */
     const char *role_dir;      /* Role directory path */
+    /* script_dir / logs_dir / run_dir belong with role_dir and are shown
+     * here for what they mean, but they physically sit at the END of the
+     * struct, just before the opaque tail.  A field can only be added
+     * where it does not move the function pointers below it. */
+    const char *script_dir;    /* Directory the script was loaded from */
+    const char *logs_dir;      /* <role_dir>/logs, or "" */
+    const char *run_dir;       /* <role_dir>/run, or "" */
 
     /* ── Framework API (function pointers filled by host) ───────────────
      * Every fn ptr in this table follows the v6 C ABI contract:
@@ -539,8 +546,16 @@ typedef struct PlhAbiInfo
     uint32_t api_version;       /* PLH_NATIVE_API_VERSION */
 } PlhAbiInfo;
 
-#define PLH_NATIVE_API_VERSION 7
+/* The current value lives in native_engine_api.h and is deliberately
+   NOT repeated here — a number copied into prose goes stale silently,
+   and this one did: it read 7 while the header was at 15. */
+#define PLH_NATIVE_API_VERSION /* see src/include/utils/native_engine_api.h */
 ```
+
+**API version log.**  Every bump, with what changed and why.  The header
+carries the same history at its own `#define` and is authoritative if the
+two ever disagree — this list exists so a reader can see the shape of the
+ABI's evolution without opening the header.
 
 **API version log:**
 - v1 → v2 (2026-04): initial ABI baseline.
@@ -599,6 +614,63 @@ typedef struct PlhAbiInfo
   but plugins never own a `PlhNativeContext`, the host populates it; so
   pure ABI compatibility (no rebuild needed) is preserved for v6
   role-side plugins.  See §4.9 for the full hub-side matrix.
+- v7 → v8 (2026-06-25): **BREAKING (rename).**
+  `PlhNativeContext::role_tag` renamed to `short_tag` — same semantics,
+  same offset, identifier only; the C++ accessor `ctx.role_tag()` became
+  `ctx.short_tag()`.  Before this, the same four-letter tag was stored
+  under three names across framework surfaces (`role_tag`, `short_tag`,
+  `tag`), which caused drift and let two distinct concepts be mistaken
+  for one.  v8 puts every SHORT-form slot under `short_tag` and every
+  LONG-form slot under `role_type`.  See HEP-CORE-0036 §5b.10.
+- v8 → v9 (2026-07-11): **BREAKING.**  `on_init` returns
+  `plh_init_status_t` instead of `void`, per the HEP-CORE-0011 loop-ready
+  gate.  The framework calls it at the top of every cycle until it
+  returns `PLH_INIT_READY`, ANDed with the per-role framework default.
+  Calling a v8 void-returning `on_init` through the new pointer is UB on
+  some ABIs, so v8 plugins are refused at load.  Adds
+  `PLH_STOP_REASON_INIT_TIMEOUT` (6).
+- v9 → v10 (2026-07-18): ADDITIVE.  Inbox **send** callbacks —
+  `open_inbox` / `inbox_acquire` / `inbox_send` / `inbox_discard` /
+  `inbox_close` (HEP-CORE-0027 §3.5).  Receiving via the `on_inbox`
+  export already existed; this gave native parity with Python
+  `api.open_inbox(uid).send(...)`.
+- v10 → v11 (2026-07-23): ADDITIVE.  `hub_admin_console_print`
+  (HEP-CORE-0033 §11.0.4) — hub-plugin parity with Lua/Python
+  `api.admin_console_print(...)`.
+- v11 → v12 (2026-07-25): ADDITIVE.  Optional peer-join exports
+  `on_producer_joined` / `on_consumer_joined` (HEP-CORE-0017 §4.7.6).  A
+  plugin that does not export them is unaffected.
+- v12 → v13 (2026-07-26): ADDITIVE.  Broker query callbacks
+  `get_schema_json` / `get_channel_schema_json` /
+  `get_channel_metrics_json` (HEP-CORE-0034 §10.3).  Each returns the
+  FULL broker reply as JSON — branch on `status` / `error_code`; NULL
+  only on transport failure.
+- v13 → v14 (2026-08-02): ADDITIVE.  Channel broadcast in both
+  directions: the `channel_broadcast` callback to send, and an optional
+  `on_channel_broadcast` export to receive.  Before this the facility was
+  unreachable from *any* engine — no send binding, and no arm for the
+  delivery notify in the role's classifier.
+- v14 → v15 (2026-08-06): **BREAKING.**  `open_inbox` gains a trailing
+  `int *out_reason` carrying a `PLH_INBOX_OPEN_*` code.  Previously every
+  failure collapsed to NULL, so a plugin could not distinguish "the
+  target has not yet confirmed a roster naming me, retry shortly" from "I
+  hold no registration on that hub and never will" — the hub
+  distinguishes them on the wire (HEP-CORE-0035 §4.9.7) and the ABI was
+  discarding it.  Pass NULL to ignore.
+- v15 → v16 (2026-08-10): ADDITIVE.  `script_dir`, `logs_dir` and
+  `run_dir` as data fields.  Lua and Python had exposed all three since
+  they shipped; native carried only `role_dir`, so a C plugin wanting its
+  log directory rebuilt the path and hoped it matched.  The host derives
+  them once and every engine reads the same strings.
+
+**Reading the additive ones correctly.**  "Additive" means new members go
+at the end, before the opaque `_core` / `_api` tail, so offsets of
+everything above are unchanged.  It does **not** mean a plugin can skip
+rebuilding: the load-time `api_version` check is exact-match, not
+range-based, so every bump requires a rebuild regardless.  And all of the
+above are native-plugin-ABI bumps only — the inter-process
+`ComponentVersions` registry is untouched, so a role carrying any of these
+engines talks to the broker identically.
 
 The native engine exports `native_abi_info()` returning a pointer to a static `PlhAbiInfo`.
 The framework validates at load time:
@@ -1313,7 +1385,7 @@ zero binary cost — same as role-side wrappers):
 
 | C++ method | C ABI delegate | Return on unwired / wrong side |
 |---|---|---|
-| `is_hub()` | role_tag comparison (`"hub"`) | `false` |
+| `is_hub()` | `short_tag` comparison (`"hub"`) | `false` |
 | `hub_metrics_json()` | `ctx->hub_metrics_json` | `""` |
 | `hub_config_json()` | `ctx->hub_config_json` | `""` |
 | `hub_query_metrics_json(categories)` | `ctx->hub_query_metrics_json` | `""` |
@@ -1330,12 +1402,16 @@ Valid only until the next `hub_*_json()` call on the same thread.
 Plugin authors who need the value to survive past the next call
 must copy: `std::string s{ctx.hub_metrics_json()};`.
 
-**`is_hub()` design note.**  Detection is by `role_tag == "hub"`
+**`is_hub()` design note.**  Detection is by `short_tag == "hub"`
 (the literal string the host writes during `wire_hub()`).  This
 is intentional — pure-C plugins can do the same check without
-linking the C++ wrapper.  The framework guarantees the role-tag
-string is one of `"producer"`, `"consumer"`, `"processor"`,
-`"hub"`; future role-tag additions for sub-hub variants (e.g.
+linking the C++ wrapper.  The framework guarantees the short-tag
+string is one of `"prod"`, `"cons"`, `"proc"`, `"hub"` — the SHORT
+forms.  The long forms (`"producer"`, `"consumer"`, `"processor"`)
+live in `role_type` and never appear in this field; conflating the
+two is the exact confusion the v8 rename was made to end, so a
+predicate written against the long forms would silently never
+match.  Future short-tag additions for sub-hub variants (e.g.
 federation peers) would need to extend this predicate.
 
 ### 5.8 Export Macros (existing — unchanged)

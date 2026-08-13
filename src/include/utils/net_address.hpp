@@ -20,7 +20,9 @@
  */
 
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <utility>
 
 #if defined(_WIN32)
 #include <ws2tcpip.h> // inet_pton
@@ -216,5 +218,82 @@ inline EndpointValidation validate_tcp_endpoint(const std::string &endpoint)
     result.error = "invalid host '" + host_str + "': " + hostname_error;
     return result;
 }
+
+/**
+ * @brief An endpoint a peer can actually connect to.
+ *
+ * A TCP endpoint string plays two roles in this system, and they are not
+ * interchangeable (HEP-CORE-0036 §6.7.2):
+ *
+ * - A **bind request** is what configuration carries.  `tcp://host:0` is
+ *   legal and means "any free port".  It says where a socket would like
+ *   to be, and it is nobody else's business.
+ * - A **bound address** is what `zmq_bind` resolves the request into.
+ *   Port 0 is impossible.  It says where a socket actually is, and it is
+ *   the only form that may be handed to a peer.
+ *
+ * `validate_tcp_endpoint` above validates the first kind, which is why it
+ * accepts port 0 — correctly, and unchanged.  This type is the second
+ * kind.  It has no default constructor and no mutators, so a value of
+ * this type cannot be unresolved: the only way to obtain one is
+ * `try_validate`, and `try_validate` rejects port 0.
+ *
+ * That is the whole point of it being a type rather than a check.  A
+ * function that publishes an endpoint to a peer takes a `BoundAddress`,
+ * and a configured string will not compile there — so no caller has to
+ * remember to validate, and no caller can write a guard that cannot
+ * fail.  An accessor that may not know the address yet returns
+ * `std::optional<BoundAddress>` and says "not yet" honestly, rather than
+ * falling back to the configured request and handing the caller a
+ * plausible-looking string that is not an address.
+ *
+ * @code
+ * // Producing one: only from what the socket actually resolved to.
+ * auto bound = BoundAddress::try_validate(sock.get(zmq::sockopt::last_endpoint));
+ *
+ * // Consuming one: the signature is the guarantee.
+ * void publish_to_peer(const BoundAddress &where);
+ * @endcode
+ */
+class BoundAddress
+{
+  public:
+    /// Validate-and-wrap a resolved endpoint.  Returns `std::nullopt`
+    /// when @p text is not a well-formed `tcp://host:port`, or when the
+    /// port is 0 — an unresolved bind request is not a bound address,
+    /// and this is the single place that distinction is enforced.
+    ///
+    /// Named `try_validate` to match `Z85PublicKey`, the worked example
+    /// of this pattern: `validate` throws and is for operator-controlled
+    /// input, `try_validate` returns an optional and is for input a peer
+    /// controls, and `parse` is reserved for turning a wire STRUCTURE
+    /// into a typed body (`PeerRow::parse`, `WireEnvelope::parse_*`).
+    /// Every caller here is checking a scalar that arrived from a socket
+    /// or a peer, so this is the non-throwing form and there is no
+    /// throwing sibling until something needs one.  See
+    /// `docs/IMPLEMENTATION_GUIDANCE.md` § "Validated value types".
+    [[nodiscard]] static std::optional<BoundAddress> try_validate(const std::string &text)
+    {
+        const auto v = validate_tcp_endpoint(text);
+        if (!v.ok() || v.port == 0)
+            return std::nullopt;
+        return BoundAddress(text);
+    }
+
+    /// The endpoint as it goes on the wire.
+    ///
+    /// This is deliberately the only accessor.  `host()` and `port()`
+    /// were written alongside it and had no callers — every consumer
+    /// wants the whole endpoint, because the whole endpoint is what
+    /// travels.  Add them back when something needs them, rather than
+    /// keeping split-out fields that must be trusted to stay in step
+    /// with the text.
+    [[nodiscard]] const std::string &str() const noexcept { return text_; }
+
+  private:
+    explicit BoundAddress(std::string text) : text_(std::move(text)) {}
+
+    std::string text_;
+};
 
 } // namespace pylabhub

@@ -473,8 +473,12 @@ void ProcessorRoleHost::worker_main_()
         // in-side consumer activation below.
         if (!api_ref.apply_producer_reg_ack(*prod_result))
         {
-            LOGGER_ERROR("[proc] apply_producer_reg_ack failed — "
-                         "Tx queue did not reach Active state");
+            // No cause named here: apply refuses for several reasons
+            // (malformed acknowledgement, queue refused to arm), and the
+            // one that fired has already logged it.
+            LOGGER_ERROR("[proc] apply_producer_reg_ack refused the broker's "
+                         "acknowledgement for the OUT channel — see the "
+                         "preceding error; startup aborts");
             teardown_infrastructure_(); // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;
@@ -501,8 +505,14 @@ void ProcessorRoleHost::worker_main_()
         // as consumer_role_host.
         if (!api_ref.apply_consumer_reg_ack(*cons_result))
         {
-            LOGGER_ERROR("[proc] apply_consumer_reg_ack failed — "
-                         "Rx queue did not reach Active state");
+            // As above.  On a fan-in IN channel this processor is the
+            // binding side, so one of the reasons is a bound address
+            // that could not be published (HEP-CORE-0021 §16.6) — in
+            // which case the queue DID reach Active and naming it would
+            // point the reader at the wrong thing.
+            LOGGER_ERROR("[proc] apply_consumer_reg_ack refused the broker's "
+                         "acknowledgement for the IN channel — see the "
+                         "preceding error; startup aborts");
             teardown_infrastructure_(); // H3b — unwind L1 socket + queues
             promise_ref.set_value(false);
             return;

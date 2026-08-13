@@ -88,8 +88,8 @@ void write_zmq_producer_config(const fs::path &cfg_path, const fs::path &hub_dir
 
     // ZMQ TX.  Producer's bind direction comes from `out_channel_topology`
     // per HEP-CORE-0017 §3.3.0 (writer + one-to-one or fan-out →
-    // binding; writer + fan-in → dialing).  The `out_zmq_bind` legacy
-    // field is no longer read by `build_tx_queue`.  Endpoint hint is
+    // binding; writer + fan-in → dialing).  There is no separate bind
+    // knob — `out_zmq_bind` is a retired key.  Endpoint hint is
     // used on the binding side only; dialing side receives its dial
     // target on REG_ACK.
     j["out_transport"] = "zmq";
@@ -123,19 +123,65 @@ void write_zmq_producer_config(const fs::path &cfg_path, const fs::path &hub_dir
 /// HEP-CORE-0036 §6.5).  The SHM e2e doesn't have this issue
 /// because SHM is in-memory random-access.  `prod_test:` log prefix
 /// preserved for parity with the SHM script.
-void write_zmq_producer_script(const fs::path &script_dir, int n_slots)
+/// @param expect_peer_uid  When non-empty, the script also observes the
+///        producer-side allowlist through `api.allowed_peer_count` /
+///        `api.allowed_peer_contains` and emits ONE
+///        `prod_test: allowlist ...` line once the count becomes
+///        non-zero.  Left empty by callers that do not pin the
+///        allowlist, so their scripts are byte-identical to before.
+///
+/// Why the observation lives in the script rather than in the parent:
+/// these two are script-facing bindings, and the only way to verify a
+/// binding is to have a script call it.  Reading the same numbers from
+/// the parent's wire view would pin the broker, which
+/// `test_pattern4_broker_consumer.cpp` already does — a sibling, not a
+/// substitute (README_testing §1.3).
+///
+/// Why it polls across cycles instead of checking once in `on_init`:
+/// the producer's allowlist arrives via the
+/// CHANNEL_AUTH_CHANGED_NOTIFY → GET_CHANNEL_AUTH chain roughly 110 ms
+/// AFTER the consumer goes Active (HEP-CORE-0036 §6.5), so at `on_init`
+/// the honest answer is 0.  The script watches for the transition
+/// rather than sleeping for it.
+void write_zmq_producer_script(const fs::path &script_dir, int n_slots,
+                               const std::string &expect_peer_uid = "")
 {
     std::error_code ec;
     fs::create_directories(script_dir, ec);
     std::ofstream f(script_dir / "__init__.py");
     f << "_N_SLOTS = " << n_slots << "\n"
-      << "_iter = [0]\n\n"
+      << "_EXPECT_PEER = '" << expect_peer_uid << "'\n"
+      << "_iter = [0]\n"
+         "_peer_logged = [False]\n\n"
          "def on_init(api):\n"
          "    api.log('info', 'prod_test: init')\n"
+         "\n"
+         "def _observe_allowlist(api):\n"
+         "    # One line, once, after the allowlist actually populates.\n"
+         "    if _peer_logged[0] or not _EXPECT_PEER:\n"
+         "        return\n"
+         "    ch = api.channel()\n"
+         "    n = api.allowed_peer_count(ch)\n"
+         "    if n < 1:\n"
+         "        return\n"
+         "    _peer_logged[0] = True\n"
+         "    api.log('info', 'prod_test: allowlist count=' + str(n) +\n"
+         "            ' has_peer=' + str(api.allowed_peer_contains(ch, _EXPECT_PEER)) +\n"
+         "            ' has_ghost=' +\n"
+         "            str(api.allowed_peer_contains(ch, 'cons.nosuch.uid00000000')))\n"
+         // HEP-CORE-0035 §2 through the ROLE-level forwarder.  The
+         // queue-level invariant is pinned at L2 (test_hub_zmq_queue
+         // asserts Curve when Active and Uninitialized after stop);
+         // what only a real script can show is that
+         // `api.queue_mechanism` actually reaches it on a started queue.
+         "    api.log('info', 'prod_test: mechanism tx=' +\n"
+         "            str(api.queue_mechanism(api.Tx)) +\n"
+         "            ' rx=' + str(api.queue_mechanism(api.Rx)))\n"
          "\n"
          "def on_produce(tx, msgs, api):\n"
          "    if tx.slot is None:\n"
          "        return False\n"
+         "    _observe_allowlist(api)\n"
          "    n = _iter[0] % _N_SLOTS\n"
          "    tx.slot.value = float(n)\n"
          "    # Log only the first 2*N iterations to avoid log bloat.\n"
@@ -179,8 +225,8 @@ void write_zmq_consumer_config(const fs::path &cfg_path, const fs::path &hub_dir
     j["in_transport"] = "zmq";
     // Consumer's bind direction comes from `in_channel_topology` per
     // HEP-CORE-0017 §3.3.0 (reader + fan-in → binding; reader +
-    // fan-out or one-to-one → dialing).  The `in_zmq_bind` legacy
-    // field is no longer read by `build_rx_queue`.  Endpoint is a
+    // fan-out or one-to-one → dialing).  There is no separate bind
+    // knob — `in_zmq_bind` is a retired key.  Endpoint is a
     // placeholder — dialing side ignores it (peer arrives on
     // REG_ACK.initial_allowlist); binding side (fan-in consumer)
     // uses it as a bind hint and `port=0` means "any free port,"
@@ -220,19 +266,43 @@ void write_zmq_consumer_config(const fs::path &cfg_path, const fs::path &hub_dir
 /// write loop (necessary because ZMQ PUSH/PULL drops pre-attach
 /// slots per HEP-CORE-0036 §6.5), `prod_test:` log prefix, first
 /// 2*N iterations logged then quiet.
+/// @param expect_peer_uid  As in `write_zmq_producer_script` — when set, the
+///        script emits one `prod_test: allowlist ...` line once the
+///        allowlist populates.  Under FAN-IN the producer is the DIALING
+///        side, so its allowlist is built by a different branch than the
+///        binding-side one that one-to-one exercises.  Pinning the same
+///        expectation on both is what makes the two branches comparable;
+///        a difference between them is a defect, not a topology feature.
 void write_zmq_producer_script_with_offset(const fs::path &script_dir, int n_slots,
-                                           int value_offset)
+                                           int value_offset,
+                                           const std::string &expect_peer_uid = "")
 {
     std::error_code ec;
     fs::create_directories(script_dir, ec);
     std::ofstream f(script_dir / "__init__.py");
     f << "_N_SLOTS = " << n_slots << "\n"
       << "_OFFSET  = " << value_offset << "\n"
-      << "_iter = [0]\n\n"
+      << "_EXPECT_PEER = '" << expect_peer_uid << "'\n"
+      << "_iter = [0]\n"
+         "_peer_logged = [False]\n\n"
          "def on_init(api):\n"
          "    api.log('info', 'prod_test: init offset=' + str(_OFFSET))\n"
          "\n"
+         "def _observe_allowlist(api):\n"
+         "    if _peer_logged[0] or not _EXPECT_PEER:\n"
+         "        return\n"
+         "    ch = api.channel()\n"
+         "    n = api.allowed_peer_count(ch)\n"
+         "    if n < 1:\n"
+         "        return\n"
+         "    _peer_logged[0] = True\n"
+         "    api.log('info', 'prod_test: allowlist count=' + str(n) +\n"
+         "            ' has_peer=' + str(api.allowed_peer_contains(ch, _EXPECT_PEER)) +\n"
+         "            ' has_ghost=' +\n"
+         "            str(api.allowed_peer_contains(ch, 'cons.nosuch.uid00000000')))\n"
+         "\n"
          "def on_produce(tx, msgs, api):\n"
+         "    _observe_allowlist(api)\n"
          // #74 objective peer counts: a DIALING producer must see the true
          // channel total (both producers + the consumer), not 0.  Delivered
          // by the broker's CHANNEL_COUNT_NOTIFY to every member.
@@ -733,9 +803,15 @@ TEST_F(PlhHubCliTest, ZmqE2E_AuthorizedConsumerReceivesAllSlots)
     const std::string prod_uid = "prod.l4zmq.uid12345678";
     const std::string cons_uid = "cons.l4zmq.uid12345678";
     constexpr int kSlots = 5;
-    // Producer port: fixed (HEP-CORE-0021 §16.5 ephemeral-binding
-    // not yet wired — #94).  Use 19000 + pid % 1000 to keep
-    // concurrent test runs from colliding.
+    // Producer port: fixed, and deliberately so — this scenario is
+    // about the data path, not about endpoint resolution, and a fixed
+    // port keeps the publish idempotent so nothing here depends on it.
+    // 19000 + pid % 1000 keeps concurrent runs from colliding.
+    //
+    // (This comment used to say ephemeral binding was "not yet wired".
+    // It is wired: a binding producer resolves and publishes its port
+    // per HEP-CORE-0021 §16.6.  The scenario that exercises THAT is
+    // `ZmqE2E_BindingProducer_EphemeralPort_ResolvesAndPublishes`.)
     const int prod_port = 19000 + (::getpid() % 1000);
 
     // ── Hub init + keygen + ZAP install ───────────────────────────────────
@@ -772,7 +848,9 @@ TEST_F(PlhHubCliTest, ZmqE2E_AuthorizedConsumerReceivesAllSlots)
     fs::create_directories(cons_dir / "vault", ec);
 
     write_zmq_producer_config(prod_dir / "producer.json", hub_dir, prod_uid, channel, prod_port);
-    write_zmq_producer_script(prod_dir / "script" / "python", kSlots);
+    // Pass the consumer's uid so the producer script can pin the two
+    // allowlist accessors against a real admission (assertion below).
+    write_zmq_producer_script(prod_dir / "script" / "python", kSlots, cons_uid);
     write_zmq_consumer_config(cons_dir / "consumer.json", hub_dir, cons_uid, channel);
     write_zmq_consumer_script(cons_dir / "script" / "python", kSlots);
 
@@ -882,6 +960,27 @@ TEST_F(PlhHubCliTest, ZmqE2E_AuthorizedConsumerReceivesAllSlots)
         cons_dir, cons, "cons_test: complete N=" + std::to_string(kSlots), seconds(10)))
         << dump_full("cons_test: complete N=" + std::to_string(kSlots) + " — data flow");
 
+    // ── Script-facing allowlist accessors, read by a real script ──────────
+    //
+    // `event=ChannelAuthApplied` above pins that the FRAMEWORK applied
+    // the allowlist.  This pins that a SCRIPT can see it, which is a
+    // different claim and the one the two accessors exist to make.
+    //
+    // Asserted as one exact line so all three values are pinned at once:
+    //
+    //   count=1      the real admitted consumer — NOT 0.  The accessors
+    //                return 0 both when the channel is genuinely empty
+    //                and when nothing was ever wired, so a test that
+    //                tolerated 0 would pass against a dead allowlist.
+    //   has_peer     True for the consumer that actually got admitted.
+    //   has_ghost    False for a uid that was never admitted — without
+    //                this, an accessor that returned True for everything
+    //                would satisfy has_peer and look correct.
+    ASSERT_TRUE(wait_for_role_marker(
+        prod_dir, prod, "prod_test: allowlist count=1 has_peer=True has_ghost=False", seconds(10)))
+        << dump_full("prod_test: allowlist — script-side allowed_peer_count / "
+                     "allowed_peer_contains against a real admission");
+
     // ── Shutdown ──────────────────────────────────────────────────────────
     cons.send_signal(SIGTERM);
     EXPECT_EQ(cons.wait_for_exit(10), 0) << "consumer did not exit cleanly on SIGTERM.\n"
@@ -896,6 +995,194 @@ TEST_F(PlhHubCliTest, ZmqE2E_AuthorizedConsumerReceivesAllSlots)
                                         << hub.get_stderr();
 
     // ── Class-D gate: no [ERROR ] in any log ──────────────────────────────
+    auto contains_error = [](const std::string &s)
+    { return s.find("[ERROR ]") != std::string::npos; };
+    const std::string hub_log = read_hub_log(hub_dir);
+    EXPECT_FALSE(contains_error(hub_log)) << "hub log [ERROR ]:\n" << hub_log;
+    EXPECT_FALSE(contains_error(prod.get_stderr())) << "producer stderr [ERROR ]:\n"
+                                                    << prod.get_stderr();
+    EXPECT_FALSE(contains_error(cons.get_stderr())) << "consumer stderr [ERROR ]:\n"
+                                                    << cons.get_stderr();
+
+    ::unsetenv("PYLABHUB_HUB_PASSWORD");
+    ::unsetenv("PYLABHUB_ROLE_PASSWORD");
+}
+
+// ─── Binding PRODUCER, ephemeral port — the owner-side publish ──────────────
+//
+// One scenario, four aspects of the same auth sequence, because they
+// are not separable: a producer that binds must resolve a port, publish
+// it, and only then can a consumer dial it and data flow.  Splitting
+// them into four tests would assert four halves of one act.
+//
+// WHY THE EPHEMERAL PORT IS THE WHOLE POINT.  Every other L4 ZMQ test
+// gives the producer a FIXED port (`19000 + pid % 1000`), so the value
+// it publishes equals the value it was configured with and the publish
+// is idempotent — it cannot be observed to matter, and none of these
+// assertions could fail against a build where the producer never
+// published at all.  With `:0` the configured value is unusable by
+// construction, so every step below depends on the correction actually
+// happening.
+//
+// WHY THIS TOPOLOGY.  The endpoint publish belongs to whichever side
+// BINDS (HEP-CORE-0017 §3.3.0), and the two owners run different code:
+//
+//   fan-in            → CONSUMER binds → `apply_consumer_reg_ack`
+//                       → `ChannelEntry.data_endpoint`
+//                       → read by producers' REG_ACK dial row
+//   one-to-one/fan-out → PRODUCER binds → `apply_producer_reg_ack`
+//                       → `ProducerEntry.zmq_node_endpoint`
+//                       → read by consumers' `CONSUMER_REG_ACK.producers[]`
+//
+// The consumer-owned half is already covered and already ephemeral (the
+// consumer config helper hardcodes `tcp://127.0.0.1:0`, and the fan-in
+// scenario asserts its publish marker).  This is the producer-owned
+// half.  Fan-out shares this code path but adds PUB/SUB slow-joiner
+// coordination and has no L4 scenario at all — that is its own work.
+TEST_F(PlhHubCliTest, ZmqE2E_BindingProducer_EphemeralPort_ResolvesAndPublishes)
+{
+    using std::chrono::seconds;
+
+    const std::string channel = "lab.l4.zmq.e2e.ephem";
+    const std::string prod_uid = "prod.l4ephem.uid12345678";
+    const std::string cons_uid = "cons.l4ephem.uid12345678";
+    constexpr int kSlots = 5;
+    // The bind REQUEST.  Port 0 is legal here and unusable as an
+    // address — HEP-CORE-0036 §6.7.2.  No pid-derived offset is needed
+    // precisely because the OS picks a free port.
+    constexpr int kEphemeralPort = 0;
+
+    const fs::path hub_dir = tmp("zmqe2e_ephem_hub");
+    {
+        WorkerProcess init(plh_hub_binary(), "--init",
+                           {hub_dir.string(), "--name", "L4ZmqEphemHub"});
+        ASSERT_EQ(init.wait_for_exit(), 0) << init.get_stderr();
+    }
+    {
+        nlohmann::json j;
+        {
+            std::ifstream f(hub_dir / "hub.json");
+            f >> j;
+        }
+        j["network"]["broker_endpoint"] = "tcp://127.0.0.1:0";
+        j["admin"]["enabled"] = false;
+        j["script"]["path"] = "";
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+    ::setenv("PYLABHUB_HUB_PASSWORD", "zmqe2e-ephem-hub-pw", /*overwrite=*/1);
+    {
+        WorkerProcess kg(plh_hub_binary(), "--config",
+                         {(hub_dir / "hub.json").string(), "--keygen"});
+        ASSERT_EQ(kg.wait_for_exit(), 0) << kg.get_stderr();
+    }
+
+    const fs::path prod_dir = tmp("zmqe2e_ephem_prod");
+    const fs::path cons_dir = tmp("zmqe2e_ephem_cons");
+    std::error_code ec;
+    fs::create_directories(prod_dir / "vault", ec);
+    fs::create_directories(cons_dir / "vault", ec);
+
+    // No topology argument: the default is one-to-one, under which the
+    // producer is the binding side.  Stated here because the test turns
+    // on it.
+    write_zmq_producer_config(prod_dir / "producer.json", hub_dir, prod_uid, channel,
+                              kEphemeralPort);
+    write_zmq_producer_script(prod_dir / "script" / "python", kSlots, cons_uid);
+    write_zmq_consumer_config(cons_dir / "consumer.json", hub_dir, cons_uid, channel);
+    write_zmq_consumer_script(cons_dir / "script" / "python", kSlots);
+
+    ::setenv("PYLABHUB_ROLE_PASSWORD", "zmqe2e-ephem-role-pw", /*overwrite=*/1);
+    const std::string prod_pubkey =
+        keygen_role_and_read_pubkey(prod_dir, "producer", prod_uid, "zmqe2e-ephem-role-pw");
+    const std::string cons_pubkey =
+        keygen_role_and_read_pubkey(cons_dir, "consumer", cons_uid, "zmqe2e-ephem-role-pw");
+    add_known_role(hub_dir, "zmqe2e_ephem_prod", prod_uid, "producer", prod_pubkey);
+    add_known_role(hub_dir, "zmqe2e_ephem_cons", cons_uid, "consumer", cons_pubkey);
+
+    WorkerProcess hub(plh_hub_binary(), hub_dir.string(), {});
+    ASSERT_TRUE(wait_for_hub_marker(hub_dir, "Broker: listening on")) << "hub never bound.  Log:\n"
+                                                                      << read_hub_log(hub_dir);
+    const std::string bound_ep = extract_bound_endpoint(read_hub_log(hub_dir));
+    ASSERT_FALSE(bound_ep.empty()) << "no bound endpoint in hub log";
+    {
+        nlohmann::json j;
+        {
+            std::ifstream f(hub_dir / "hub.json");
+            f >> j;
+        }
+        j["network"]["broker_endpoint"] = bound_ep;
+        std::ofstream f(hub_dir / "hub.json");
+        f << j.dump(2);
+    }
+
+    WorkerProcess prod(plh_role_binary(), "--role", {"producer", prod_dir.string()});
+    WorkerProcess cons(plh_role_binary(), "--role", {"consumer", cons_dir.string()});
+
+    auto dump_full = [&](const std::string &where) -> std::string
+    {
+        std::string s;
+        s += "[fail at: " + where + "]\n";
+        s += "── producer log file ──\n" + read_role_log(prod_dir) + "\n";
+        s += "── producer stderr ──\n" + prod.get_stderr() + "\n";
+        s += "── consumer log file ──\n" + read_role_log(cons_dir) + "\n";
+        s += "── consumer stderr ──\n" + cons.get_stderr() + "\n";
+        s += "── hub log ──\n" + read_hub_log(hub_dir) + "\n";
+        return s;
+    };
+
+    // (1) The producer published a resolved address (HEP-CORE-0021
+    //     §16.6 / §16.10).  Until the binding-producer publish existed,
+    //     this marker never appeared on a producer at all.
+    ASSERT_TRUE(wait_for_role_marker(
+        prod_dir, prod, "event=EndpointUpdatePublished channel='" + channel + "'", seconds(10)))
+        << dump_full("event=EndpointUpdatePublished — binding producer published its "
+                     "bound address");
+
+    // (2) What it published is an ADDRESS, not the bind request it was
+    //     configured with.  Asserting the marker alone would pass for a
+    //     producer that published `:0`, which is the exact defect.
+    const std::string prod_log = read_role_log(prod_dir);
+    const std::string kNeedle =
+        "event=EndpointUpdatePublished channel='" + channel + "' resolved_endpoint='";
+    const auto at = prod_log.find(kNeedle);
+    ASSERT_NE(at, std::string::npos) << dump_full("resolved_endpoint field absent from marker");
+    const auto ep_begin = at + kNeedle.size();
+    const auto ep_end = prod_log.find('\'', ep_begin);
+    ASSERT_NE(ep_end, std::string::npos) << dump_full("unterminated resolved_endpoint");
+    const std::string published = prod_log.substr(ep_begin, ep_end - ep_begin);
+    EXPECT_NE(published, "tcp://127.0.0.1:0")
+        << "producer published its unresolved bind REQUEST as though it were an "
+           "address; every consumer on this channel would dial port 0\n"
+        << dump_full("published endpoint is the configured ':0'");
+    EXPECT_TRUE(published.rfind("tcp://127.0.0.1:", 0) == 0 && published.back() != '0')
+        << "published='" << published << "' is not a resolved tcp address\n"
+        << dump_full("published endpoint malformed");
+
+    // (3) The address was real: the consumer dialled it and received
+    //     every slot.  This is the assertion the whole mechanism exists
+    //     to make true — a published `:0` cannot produce it.
+    ASSERT_TRUE(wait_for_role_marker(
+        cons_dir, cons, "cons_test: complete N=" + std::to_string(kSlots), seconds(15)))
+        << dump_full("cons_test: complete — consumer dialled the published address");
+
+    // (4) HEP-CORE-0035 §2 through the ROLE-level accessor, read by a
+    //     real script on a started queue.  The queue-level invariant is
+    //     pinned at L2; this pins that `api.queue_mechanism` reaches it,
+    //     which is the part only a script can show.  Rx is Uninitialized
+    //     because a producer has no read side — that half also guards
+    //     against an accessor that reports Curve for everything.
+    ASSERT_TRUE(wait_for_role_marker(prod_dir, prod,
+                                     "prod_test: mechanism tx=Curve rx=Uninitialized", seconds(10)))
+        << dump_full("prod_test: mechanism — script-side queue_mechanism forwarder");
+
+    cons.send_signal(SIGTERM);
+    EXPECT_EQ(cons.wait_for_exit(10), 0) << "consumer did not exit cleanly.\n" << cons.get_stderr();
+    prod.send_signal(SIGTERM);
+    EXPECT_EQ(prod.wait_for_exit(10), 0) << "producer did not exit cleanly.\n" << prod.get_stderr();
+    hub.send_signal(SIGTERM);
+    EXPECT_EQ(hub.wait_for_exit(10), 0) << "hub did not exit cleanly.\n" << hub.get_stderr();
+
     auto contains_error = [](const std::string &s)
     { return s.find("[ERROR ]") != std::string::npos; };
     const std::string hub_log = read_hub_log(hub_dir);
@@ -1209,9 +1496,12 @@ TEST_F(PlhHubCliTest, ZmqE2E_ConsumerSchemaMismatch_AbortsAndTearsDown)
 // under HEP-CORE-0017 §3.3):
 //   (Historical note: an earlier revision of this header excluded
 //   "data from ALL producers" citing a since-retired single-peer
-//   limitation in apply_master_approval.  That limitation is gone —
-//   the multi-peer path shipped (HEP-0017 §3.3 Pattern B, closed
-//   2026-07-08) — and the consumer script below REQUIRES slots from
+//   limitation in apply_master_approval.  That limitation is gone.
+//   The mechanism is NOT the multi-peer connect loop, and calling it
+//   "Pattern B" here was wrong: fan-in has the consumer PULL-BIND per
+//   the §3.3.0 matrix, and the two producers dial IN to it.  What
+//   carries all-N data is the bind plus a ZAP allowlist holding both
+//   producer keys — and the consumer script below REQUIRES slots from
 //   BOTH producers' offset windows before emitting `cons_test:
 //   complete`, so all-N data arrival IS load-bearing in this test.)
 //
@@ -1305,8 +1595,12 @@ TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
     write_zmq_producer_config(prod_a_dir / "producer.json", hub_dir, prod_a_uid, channel,
                               prod_a_port,
                               /*channel_topology=*/"fan-in");
+    // Producer A also pins the two allowlist accessors.  Under fan-in the
+    // producer DIALS, so this row is built by the dialing branch — the
+    // contrast against the one-to-one scenario, which takes the binding
+    // branch, is deliberate (see the assertion below).
     write_zmq_producer_script_with_offset(prod_a_dir / "script" / "python", kSlotsPerProducer,
-                                          kOffsetA);
+                                          kOffsetA, cons_uid);
     write_zmq_producer_config(prod_b_dir / "producer.json", hub_dir, prod_b_uid, channel,
                               prod_b_port,
                               /*channel_topology=*/"fan-in");
@@ -1416,20 +1710,28 @@ TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
     // channel, binds PULL, and publishes its bound endpoint.
     // Producers arrive later, receive the consumer's endpoint on
     // REG_ACK's initial_allowlist, dial PUSH, and CURVE-handshake
-    // against the consumer's ZAP.  There is no "attach loop" — the
-    // producer's queue drives Standby → Configured → Active in one
-    // step via `apply_master_approval(REG_ACK)`.
+    // against the consumer's ZAP.  There is no consumer-style "attach
+    // loop" here — but the producer's arm is NOT one step either.
+    // Being the DIALING side under fan-in, it stops at DialDeferred
+    // and is completed by finalize_connect (§6.6.3, asserted below).
     //
     // Consumer-side binding: the endpoint publish marker fires only
     // when the topology-model binding path ran end-to-end (queue
-    // reached Active, actual_endpoint() returned non-empty,
-    // send_endpoint_update succeeded).  A regression that leaves
+    // reached Active, the bind resolved an address, and
+    // send_endpoint_update was ACKed).  A regression that leaves
     // data_endpoint unset would fail here — producers would then
     // receive an empty initial_allowlist and their queues would
     // stay in Standby.
+    //
+    // The marker name is HEP-CORE-0021 §16.10's.  It used to be
+    // `event=BindingEndpointPublished`, a name that appeared in the code
+    // and this assertion but in no HEP — so the test pinned the
+    // implementation rather than the contract, and a reader comparing
+    // §16.10 against the tree would have found neither the marker it
+    // specifies nor any test for it.
     ASSERT_TRUE(wait_for_role_marker(
-        cons_dir, cons, "event=BindingEndpointPublished channel='" + channel + "'", seconds(5)))
-        << dump_full("event=BindingEndpointPublished — fan-in consumer "
+        cons_dir, cons, "event=EndpointUpdatePublished channel='" + channel + "'", seconds(5)))
+        << dump_full("event=EndpointUpdatePublished — fan-in consumer "
                      "published its bound endpoint to the broker");
 
     // Producer-side: both must process REG_ACK's fan-in
@@ -1449,6 +1751,33 @@ TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
     ASSERT_TRUE(wait_for_role_marker(
         prod_b_dir, prod_b, "event=ChannelAuthApplied channel='" + channel + "'", seconds(5)))
         << dump_full("producer B ChannelAuthApplied");
+
+    // ── §6.6.3 two-phase arm: the fan-in producer's deferred dial ─────
+    //
+    // Fan-in is the ONE topology where approval does not arm the queue.
+    // The producer dials, and connecting the moment REG_ACK lands would
+    // start the CURVE handshake before the consumer has installed this
+    // producer's key in its ZAP allowlist.  libzmq treats the resulting
+    // ZAP denial as terminal — there is no retry — so
+    // `apply_master_approval` parks the queue in DialDeferred and the
+    // role host finishes the connect only once its PeerReadinessOracle
+    // confirms the consumer is ready.
+    //
+    // Why assert this rather than let data flow speak for it: if the
+    // deferral regressed to connect-inside-apply, this test would still
+    // PASS most runs and fail only when the producer's handshake beats
+    // the consumer's allowlist install.  That is the #2480 signature —
+    // roughly 14% under CPU stress, and it cost a full investigation to
+    // diagnose.  These markers turn that flake into a deterministic
+    // failure at the exact step that broke.
+    ASSERT_TRUE(wait_for_role_marker(prod_a_dir, prod_a, "event=DialDeferred", seconds(5)))
+        << dump_full("producer A event=DialDeferred - apply must NOT connect a fan-in producer");
+    ASSERT_TRUE(wait_for_role_marker(prod_b_dir, prod_b, "event=DialDeferred", seconds(5)))
+        << dump_full("producer B event=DialDeferred - apply must NOT connect a fan-in producer");
+    ASSERT_TRUE(wait_for_role_marker(prod_a_dir, prod_a, "event=FinalizeConnect ", seconds(10)))
+        << dump_full("producer A event=FinalizeConnect - deferred dial must complete");
+    ASSERT_TRUE(wait_for_role_marker(prod_b_dir, prod_b, "event=FinalizeConnect ", seconds(10)))
+        << dump_full("producer B event=FinalizeConnect - deferred dial must complete");
 
     // ── Data flow verification (BOTH producers flow) ──────────────────
     // The multi-producer consumer script only emits `cons_test: complete`
@@ -1487,6 +1816,25 @@ TEST_F(PlhHubCliTest, ZmqE2E_MultiProducer_TwoAuthorized)
                                      seconds(5)))
         << dump_full("on_producer_joined for producer A — phase=live re-tag + dispatch to "
                      "on_producer_joined did not reach the script");
+
+    // ── Allowlist accessors under FAN-IN (the DIALING branch) ─────────
+    //
+    // The producer dials here, so its peer row is built by a different
+    // branch of the broker than the one-to-one scenario uses — and the
+    // two branches read from different sources (channel snapshot vs
+    // admission ledger).  The script-visible answer must not depend on
+    // which branch ran: a peer the broker admitted is a peer the script
+    // can name, on every topology.
+    //
+    // Count is 1 because fan-in has exactly one consumer — enforced by
+    // the broker as FAN_IN_IS_SINGLE_CONSUMER, not merely conventional.
+    // Pinning 1 rather than ">= 1" is what would catch a regression that
+    // let a second consumer onto a fan-in channel.
+    EXPECT_TRUE(wait_for_role_marker(prod_a_dir, prod_a,
+                                     "prod_test: allowlist count=1 has_peer=True has_ghost=False",
+                                     seconds(10)))
+        << dump_full("prod_test: allowlist (fan-in / dialing branch) — allowed_peer_count + "
+                     "allowed_peer_contains must answer identically to the one-to-one case");
     EXPECT_TRUE(wait_for_role_marker(cons_dir, cons, "cons_test: producer_joined uid=" + prod_b_uid,
                                      seconds(5)))
         << dump_full("on_producer_joined for producer B");
@@ -1724,6 +2072,24 @@ TEST_F(PlhHubCliTest, ZmqE2E_Processor_FanInBothChannels_ThreeRoles)
         << dump_full("prod RegReqAccepted");
     ASSERT_TRUE(wait_for_role_marker(prod_dir, prod, "event=RegAckReceived", seconds(5)))
         << dump_full("prod RegAckReceived");
+
+    // ── §6.6.3 two-phase arm on BOTH dialing writers ──────────────────
+    //
+    // in="fan-in" and out="fan-in", so every writer on this channel
+    // pair is the DIALING side: the producer into ch1, and the
+    // processor's own tx into ch2.  Both must park in DialDeferred and
+    // be completed by finalize_connect rather than connecting inside
+    // apply — see the rationale on the MultiProducer test above.  The
+    // processor is the interesting one: it is a writer AND a reader,
+    // and only its writer half defers.
+    ASSERT_TRUE(wait_for_role_marker(prod_dir, prod, "event=DialDeferred", seconds(5)))
+        << dump_full("prod event=DialDeferred");
+    ASSERT_TRUE(wait_for_role_marker(proc_dir, proc, "event=DialDeferred", seconds(5)))
+        << dump_full("proc event=DialDeferred (processor tx is a fan-in dialing writer)");
+    ASSERT_TRUE(wait_for_role_marker(prod_dir, prod, "event=FinalizeConnect ", seconds(10)))
+        << dump_full("prod event=FinalizeConnect");
+    ASSERT_TRUE(wait_for_role_marker(proc_dir, proc, "event=FinalizeConnect ", seconds(10)))
+        << dump_full("proc event=FinalizeConnect");
 
     // ── Data flow verification ────────────────────────────────────────
     ASSERT_TRUE(wait_for_role_marker(cons_dir, cons, "cons_test: complete N=", seconds(20)))

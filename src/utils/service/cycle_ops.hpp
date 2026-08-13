@@ -541,7 +541,7 @@ class ConsumerCycleOps final
     /// (binding-side ZAP allowlist or dialing-side known peer set)
     /// and answers directly without allocating a snapshot vector.
     /// Script-facing observability keeps using `allowed_peers` /
-    /// `admitted_peers_count`; those are unchanged.
+    /// `allowed_peer_count`; those are unchanged.
     bool default_init_ready(const RoleAPIBase &api) const
     {
         return api.channel_admission_populated(api.channel());

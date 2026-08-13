@@ -607,6 +607,22 @@ extern "C"
         void (*channel_broadcast)(const struct PlhNativeContext *ctx, const char *channel,
                                   const char *message, const char *data);
 
+        /* ── Directory paths (read-only, valid until native_finalize) ───
+         *
+         * These belong with `role_dir` in the identity block at the top of
+         * this struct, and are down here only because appending is the one
+         * way to add a field without moving every function pointer above
+         * it.  Lifetime and nullability match `role_dir`: owned by the
+         * host, never NULL (empty string when the role has no directory,
+         * as on the hub side).
+         *
+         * `logs_dir` and `run_dir` are `role_dir` plus a fixed suffix, and
+         * are empty exactly when `role_dir` is.  The host derives them so
+         * every engine spells them the same way. */
+        const char *script_dir; /**< Directory the script was loaded from */
+        const char *logs_dir;   /**< `<role_dir>/logs`, or "" */
+        const char *run_dir;    /**< `<role_dir>/run`, or "" */
+
         /* ── Opaque host data (do not dereference) ────────────────────── */
         void *_core;            /**< Internal — RoleHostCore pointer for API implementations. */
         void *_api;             /**< Internal — RoleAPIBase pointer for spinlock/messaging. */
@@ -811,7 +827,16 @@ extern "C"
  * Pass NULL to ignore the reason.  Signature change, so v14 plugins are
  * rejected by the exact-match api_version gate — rebuild against this header.
  * Native-plugin-ABI bump only; ComponentVersions unchanged. */
-#define PLH_NATIVE_API_VERSION 15
+
+/* v16 (2026-08-10): ADDITIVE — `script_dir`, `logs_dir` and `run_dir`
+ * appended before the opaque `_core`/`_api` tail.  Lua and Python have
+ * exposed all three since they shipped; native carried only `role_dir`
+ * and `log_level`, so a C plugin wanting its own log directory had to
+ * rebuild the path itself and hope it matched.  Now the host derives
+ * them once and every engine reads the same strings.  Data fields, not
+ * function pointers — a plugin reads `ctx->logs_dir` directly.
+ * Native-plugin-ABI bump only; ComponentVersions unchanged. */
+#define PLH_NATIVE_API_VERSION 16
 
     /* =========================================================================
      * C-visible pylabhub ComponentVersions constants
@@ -1312,6 +1337,9 @@ class Context
         return c_ ? c_->log_level : nullptr;
     }
     [[nodiscard]] const char *role_dir() const noexcept { return c_ ? c_->role_dir : nullptr; }
+    [[nodiscard]] const char *script_dir() const noexcept { return c_ ? c_->script_dir : nullptr; }
+    [[nodiscard]] const char *logs_dir() const noexcept { return c_ ? c_->logs_dir : nullptr; }
+    [[nodiscard]] const char *run_dir() const noexcept { return c_ ? c_->run_dir : nullptr; }
     [[nodiscard]] const char *short_tag() const noexcept { return c_ ? c_->short_tag : nullptr; }
 
     // ── Logging ─────────────────────────────────────────────────────
